@@ -40,6 +40,7 @@ from real_robot_exps.hybrid_controller import RealRobotController, get_euler_xyz
 # ============================================================================
 
 FORGE_NOISE_RANGES = [
+    #(0.0, 0.0, "0mm"),             # exact zero noise
     (0.0, 0.001, "0mm-1mm"),        # 0-1mm
     (0.001, 0.0025, "1mm-2.5mm"),   # 1-2.5mm
     (0.0025, 0.005, "2.5mm-5mm"),   # 2.5-5mm
@@ -371,12 +372,16 @@ def load_single_agent_policy(
 
     # Determine sigma_idx and action_dim
     hybrid_enabled = configs['wrappers'].hybrid_control.enabled
+    vic_enabled = getattr(configs['wrappers'].vic_pose, 'enabled', False)
     if hybrid_enabled:
         from configs.cfg_exts.ctrl_mode import get_force_size
         ctrl_mode = getattr(configs['primary'], 'ctrl_mode', 'force_only')
         force_size = get_force_size(ctrl_mode)
         sigma_idx = force_size
         action_dim = 2 * force_size + 6
+    elif vic_enabled:
+        sigma_idx = 0
+        action_dim = 9  # 6 pose + 3 translational Kp gains
     else:
         sigma_idx = 0
         action_dim = 6
@@ -1581,11 +1586,14 @@ def main():
     obs_order = reconstruct_obs_order(configs)
 
     hybrid_enabled = configs['wrappers'].hybrid_control.enabled
+    vic_enabled = getattr(configs['wrappers'].vic_pose, 'enabled', False)
     if hybrid_enabled:
         from configs.cfg_exts.ctrl_mode import get_force_size
         ctrl_mode = getattr(configs['primary'], 'ctrl_mode', 'force_only')
         force_size = get_force_size(ctrl_mode)
         action_dim = 2 * force_size + 6
+    elif vic_enabled:
+        action_dim = 9  # 6 pose + 3 translational Kp gains
     else:
         action_dim = 6
 

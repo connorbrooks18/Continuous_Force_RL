@@ -6,9 +6,13 @@ robot:
   ip: "192.168.1.11"
   use_mock: false              # Set false for real robot
   control_rate_hz: 15.0       # Must match training policy_hz
-  reset_duration_sec: 3.0     # Duration for Cartesian reset motion
-  retract_height_m: 0.03      # Retract upward before reset to clear hole (meters)
-  gripper_force_n: 60.0       # Grasp force in Newtons (max 70N continuous limit)
+  reset_duration_sec: 2.5     # Duration for Cartesian reset motion
+  retract_height_m: 0.04      # Retract upward before reset to clear hole (meters)
+  gripper_force_n: 62.0       # Grasp force in Newtons (max 70N continuous limit)
+
+  # Per-episode FT calibration: hold position and average O_F_ext_hat_K
+  # for this many seconds before each episode. Replaces static ft_bias.
+  ft_calibration_duration_sec: 1.0
 
   # NE_T_EE: Identity — F_T_NE (configured in Franka Desk) already contains
   # R_z(-45°) + T_z(0.1034), which matches the sim's panda_hand body frame
@@ -42,10 +46,6 @@ robot:
   # Set to [0,0,0,0,0,0] to disable.
   ft_bias: [-2.3233, -0.0368, 0.2142, 0.2584, -0.9019, -0.0218]
 
-  # Per-episode FT calibration: hold position and average O_F_ext_hat_K
-  # for this many seconds before each episode. Replaces static ft_bias.
-  ft_calibration_duration_sec: 2.0
-
 task:
   # Fixed asset origin position (hole base in world frame, meters)
   # The observation frame (sim's fixed_pos_obs_frame) is computed as:
@@ -59,9 +59,8 @@ task:
   # Target peg base position (where peg base should be when fully inserted)
   # This is "target_held_base_pos" in sim - used for SUCCESS/ENGAGEMENT DETECTION
   # May differ from fixed_asset_position depending on geometry
-  fixed_asset_position: [0.6112, -0.0165, 0.1558]
-  target_peg_base_position: [0.6112, -0.0165, 0.1558]
-
+  fixed_asset_position: [0.6084, -0.0218, 0.1550]
+  target_peg_base_position: [0.6084, -0.0218, 0.1550]
 
   # Offset from EE (fingertip midpoint) to peg base (grasped object root)
   # Needed to compute peg_base_pos = ee_pos + this offset for detection
@@ -110,16 +109,29 @@ control_gains:
   #task_prop_gains: [180.0, 180.0, 100.0, 40.0, 40.0, 30.0]
   #task_deriv_gains: [26.83, 26.83, 20.0,13.4, 12.649110641, 12.649110641]
   
-  task_prop_gains: [150.0, 150.0, 100.0, 40.0, 40.0, 30.0]
+  # good gains used before for pose/match/vic
+  task_prop_gains: [150.0, 150.0, 100.0, 40.0, 40.0, 25.0]
   task_deriv_gains: [24.5, 24.5, 20.0,13.4, 12.649110641, 12.649110641]
 
+  #hybrid
+  task_prop_gains: [150.0, 150.0, 100.0, 40.0, 40.0, 25.0]
+  task_deriv_gains: [24.5, 24.5, 20.0,13.4, 12.649110641, 12.649110641]
+
+  #task_prop_gains: [150.0, 150.0, 100.0, 45.0, 45.0, 25.0]
+  #task_deriv_gains: [24.5,  24.5,  20.0, 14.0, 13.4,  0.0]
+
   # Pose integral control (applies to both pose-only and hybrid paths)
-  enable_pose_integral: true
+  enable_pose_integral: true # CHANGED FOR VICtrue
   #pose_ki: [10, 10, 0.0, 0.0, 0.0, 0.0]  # [Fx, Fy, Fz, Tx, Ty, Tz] - Pose control ideal gains
-  pose_ki: [2.0, 2.0, 0.0, 0.0, 0.0, 0.0]
+  #pose_ki: [2.5, 2.5, 0.0, 0.0, 0.0, 0.0] # CHANGED FOR VIC -> these are pose/MATCH
+  #pose_ki: [2.0, 2.0, 0.0, 0.0, 0.0, 0.0] pose/match/vic
+  pose_ki: [2.0, 2.0, 2.0, 0.0, 0.0, 0.0]
   pose_integral_clamp: 50.0                   # Anti-windup clamp on accumulated error
   pose_integral_reset_on_target: true         # Reset integral each policy step (true) or accumulate across steps (false)
 
+  # VIC gain scaling: policy-predicted Kp is multiplied by this per-axis before Kd = 2*sqrt(Kp)
+  vic_gain_scale: [1.5, 1.5, 1.0]  # [x, y, z]
+  #vic_gain_scale: [1.0, 1.0, 1.0]  # [x, y, z]
   # 60 - 15.5
   # 45 - 13.4
   # 40 - 12.65
@@ -153,13 +165,13 @@ control_gains:
   # Singularity damping for J M^-1 J^T inverse (Levenberg-Marquardt)
   # Adds lambda*I to prevent blow-up near kinematic singularities.
   # Set enabled=false to revert to undamped inverse.
-  singularity_damping_enabled: false
-  singularity_damping_lambda: 0.1
+  singularity_damping_enabled: true
+  singularity_damping_lambda: 0.02
 
   # Partial inertia decoupling: compute separate 3x3 Lambda matrices for
   # position and rotation instead of a single coupled 6x6 Lambda.
   # Prevents position dynamics from suppressing orientation control.
-  partial_inertia_decoupling: false
+  partial_inertia_decoupling: false 
   sep_ori: true
 
 policy:

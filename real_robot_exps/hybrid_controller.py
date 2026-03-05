@@ -472,9 +472,24 @@ class RealRobotController:
         from configs.cfg_exts.ctrl_mode import get_force_size
         self.force_size = get_force_size(self.ctrl_mode) if self.hybrid_enabled else 0
 
+        # VIC (Variable Impedance Control) detection
+        self.vic_enabled = getattr(configs['wrappers'].vic_pose, 'enabled', False)
+        if self.vic_enabled and self.hybrid_enabled:
+            raise RuntimeError("VIC and hybrid control are mutually exclusive")
+
         # Action dimensions
         if self.hybrid_enabled:
             self.action_dim = 2 * self.force_size + 6
+        elif self.vic_enabled:
+            self.action_dim = 9  # 6 pose + 3 translational Kp gains
+            ctrl_cfg_vic = configs['environment'].ctrl if hasattr(configs['environment'], 'ctrl') else configs['wrappers'].ctrl
+            self.vic_gain_min = torch.tensor(ctrl_cfg_vic.vic_gain_min_pos, device=device, dtype=torch.float32)
+            self.vic_gain_max = torch.tensor(ctrl_cfg_vic.vic_gain_max_pos, device=device, dtype=torch.float32)
+            self.vic_apply_ema = getattr(configs['wrappers'].vic_pose, 'apply_ema_to_gains', False)
+            self.vic_gain_scale = torch.tensor(
+                real_config.get('control_gains', {}).get('vic_gain_scale', [1.0, 1.0, 1.0]),
+                device=device, dtype=torch.float32,
+            )
         else:
             self.action_dim = 6
 
@@ -847,6 +862,47 @@ class RealRobotController:
                 control_actions = raw_action
             else:
                 control_actions = self.ema_actions
+        elif self.vic_enabled:
+            # VIC: split 6 pose + 3 gain actions
+            pose_raw = raw_action[:6]
+            gain_raw = raw_action[6:9]
+
+            # EMA on pose actions (matching base env behavior)
+            self.ema_actions[:6] = (
+                self.ema_factor * pose_raw
+                + (1 - self.ema_factor) * self.ema_actions[:6]
+            )
+
+            # Gains: EMA or raw (matching VIC wrapper behavior)
+            if self.vic_apply_ema:
+                self.ema_actions[6:9] = (
+                    self.ema_factor * gain_raw
+                    + (1 - self.ema_factor) * self.ema_actions[6:9]
+                )
+            else:
+                self.ema_actions[6:9] = gain_raw
+
+            # Map gain actions -> Kp (same formula as vic_pose_wrapper._map_gain_actions_to_kp)
+            clamped = torch.clamp(self.ema_actions[6:9], -1.0, 1.0)
+            kp_pos = self.vic_gain_min + (clamped + 1.0) / 2.0 * (self.vic_gain_max - self.vic_gain_min)
+
+            # Scale Kp before Kd derivation (real robot tuning knob)
+            kp_pos = kp_pos * self.vic_gain_scale
+
+            # Update translational gains only, rotational unchanged
+            self.task_prop_gains[:3] = kp_pos
+            kd_pos = 2.0 * torch.sqrt(kp_pos)
+            self.task_deriv_gains[:3] = kd_pos
+
+            # import sys
+            # sys.stdout.write(
+            #     f"[VIC] Kp=[{kp_pos[0]:.1f}, {kp_pos[1]:.1f}, {kp_pos[2]:.1f}]  "
+            #     f"Kd=[{kd_pos[0]:.1f}, {kd_pos[1]:.1f}, {kd_pos[2]:.1f}]  "
+            #     f"raw=[{gain_raw[0]:.3f}, {gain_raw[1]:.3f}, {gain_raw[2]:.3f}]\r\n"
+            # )
+            # sys.stdout.flush()
+
+            control_actions = self.ema_actions
         else:
             # Uniform EMA on all 6 actions
             self.ema_actions = (

@@ -170,6 +170,8 @@ class ObservationBuilder:
 
         # EE orientation quaternion — use actual measured quaternion from robot
         components["fingertip_quat"] = ee_quat.clone()
+        #components["fingertip_quat"] *= 0
+        #components["fingertip_quat"][1] = 1
 
         # Relative yaw (if in obs_order)
         # Matches sim's EEPoseNoiseWrapper._compute_fingertip_yaw_rel_fixed:
@@ -204,6 +206,8 @@ class ObservationBuilder:
             ft_obs = force_torque.clone()
         if self.use_tanh_ft_scaling:
             ft_obs = torch.tanh(self.tanh_ft_scale * ft_obs)
+
+        ft_obs[3:] *=0
         components["force_torque"] = ft_obs
 
         # Contact detection from force thresholds (matches ForceTorqueWrapper logic)
