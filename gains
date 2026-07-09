@@ -1,0 +1,5 @@
+Works with apple_pullto_static AND controller_test
+
+40, 50 (first), 60, 70
+
+DOES NOT WORK: 80 (shaking and then joint velocity safety violation during apple test )

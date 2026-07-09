@@ -6,7 +6,7 @@ robot:
   ip: "192.168.1.11"
   use_mock: false              # Set false for real robot
   control_rate_hz: 15.0       # Must match training policy_hz
-  reset_duration_sec: 2.5     # Duration for Cartesian reset motion
+  reset_duration_sec: 3  # Duration for Cartesian reset motion
   retract_height_m: 0.04      # Retract upward before reset to clear hole (meters)
   gripper_force_n: 62.0       # Grasp force in Newtons (max 70N continuous limit)
 
@@ -38,13 +38,15 @@ robot:
 
   # F/T EMA low-pass filter coefficient (applied at 1kHz inside read_state)
   # alpha=0.2 at 1kHz ~ 32Hz cutoff frequency (-3dB)
-  ft_ema_alpha: 0.08
+  ft_ema_alpha: 0.02 # .08
 
   # Constant F/T bias subtracted from O_F_ext_hat_K BEFORE negation/rotation.
   # Measured in free space with check_ft_bias.py — compensates for unmodeled
   # EE payload (peg + gripper fingers) that the robot's gravity model misses.
   # Set to [0,0,0,0,0,0] to disable.
-  ft_bias: [-2.3233, -0.0368, 0.2142, 0.2584, -0.9019, -0.0218]
+  # ft_bias: [-2.3233, -0.0368, 0.2142, 0.2584, -0.9019, -0.0218]
+  # ft_bias: [0.4635, -2.8804, 1.8923, 1.908, 0.2498, 0.0782]
+  ft_bias: [0, 0, 0, 0, 0, 0]
 
 task:
   # Fixed asset origin position (hole base in world frame, meters)
@@ -59,8 +61,8 @@ task:
   # Target peg base position (where peg base should be when fully inserted)
   # This is "target_held_base_pos" in sim - used for SUCCESS/ENGAGEMENT DETECTION
   # May differ from fixed_asset_position depending on geometry
-  fixed_asset_position: [0.6084, -0.0218, 0.1550]
-  target_peg_base_position: [0.6084, -0.0218, 0.1550]
+  fixed_asset_position:   [0.0676, 0.7072, 0.1146]
+  target_peg_base_position:  [0.0676, 0.7072, 0.1146]
 
   # Offset from EE (fingertip midpoint) to peg base (grasped object root)
   # Needed to compute peg_base_pos = ee_pos + this offset for detection
@@ -72,8 +74,9 @@ task:
   # Engagement: xy_dist < xy_centering_threshold AND z_disp < hole_height * engage_threshold
   xy_centering_threshold: 0.0025   # 2.5mm - HARDCODED in IsaacLab _get_curr_successes()
   # Joint angles for sim comparison (copy from first_real_robot_test.py phase 1 output)
-  joint_angles: [-0.6773, 0.4790, 0.7229, -1.9019, -0.3875, 2.2211, 1.0957]
-  
+  joint_angles: [1.8416, 0.3115, -0.4215, -2.4370, -0.2172, 3.6133, -0.7987]
+
+
   hole_height: 0.025               # 25mm - asset-specific, used to scale Z thresholds
   success_threshold: 0.2          # Multiplied by hole_height -> 1mm Z threshold
   engage_threshold: 0.9            # Multiplied by hole_height -> 22.5mm Z threshold
@@ -84,12 +87,12 @@ task:
   # Safety: force control is blocked when peg tip is more than this height
   # above the hole top. Prevents force control in free space where there's
   # nothing to push against. Set to a large value to effectively disable.
-  force_select_max_height_mm: 3.0
+  force_select_max_height_mm: 3000.0
 
   # Safety: force control is blocked when peg tip XY distance from goal XY
   # exceeds this threshold. Prevents force control when not aligned with hole.
   # Set to a large value to effectively disable.
-  force_select_max_xy_dist_mm: 12.5
+  force_select_max_xy_dist_mm: 1200.5
 
   # Episode parameters
   episode_timeout_steps: 150       # Max steps per episode
@@ -110,18 +113,18 @@ control_gains:
   #task_deriv_gains: [26.83, 26.83, 20.0,13.4, 12.649110641, 12.649110641]
   
   # good gains used before for pose/match/vic
-  task_prop_gains: [150.0, 150.0, 100.0, 40.0, 40.0, 25.0]
-  task_deriv_gains: [24.5, 24.5, 20.0,13.4, 12.649110641, 12.649110641]
+  #task_prop_gains: [150.0, 150.0, 100.0, 30.0, 43.0, 25.0]
+  #task_deriv_gains: [24.5, 24.5, 20.0,13.4, 12.649110641, 12.649110641]
 
   #hybrid
-  task_prop_gains: [150.0, 150.0, 100.0, 40.0, 40.0, 25.0]
-  task_deriv_gains: [24.5, 24.5, 20.0,13.4, 12.649110641, 12.649110641]
+  task_prop_gains: [50, 50.0, 50.0, 30.0, 30.0, 30.0]
+  task_deriv_gains: [15, 15, 15, 10.95, 10.95, 10.95]
 
   #task_prop_gains: [150.0, 150.0, 100.0, 45.0, 45.0, 25.0]
   #task_deriv_gains: [24.5,  24.5,  20.0, 14.0, 13.4,  0.0]
 
   # Pose integral control (applies to both pose-only and hybrid paths)
-  enable_pose_integral: true # CHANGED FOR VICtrue
+  enable_pose_integral: false # CHANGED FOR VICtrue
   #pose_ki: [10, 10, 0.0, 0.0, 0.0, 0.0]  # [Fx, Fy, Fz, Tx, Ty, Tz] - Pose control ideal gains
   #pose_ki: [2.5, 2.5, 0.0, 0.0, 0.0, 0.0] # CHANGED FOR VIC -> these are pose/MATCH
   #pose_ki: [2.0, 2.0, 0.0, 0.0, 0.0, 0.0] pose/match/vic
@@ -130,7 +133,7 @@ control_gains:
   pose_integral_reset_on_target: true         # Reset integral each policy step (true) or accumulate across steps (false)
 
   # VIC gain scaling: policy-predicted Kp is multiplied by this per-axis before Kd = 2*sqrt(Kp)
-  vic_gain_scale: [1.5, 1.5, 1.0]  # [x, y, z]
+  vic_gain_scale: [1.0, 1.0, 1.0]  # [x, y, z]
   #vic_gain_scale: [1.0, 1.0, 1.0]  # [x, y, z]
   # 60 - 15.5
   # 45 - 13.4
@@ -145,7 +148,7 @@ control_gains:
 
   # Null-space gains (keep joints near default_dof_pos)
   kp_null: 10 #5
-  kd_null: 6.32455532 #4.472135955
+  kd_null: 10 #4.472135955
 
   # Force PID enable flags (hybrid only). Overrides training config when
   # use_rr_gains is true. If enabled, the corresponding gain array below
@@ -166,7 +169,7 @@ control_gains:
   # Adds lambda*I to prevent blow-up near kinematic singularities.
   # Set enabled=false to revert to undamped inverse.
   singularity_damping_enabled: true
-  singularity_damping_lambda: 0.02
+  singularity_damping_lambda: 0.05
 
   # Partial inertia decoupling: compute separate 3x3 Lambda matrices for
   # position and rotation instead of a single coupled 6x6 Lambda.
@@ -193,5 +196,5 @@ noise:
   # Start pose (offset from fixed_asset_position)
   hand_init_pos: [0.0, 0.0, 0.047]         # meters, nominal EE offset above hole
   hand_init_pos_noise: [0.02, 0.02, 0.01]  # meters, uniform +/- range per axis
-  hand_init_orn: [3.1416, 0.0, 0.0]        # RPY radians, nominal orientation (pointing down)
+  hand_init_orn: [1.57, -0.9460, -2.9202]        # RPY radians, nominal orientation (pointing down)
   hand_init_orn_noise: [0.0, 0.0, 0.0]   # RPY radians, uniform +/- range (~45 deg yaw)

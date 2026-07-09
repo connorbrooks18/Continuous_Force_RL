@@ -52,17 +52,18 @@ def phase1_connect_and_read(config: dict):
     EE_T_K = robot_cfg['EE_T_K']
     raw_robot.set_EE(NE_T_EE)
     raw_robot.set_K(EE_T_K)
-    print("NE_T_EE and EE_T_K set.")
+    #print("NE_T_EE and EE_T_K set.")
 
     # Read raw state (outside control loop)
     state = raw_robot.read_once()
 
-    print("\n--- Raw O_T_EE (column-major, 16 elements) ---")
+    #print("\n--- Raw O_T_EE (column-major, 16 elements) ---")
     T = state.O_T_EE
+
     for row in range(4):
         cols = [T[row + col * 4] for col in range(4)]
         print(f"  [{cols[0]:+.6f}  {cols[1]:+.6f}  {cols[2]:+.6f}  {cols[3]:+.6f}]")
-
+    """
     print(f"\n--- Raw joint positions q (7) ---")
     print(f"  {[f'{v:+.4f}' for v in state.q]}")
 
@@ -71,12 +72,12 @@ def phase1_connect_and_read(config: dict):
 
     print(f"\n--- Raw O_F_ext_hat_K (6) ---")
     print(f"  {[f'{v:+.4f}' for v in state.O_F_ext_hat_K]}")
-
+    """
     # Extract EE position
     ee_pos = [T[12], T[13], T[14]]
     print(f"\n--- EE position from O_T_EE[12:15] ---")
     print(f"  x={ee_pos[0]:.4f}m, y={ee_pos[1]:.4f}m, z={ee_pos[2]:.4f}m")
-
+    """
     # Sanity check: is position in reasonable workspace?
     x, y, z = ee_pos
     checks = []
@@ -84,6 +85,7 @@ def phase1_connect_and_read(config: dict):
     checks.append(("y in [-0.5, 0.5]", -0.5 <= y <= 0.5))
     checks.append(("z in [0.0, 0.8]", 0.0 <= z <= 0.8))
 
+    
     print("\n--- Workspace sanity checks ---")
     all_ok = True
     for name, ok in checks:
@@ -98,6 +100,7 @@ def phase1_connect_and_read(config: dict):
 
     print("\n  MANUAL CHECK: Does the printed EE position match where the")
     print("  fingertip midpoint physically is? Measure with a ruler if unsure.")
+    """
 
     # YAML-ready calibration output (cyan for visibility)
     ee_to_peg_base_offset = config['task']['ee_to_peg_base_offset']
@@ -484,6 +487,7 @@ def main():
 
     print("=" * 70)
     print("  FIRST REAL ROBOT TEST")
+    """
     print("  Safe, interactive validation of FrankaInterface on real FR3")
     print("  Robot IP:", config['robot']['ip'])
     print("=" * 70)
@@ -496,6 +500,7 @@ def main():
     print("  6. 1kHz torque recomputation stress test")
     print("\n  Each phase waits for Enter before proceeding.")
     print("  You can Ctrl+C at any time to abort.\n")
+    """
 
     initial_ee_pos = None
     robot = None  # shared FrankaInterface for phases 3-5
@@ -503,41 +508,8 @@ def main():
 
     try:
         if args.skip_to <= 1:
-            wait_for_enter("Press Enter to start Phase 1...")
             initial_ee_pos = phase1_connect_and_read(config)
 
-        if args.skip_to <= 2:
-            wait_for_enter("Press Enter to start Phase 2...")
-            R_mat = phase2_frame_validation(config) 
-
-        # Create shared FrankaInterface for phases 3-6 (mirrors eval script
-        # which reuses one connection across all episodes)
-        if args.skip_to <= 6:
-            test_config = {**config, 'robot': {**config['robot'], 'use_mock': False}}
-            robot = FrankaInterface(test_config, device='cpu')
-
-        if args.skip_to <= 3:
-            wait_for_enter("Press Enter to start Phase 3...")
-            phase3_torque_control_snapshot(robot)
-
-        if args.skip_to <= 4:
-            wait_for_enter("Press Enter to start Phase 4...")
-            phase4_force_torque_sign(robot)
-
-        if args.skip_to <= 5:
-            if initial_ee_pos is None:
-                # Read position from existing connection if we skipped phase 1
-                state = robot._robot.read_once()
-                T = state.O_T_EE
-                initial_ee_pos = [T[12], T[13], T[14]]
-
-            
-            wait_for_enter("Press Enter to start Phase 5 (will move robot 2cm up)...")
-            phase5_cartesian_reset(robot, initial_ee_pos, R_mat)
-
-        if args.skip_to <= 6 and False:
-            wait_for_enter("Press Enter to start Phase 6 (1kHz recomputation stress test)...")
-            phase6_torque_recomputation_stress(robot)
 
         print("\n" + "=" * 70)
         print("  ALL PHASES COMPLETE")
