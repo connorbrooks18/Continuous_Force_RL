@@ -47,6 +47,7 @@ from real_robot_exps.robot_interface import (
     _quat_slerp,
     _quat_wxyz_to_rotation_matrix_np,
     make_ee_target_pose,
+    make_ee_target_pose_from_matrix,
     _FR3_JOINT_POS_LIMITS,
     _FR3_JOINT_VEL_LIMITS,
     _MAX_TORQUE_DELTA,
@@ -885,9 +886,10 @@ class FrankaInterface:
 
     def wait_for_policy_step(self):
         """Block until 1/control_rate_hz has elapsed since last send/set call."""
-        if self._last_send_time is None:
-            return
         target_dt = 1.0 / self._control_rate_hz
+        if self._last_send_time is None:
+            time.sleep(target_dt)
+            return
         elapsed = time.time() - self._last_send_time
         remaining = target_dt - elapsed
         if remaining > 0:

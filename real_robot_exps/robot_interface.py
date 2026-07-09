@@ -165,6 +165,22 @@ def make_ee_target_pose(position: np.ndarray, rpy: np.ndarray) -> np.ndarray:
     T[:3, 3] = position
     return T
 
+def make_ee_target_pose_from_matrix(position: np.ndarray, R_mat: np.ndarray) -> np.ndarray:
+    """Construct 4x4 homogeneous transform from position [3] and RPY [3].
+
+    Args:
+        position: [3] XYZ position in meters.
+        R_mat: rotation matrix in radians.
+
+    Returns:
+        [4, 4] homogeneous transform (row-major numpy array).
+    """
+   
+    T = np.eye(4)
+    T[:3, :3] = R_mat
+    T[:3, 3] = position
+    return T
+
 
 # FR3 joint limits (from Franka Emika specifications)
 _FR3_JOINT_POS_LIMITS = np.array([
@@ -173,7 +189,7 @@ _FR3_JOINT_POS_LIMITS = np.array([
     [-2.8973, 2.8973],
     [-3.0718, -0.0698],
     [-2.8973, 2.8973],
-    [-0.0175, 3.7525],
+    [-0.0175, 4.5],   # [-0.0175, 3.7525],
     [-2.8973, 2.8973],
 ])
 

@@ -157,6 +157,10 @@ def main():
     target_R = _rotation_matrix_from_rpy(*target_rpy)
     target_q = _rotation_matrix_to_quat(target_R)
 
+    target_t = start_t
+    target_R = start_R
+    target_q = start_q
+
     n_move = int(MOVE_DURATION_SEC * 1000)
     for i in range(n_move):
         alpha = 0.5 * (1.0 - math.cos(math.pi * (i + 1) / n_move))

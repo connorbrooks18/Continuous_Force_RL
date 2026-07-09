@@ -17,6 +17,7 @@ Usage:
 
 import argparse
 import math
+import sys
 import time
 
 import numpy as np
@@ -27,7 +28,6 @@ from real_robot_exps.pro_robot_interface import FrankaInterface, make_ee_target_
 from real_robot_exps.hybrid_controller import (
     ControlTargets, get_euler_xyz, compute_pose_error, compute_pose_task_wrench,
 )
-from real_robot_exps.apple_pullto_static import update_gains
 
 
 CONVERGE_THRESHOLD = 1e-4  # 0.1mm
@@ -144,6 +144,8 @@ def run_move(
     default_dof_pos: torch.Tensor,
     label: str,
     device: str = "cpu",
+    prnt: bool = True,
+    manage_control: bool = True,
 ) -> dict:
     """Run torque control until robot converges to target_pos.
 
@@ -151,7 +153,8 @@ def run_move(
     """
     targets = build_position_targets(gains, target_pos, target_quat, default_dof_pos, device)
 
-    robot.start_torque_mode()
+    if manage_control:
+        robot.start_torque_mode()
 
     snap = robot.get_state_snapshot()
     start_pos = snap.ee_pos.clone()
@@ -176,13 +179,14 @@ def run_move(
                 target_pos, target_quat,
                 gains['task_prop_gains'], gains['task_deriv_gains'],
             )
-            print(f"    [step {step:3d}] orn_error (axis-angle, base frame): "
-                  f"[{aa_err[0].item():.6f}, {aa_err[1].item():.6f}, {aa_err[2].item():.6f}]")
-            print(f"    [step {step:3d}] wrench [Fx,Fy,Fz,Tx,Ty,Tz] (base frame, pre-Lambda): "
-                  f"[{wrench[0].item():.4f}, {wrench[1].item():.4f}, {wrench[2].item():.4f}, "
-                  f"{wrench[3].item():.4f}, {wrench[4].item():.4f}, {wrench[5].item():.4f}]")
-            print(f"    [step {step:3d}] frame: geometric Jacobian base frame "
-                  f"(q_err = q_target * q_current^-1 -> axis-angle)")
+            if(prnt):
+                print(f"    [step {step:3d}] orn_error (axis-angle, base frame): "
+                    f"[{aa_err[0].item():.6f}, {aa_err[1].item():.6f}, {aa_err[2].item():.6f}]")
+                print(f"    [step {step:3d}] wrench [Fx,Fy,Fz,Tx,Ty,Tz] (base frame, pre-Lambda): "
+                    f"[{wrench[0].item():.4f}, {wrench[1].item():.4f}, {wrench[2].item():.4f}, "
+                    f"{wrench[3].item():.4f}, {wrench[4].item():.4f}, {wrench[5].item():.4f}]")
+                print(f"    [step {step:3d}] frame: geometric Jacobian base frame "
+                    f"(q_err = q_target * q_current^-1 -> axis-angle)")
 
         pos_delta = torch.norm(snap.ee_pos - prev_pos).item()
         prev_pos = snap.ee_pos.clone()
@@ -194,8 +198,8 @@ def run_move(
 
         if converge_count >= CONVERGE_FRAMES:
             break
-
-    robot.end_control()
+    if manage_control:
+        robot.end_control()
 
     # Position results
     achieved_pos = snap.ee_pos.clone()
@@ -212,16 +216,17 @@ def run_move(
     steps_used = step + 1
     converged = converge_count >= CONVERGE_FRAMES
 
-    print(f"  [{label}]")
-    print(f"    Start Pos:      [{start_pos[0].item():.5f}, {start_pos[1].item():.5f}, {start_pos[2].item():.5f}]")
-    print(f"    Target Pos:     [{target_pos[0].item():.5f}, {target_pos[1].item():.5f}, {target_pos[2].item():.5f}]")
-    print(f"    Achieved Pos:   [{achieved_pos[0].item():.5f}, {achieved_pos[1].item():.5f}, {achieved_pos[2].item():.5f}]")
-    print(f"    Pos Error:      [{pos_error[0]:.5f}, {pos_error[1]:.5f}, {pos_error[2]:.5f}] (norm={pos_error_norm*1000:.2f}mm)")
-    print(f"    Orn Target  (RPY deg): [{target_rpy_deg[0]:.2f}, {target_rpy_deg[1]:.2f}, {target_rpy_deg[2]:.2f}]")
-    print(f"    Orn Start   (RPY deg): [{start_rpy_deg[0]:.2f}, {start_rpy_deg[1]:.2f}, {start_rpy_deg[2]:.2f}]")
-    print(f"    Orn Achieved(RPY deg): [{achieved_rpy_deg[0]:.2f}, {achieved_rpy_deg[1]:.2f}, {achieved_rpy_deg[2]:.2f}]")
-    print(f"    Orn Error   (RPY deg): [{orn_error_deg[0]:.2f}, {orn_error_deg[1]:.2f}, {orn_error_deg[2]:.2f}]")
-    print(f"    Steps:    {steps_used} ({'converged' if converged else 'MAX STEPS'})")
+    if(prnt):
+        print(f"  [{label}]")
+        print(f"    Start Pos:      [{start_pos[0].item():.5f}, {start_pos[1].item():.5f}, {start_pos[2].item():.5f}]")
+        print(f"    Target Pos:     [{target_pos[0].item():.5f}, {target_pos[1].item():.5f}, {target_pos[2].item():.5f}]")
+        print(f"    Achieved Pos:   [{achieved_pos[0].item():.5f}, {achieved_pos[1].item():.5f}, {achieved_pos[2].item():.5f}]")
+        print(f"    Pos Error:      [{pos_error[0]:.5f}, {pos_error[1]:.5f}, {pos_error[2]:.5f}] (norm={pos_error_norm*1000:.2f}mm)")
+        print(f"    Orn Target  (RPY deg): [{target_rpy_deg[0]:.2f}, {target_rpy_deg[1]:.2f}, {target_rpy_deg[2]:.2f}]")
+        print(f"    Orn Start   (RPY deg): [{start_rpy_deg[0]:.2f}, {start_rpy_deg[1]:.2f}, {start_rpy_deg[2]:.2f}]")
+        print(f"    Orn Achieved(RPY deg): [{achieved_rpy_deg[0]:.2f}, {achieved_rpy_deg[1]:.2f}, {achieved_rpy_deg[2]:.2f}]")
+        print(f"    Orn Error   (RPY deg): [{orn_error_deg[0]:.2f}, {orn_error_deg[1]:.2f}, {orn_error_deg[2]:.2f}]")
+        print(f"    Steps:    {steps_used} ({'converged' if converged else 'MAX STEPS'})")
 
     return {
         'label': label,
@@ -238,8 +243,90 @@ def run_move(
         'converged': converged,
     }
 
+def hold_position(
+    robot: FrankaInterface,
+    gains: dict,
+    target_pos: torch.Tensor,
+    target_quat: torch.Tensor,
+    default_dof_pos: torch.Tensor,
+    duration_sec: float,
+    device: str = "cpu"
+):
+    """Actively hold a Cartesian pose while maintaining the 15Hz safety/timing loop."""
+    targets = build_position_targets(gains, target_pos, target_quat, default_dof_pos, device)
+    
+    # 15Hz * duration = number of steps
+    steps = int(duration_sec * robot._control_rate_hz)
+    
+    for _ in range(steps):
+        robot.wait_for_policy_step()
+        snap = robot.get_state_snapshot()
+        robot.check_safety(snap)
+        robot.set_control_targets(targets)
+
+def update_gains(gains, new_prop_gains, device):
+
+    gains["task_prop_gains"] = torch.tensor(new_prop_gains, device=device, dtype=torch.float32)
+    derivs = [0, 0, 0, 0, 0, 0]
+    for i in range(len(new_prop_gains)):
+        derivs[i] = 2.2 * math.sqrt(new_prop_gains[i])
+    gains["task_deriv_gains"] = torch.tensor(derivs, device=device, dtype=torch.float32)
+    return gains
+
+def pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu"):
+    
+    robot.reset_to_start_pose(apple_pose_4x4)
+    gc.send_request(True)
+    time.sleep(2)
+    
+    distance = .05
+    steps = 5
+    robot.start_torque_mode()
+    snap = robot.get_state_snapshot()
+    target = snap.ee_pos.clone()
+    #robot.end_control()
+    
+    #theta = math.pi/2 #'roll' pi/3 to 2pi/3
+    #phi = math.pi/4 # 'pitch'
+    dx = distance * math.sin(theta) * math.cos(phi)
+    dy = distance * math.sin(theta) * math.sin(phi)
+    dz = distance * math.cos(theta)
+    for i in range(steps):
+        print(f"Starting {i+1} of {steps}...")
+        
+        
+        target[0] -= (dx/steps)
+        target[1] -= (dy/steps)
+        target[2] -= (dz/steps)
+        apple_quat = snap.ee_quat.clone()
+        #gains[""]
+        run_move(robot, gains, target, apple_quat, default_dof_pos, f"closer #{i}", prnt=False, manage_control=False)
+        
+        print("Holding position for 3s...")
+        hold_position(robot, gains, target, apple_quat, default_dof_pos, duration_sec=3.0, device=device)
+        #time.sleep(4)
+    robot.end_control()
+
+    time.sleep(1)
+    gc.send_request(False)
+    time.sleep(2)
+
+
+       
+    
+    robot.reset_to_start_pose(home_pose_4x4)
+    time.sleep(1)
+
 
 def main():
+
+
+    from real_robot_exps.gripper_test import GripperClient
+    gc = GripperClient()
+    
+
+
+
     parser = argparse.ArgumentParser(description="Controller Verification Test")
     parser.add_argument("--config", type=str, default="real_robot_exps/config.yaml", help="Real robot config path")
     parser.add_argument("--device", type=str, default="cpu", help="Torch device")
@@ -284,19 +371,8 @@ def main():
     # 2. Load gains from config
     print("\nLoading controller gains...")
     gains = load_gains_from_config(real_config, device)
-    force_prop = 40 # 50 is default
-    gains = update_gains(gains, [force_prop, force_prop, force_prop, 30, 30, 30], device)
-    print(gains["task_prop_gains"])
-    print(gains["task_deriv_gains"])
 
-    # =========================================================================
-    # DIAGNOSTIC: Frame transforms + Jacobian + null-space projector verification
-    # Uses a temporary direct pylibfranka connection (before FrankaInterface)
-    # =========================================================================
-    print("\n" + "=" * 80)
-    print("DIAGNOSTIC: Frame Transforms & Null-Space Projector Verification")
-    print("=" * 80)
-
+   
     import pylibfranka as plf
 
     robot_cfg = real_config['robot']
@@ -318,19 +394,8 @@ def main():
     diag_robot.set_EE(NE_T_EE_cfg)
     diag_robot.set_K(EE_T_K_cfg)
 
-    diag_model = diag_robot.load_model()
     diag_state = diag_robot.read_once()
 
-    # --- Your frame transforms ---
-    print("\n--- Frame Transforms (column-major -> 4x4) ---")
-    print("F_T_NE (flange -> nominal EE):")
-    print(np.array(diag_state.F_T_NE).reshape(4, 4, order='F'))
-    print("\nF_T_EE (flange -> EE):")
-    print(np.array(diag_state.F_T_EE).reshape(4, 4, order='F'))
-    print("\nNE_T_EE (nominal EE -> EE, what we set):")
-    print(np.array(diag_state.NE_T_EE).reshape(4, 4, order='F'))
-    print("\nO_T_EE (base -> EE):")
-    print(np.array(diag_state.O_T_EE).reshape(4, 4, order='F'))
     T = np.array(diag_state.O_T_EE)
     R = np.array([
         [T[0], T[4], T[8]],
@@ -339,119 +404,34 @@ def main():
     ])
     pos = T[12:15]
 
-    # --- Config NE_T_EE for comparison ---
-    print("\nNE_T_EE from config.yaml (for comparison):")
-    print(np.array(NE_T_EE_cfg).reshape(4, 4, order='F'))
-
-    # --- Jacobian ---
-    jac_flat = diag_model.zero_jacobian(diag_state)
-    mass_flat = diag_model.mass(diag_state)
-
-    # Reshape: pylibfranka returns column-major 6x7
-    # .reshape(7,6).T correctly converts column-major to standard 6x7
-    J = torch.tensor(jac_flat, dtype=torch.float32).reshape(7, 6).T   # [6, 7]
-    M = torch.tensor(mass_flat, dtype=torch.float32).reshape(7, 7)    # [7, 7] (symmetric)
-
-    print("\n--- Jacobian (6x7, zero_jacobian in base frame) ---")
-    print("  Reshape method: column-major flat -> .reshape(7,6).T")
-    print(f"  Row ordering: [vx, vy, vz, wx, wy, wz]")
-    np.set_printoptions(precision=6, suppress=True, linewidth=120)
-    print(J.numpy())
-
-    # Sanity check: Joint 1 rotates about base Z.
-    # Row 5 (wz), col 0 (joint 1) should be ~1.0
-    # Row 3 (wx), col 0 should be ~0.0
-    # Row 4 (wy), col 0 should be ~0.0
-    print(f"\n--- Jacobian sanity check ---")
-    print(f"  J[5,0] (wz from joint 1, expect ~1.0):  {J[5,0].item():.6f}")
-    print(f"  J[3,0] (wx from joint 1, expect ~0.0):  {J[3,0].item():.6f}")
-    print(f"  J[4,0] (wy from joint 1, expect ~0.0):  {J[4,0].item():.6f}")
-    print(f"  J[2,0] (vz from joint 1, expect ~0.0):  {J[2,0].item():.6f}")
-
-    # --- EE velocity check: J @ dq should match expected ---
-    q = torch.tensor(diag_state.q, dtype=torch.float32)
-    dq = torch.tensor(diag_state.dq, dtype=torch.float32)
-    ee_vel = J @ dq
-    print(f"\n--- Joint state ---")
-    print(f"  q:  {q.tolist()}")
-    print(f"  dq: {dq.tolist()}")
-    print(f"  J @ dq = ee_vel: {ee_vel.tolist()}")
-
-    # --- Mass matrix ---
-    print(f"\n--- Mass Matrix (7x7) ---")
-    print(M.numpy())
-    print(f"  Symmetric check (max |M - M^T|): {(M - M.T).abs().max().item():.2e}")
-
-    # --- Null-space projector verification ---
-    print(f"\n--- Null-Space Projector Verification ---")
-    M_inv = torch.inverse(M)
-    J_T = J.T                                         # [7, 6]
-    JMJ = J @ M_inv @ J_T                             # [6, 6]
-    Lambda = torch.inverse(JMJ)                        # [6, 6] task-space mass
-    J_bar = Lambda @ J @ M_inv                         # [6, 7] dyn-consistent pseudoinverse
-    N = torch.eye(7) - J_T @ J_bar                     # [7, 7] null-space projector
-
-    print(f"  cond(J @ M^-1 @ J^T): {torch.linalg.cond(JMJ).item():.2f}")
-
-    # The key test: J @ M^-1 @ N @ M @ u should be zero for any u
-    # This means null-space torques produce zero EE acceleration
-    torch.manual_seed(42)
-    max_leak = 0.0
-    for trial in range(10):
-        u = torch.randn(7)
-        null_torque = N @ M @ u
-        ee_accel = J @ M_inv @ null_torque
-        leak = ee_accel.abs().max().item()
-        if leak > max_leak:
-            max_leak = leak
-
-    print(f"  Max |J @ M^-1 @ N @ M @ u| over 10 random u: {max_leak:.2e}")
-    if max_leak < 1e-4:
-        print(f"  PASS: Null-space projector correctly produces zero EE acceleration")
-    else:
-        print(f"  FAIL: Null-space torques LEAK into task space!")
-
-    # Also test with the actual default_dof_pos -> current offset
-    dist = q.clone()  # default = current, so dist = 0 at start
-    u_actual = gains['kp_null'] * torch.zeros(7) + gains['kd_null'] * (-dq)
-    null_torque_actual = N @ M @ u_actual
-    ee_accel_actual = J @ M_inv @ null_torque_actual
-    print(f"  Actual null-space EE accel (from current state): {ee_accel_actual.tolist()}")
-
-    # --- Print raw flat arrays for manual inspection ---
-    print(f"\n--- Raw flat arrays (for manual cross-check) ---")
-    print(f"  jac_flat (first 12 of 42): {jac_flat[:12]}")
-    print(f"  mass_flat (first 14 of 49): {mass_flat[:14]}")
-
+   
     diag_robot.stop()
-    print("\n" + "=" * 80)
-    print("DIAGNOSTIC COMPLETE")
-    print("=" * 80)
+
 
     # 3. Initialize robot
     print("\nInitializing robot interface...")
     robot = FrankaInterface(real_config, device=device)
 
-    # print("\nClosing gripper...")
-    # robot.close_gripper()
+ 
 
-    # 4. Get hand orientation from config
-    noise_cfg = real_config.get('noise', {})
-    hand_init_orn = list(noise_cfg.get('hand_init_orn', [3.1416, 0.0, 0.0]))
-
-    # 5. Compute home position (same calibration pose as eval: goal XY, 5cm above goal Z)
-    task_cfg = real_config['task']
-    fixed_asset_position = torch.tensor(task_cfg['fixed_asset_position'], device=device, dtype=torch.float32)
-    obs_frame_z_offset = task_cfg['hole_height'] + task_cfg['fixed_asset_base_height']
-    home_pos = fixed_asset_position.clone()
-    #home_pos[2] += obs_frame_z_offset + 0.05
-    home_pose_4x4 = make_ee_target_pose_from_matrix(home_pos.cpu().numpy(), R)
     home_pose_4x4 = make_ee_target_pose_from_matrix(pos, R)
-    #retract_height = real_config['robot']['retract_height_m']
+
+    # arbitrarily chosen 'home'
+    home_rot = np.array([[-1, 0, 0.0], [0.0, 0.0, 1.0], [0, 1, 0]])
+    home_pos = np.array([0.0, 0.85, 0.42])
+    home_pose_4x4 = make_ee_target_pose_from_matrix(home_pos, home_rot)
+
+    apple_rot = np.array([
+                 [ -0.994, -.110, 0.00],
+                 [0, 0, 1.000],
+                 [-0.11,  .991,  0 ]
+                 ])
+    print(R)
+    print(apple_rot)
+    apple_pose_4x4 = make_ee_target_pose_from_matrix(np.array([0, .9262, .41]), apple_rot)
 
     # 6. Move to home and wait for user
     print("\nMoving to home position...")
-    #robot.retract_up(retract_height)
     robot.reset_to_start_pose(home_pose_4x4)
     snap = robot.get_state_snapshot()
     home_actual = snap.ee_pos.clone()
@@ -460,57 +440,56 @@ def main():
     home_rpy_deg = _quat_to_rpy_deg(home_quat)
     print(f"  Home Pos: [{home_actual[0].item():.5f}, {home_actual[1].item():.5f}, {home_actual[2].item():.5f}]")
     print(f"  Home Orn (RPY deg): [{home_rpy_deg[0]:.2f}, {home_rpy_deg[1]:.2f}, {home_rpy_deg[2]:.2f}]")
+
+  
+
     input("  Press Enter to begin controller test...")
 
-    # 7. Run tests
-    axis_names = ['X', 'Y', 'Z']
-    results = []
 
-    for axis in [1, 0, 2]:
-        label = f"+{MOVE_DISTANCE*100:.0f}cm {axis_names[axis]}"
-        print(f"\n--- Test: {label} ---")
+    #target = home_actual.clone()
+    #target[axis] += MOVE_DISTANCE
 
-        # Compute target
-        target = home_actual.clone()
-        target[axis] += MOVE_DISTANCE
+    # Move to target (orientation goal = home_quat, should not change)
 
-        # Move to target (orientation goal = home_quat, should not change)
-        result = run_move(robot, gains, target, home_quat, default_dof_pos, label, device)
-        results.append(result)
-
-        # Return home — pause for robot to settle after torque control
-        # (Cartesian motion generator rejects if robot has residual velocity)
-        time.sleep(4)
-        print(f"  Returning home...")
-        #robot.retract_up(retract_height)
+    target = apple_pose_4x4
     
-        robot.reset_to_start_pose(home_pose_4x4)
 
-        # Verify home position
-        snap = robot.get_state_snapshot()
-        home_err = torch.norm(snap.ee_pos - home_actual).item()
-        print(f"  Home error: {home_err*1000:.2f}mm")
-        
+    #run_move(robot, gains, home_actual, home_quat, default_dof_pos, "Apple", device)
+    
+   
 
-    # 8. Summary
-    print(f"\n{'=' * 115}")
-    print("SUMMARY")
-    print(f"{'=' * 115}")
-    print(f"  {'Test':<15} {'dX(mm)':>8} {'dY(mm)':>8} {'dZ(mm)':>8} "
-          f"{'dRoll(°)':>10} {'dPitch(°)':>10} {'dYaw(°)':>10} "
-          f"{'Steps':>8} {'Converged':>12}")
-    print(f"  {'-'*103}")
-    for r in results:
-        pe = r['pos_error']
-        oe = r['orn_error_deg']
-        print(f"  {r['label']:<15} {pe[0]*1000:>8.2f} {pe[1]*1000:>8.2f} {pe[2]*1000:>8.2f} "
-              f"{oe[0]:>10.2f} {oe[1]:>10.2f} {oe[2]:>10.2f} "
-              f"{r['steps']:>8} {'YES' if r['converged'] else 'NO':>12}")
-    print(f"{'=' * 115}")
+    # snap = robot.get_state_snapshot()
+    # target = snap.ee_pos.clone()
+    # target[1] -= .04
+    # apple_quat = snap.ee_quat.clone()
+
+    force_prop = 50 # 50 is default
+    gains = update_gains(gains, [force_prop, force_prop, force_prop, 30, 30, 30], device)
+    print(gains["task_prop_gains"])
+    print(gains["task_deriv_gains"])
+    
+    # run_move(robot, gains, target, apple_quat, default_dof_pos, "pull apple", device)
+    # time.sleep(1.5)
+
+    pi = math.pi
+    left = (pi/2, 0)
+    back_left = (pi/2, pi/4)
+    back = (pi/2, pi/2)
+    back_right = pi/2, 3*pi/4
+    right = (pi/2, pi)
+    up_back_left = (3*pi/4, pi/4)
+    up_back = (3*pi/4, pi/2)
+    up_back_right = (3*pi/4, 3*pi/4)
+    angles = [back_left, back, back_right]
+    for (theta, phi) in angles:
+        pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device)
+
+     
 
     # 9. Shutdown
     robot.shutdown()
-
+    gc.terminate()
+   
 
 if __name__ == "__main__":
     main()

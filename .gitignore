@@ -17,3 +17,10 @@ __pycache__/
 logs/
 wandb/
 outputs/
+
+checkpoint_chache/
+checkpoint_chache/*
+*.pt
+checkpoint_cache/pose_DR_breakable_f20_2026-02-25_17_29/qbfogzx6/policy.pt
+*.xz
+checkpoint_cache/
