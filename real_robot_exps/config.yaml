@@ -12,7 +12,7 @@ robot:
 
   # Per-episode FT calibration: hold position and average O_F_ext_hat_K
   # for this many seconds before each episode. Replaces static ft_bias.
-  ft_calibration_duration_sec: 1.0
+  ft_calibration_duration_sec: 3
 
   # NE_T_EE: Identity — F_T_NE (configured in Franka Desk) already contains
   # R_z(-45°) + T_z(0.1034), which matches the sim's panda_hand body frame
@@ -47,7 +47,9 @@ robot:
   # ft_bias: [-2.3233, -0.0368, 0.2142, 0.2584, -0.9019, -0.0218]
   # ft_bias: [0.4635, -2.8804, 1.8923, 1.908, 0.2498, 0.0782]
   ft_bias: [0, 0, 0, 0, 0, 0]
-
+  # ft_bias: [-0.8578, -1.4123, 0.9413, 0.7662, -0.4923, 0.1242]
+  
+    
 task:
   # Fixed asset origin position (hole base in world frame, meters)
   # The observation frame (sim's fixed_pos_obs_frame) is computed as:
@@ -148,7 +150,7 @@ control_gains:
 
   # Null-space gains (keep joints near default_dof_pos)
   kp_null: 10 #5
-  kd_null: 10 #4.472135955
+  kd_null: 15 #4.472135955
 
   # Force PID enable flags (hybrid only). Overrides training config when
   # use_rr_gains is true. If enabled, the corresponding gain array below
@@ -169,7 +171,7 @@ control_gains:
   # Adds lambda*I to prevent blow-up near kinematic singularities.
   # Set enabled=false to revert to undamped inverse.
   singularity_damping_enabled: true
-  singularity_damping_lambda: 0.05
+  singularity_damping_lambda: 0.08
 
   # Partial inertia decoupling: compute separate 3x3 Lambda matrices for
   # position and rotation instead of a single coupled 6x6 Lambda.

@@ -263,7 +263,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
 
                     ctrl = robot.start_cartesian_pose_control(ControllerMode.JointImpedance)
                     state, _ = ctrl.readOnce()
-                    start_flat = np.array(state.O_T_EE)
+                    start_flat = np.array(state.O_T_EE_c)
 
                     start_R = np.array([
                         [start_flat[0], start_flat[4], start_flat[8]],
@@ -394,6 +394,8 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                         if ft_bias is not None:
                             for i in range(6):
                                 ft[i] -= ft_bias[i]
+                        else:
+                            print("no ft_bias!!!")
                         for i in range(6):
                             ft_ema[i] = alpha * ft[i] + one_minus_alpha * ft_ema[i]
 

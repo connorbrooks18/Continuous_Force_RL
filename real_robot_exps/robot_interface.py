@@ -198,7 +198,7 @@ _FR3_JOINT_VEL_LIMITS = np.array([2.1750, 2.1750, 2.1750, 2.1750, 2.6100, 2.6100
 # Max torque change per 1kHz step: 1000 Nm/s * 0.001s = 1.0 Nm theoretical max
 # (from libfranka rate_limiting.h kMaxTorqueRate)
 # Use 0.75 for safety margin
-_MAX_TORQUE_DELTA = 0.75
+_MAX_TORQUE_DELTA = 0.2
 
 _FR3_JOINT_TORQUE_LIMITS = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])
 

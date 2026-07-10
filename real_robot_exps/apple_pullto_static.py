@@ -243,6 +243,48 @@ def run_move(
         'converged': converged,
     }
 
+import pandas as pd
+import matplotlib.pyplot as plt
+
+def hold_and_record(robot: FrankaInterface, gains, target_pos, target_quat, default_dof_pos, duration_sec, device="cpu"):
+    targets = build_position_targets(gains, target_pos, target_quat, default_dof_pos, device)
+    steps = int(duration_sec * robot._control_rate_hz)
+    ft_history = []
+    
+    for _ in range(steps):
+        robot.wait_for_policy_step()
+        snap = robot.get_state_snapshot()
+        robot.check_safety(snap)
+        robot.set_control_targets(targets)
+        
+        # Grab the raw body-frame force and subtract the torque-mode tare
+        ft = snap.force_torque.cpu().numpy()
+        
+        ft_history.append(ft)
+        
+    return np.array(ft_history)
+
+def plot_and_save_data(raw_ft_data, label="pull", window_size=5):
+    """Saves raw/smooth CSVs and plots the Fx, Fy, Fz forces."""
+    # Create DataFrame
+    cols = ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]
+    df_raw = pd.DataFrame(raw_ft_data, columns=cols)
+   
+    # Save to CSV
+    df_raw.to_csv(f"{label}_raw.csv", index=False)
+    
+    # Plot forces
+    plt.figure(figsize=(10, 5))
+    for axis, color in zip(["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"], ['r', 'g', 'b', 'yellow', 'teal', 'purple']):
+        plt.plot(df_raw[axis], color=color, alpha=1.0, label=f"Raw {axis}")
+        
+    plt.title(f"Force/Torque Profile: {label}")
+    plt.xlabel("Policy Steps (15Hz)")
+    plt.ylabel("Force (N) / Torque (Nm)")
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+
 def hold_position(
     robot: FrankaInterface,
     gains: dict,
@@ -269,28 +311,37 @@ def update_gains(gains, new_prop_gains, device):
     gains["task_prop_gains"] = torch.tensor(new_prop_gains, device=device, dtype=torch.float32)
     derivs = [0, 0, 0, 0, 0, 0]
     for i in range(len(new_prop_gains)):
-        derivs[i] = 2.2 * math.sqrt(new_prop_gains[i])
+        derivs[i] = 1.75 * math.sqrt(new_prop_gains[i])
     gains["task_deriv_gains"] = torch.tensor(derivs, device=device, dtype=torch.float32)
     return gains
 
-def pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu"):
+def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu"):
     
     robot.reset_to_start_pose(apple_pose_4x4)
+    #new_ft_bias = robot.calibrate_ft_bias()
+    #print(f"new ft_bias is {new_ft_bias}")
     gc.send_request(True)
     time.sleep(2)
     
     distance = .05
-    steps = 5
+    stops = 5
+    steps = 5 * 2
+
     robot.start_torque_mode()
+    print("Settling torque controller...")
+    time.sleep(1.0) 
+    
+    
     snap = robot.get_state_snapshot()
     target = snap.ee_pos.clone()
-    #robot.end_control()
-    
     #theta = math.pi/2 #'roll' pi/3 to 2pi/3
     #phi = math.pi/4 # 'pitch'
     dx = distance * math.sin(theta) * math.cos(phi)
     dy = distance * math.sin(theta) * math.sin(phi)
     dz = distance * math.cos(theta)
+
+    pull_data = []
+
     for i in range(steps):
         print(f"Starting {i+1} of {steps}...")
         
@@ -302,20 +353,36 @@ def pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_po
         #gains[""]
         run_move(robot, gains, target, apple_quat, default_dof_pos, f"closer #{i}", prnt=False, manage_control=False)
         
-        print("Holding position for 3s...")
-        hold_position(robot, gains, target, apple_quat, default_dof_pos, duration_sec=3.0, device=device)
-        #time.sleep(4)
+        if((i+1) % (steps/stops) == 0):
+            s = 1
+            print(f"Holding position for {s}s...")
+            data = hold_and_record(robot, gains, target, apple_quat, default_dof_pos, duration_sec=s, device=device)
+            pull_data.append(data)
+            #hold_position(robot, gains, target, apple_quat, default_dof_pos, duration_sec=s, device=device)
+        
+    
+    # 1. Zero out the PD error so the arm stops trying to pull
+    print("Relaxing tension before release...")
+    snap = robot.get_state_snapshot()
+    hold_position(robot, gains, snap.ee_pos, snap.ee_quat, default_dof_pos, duration_sec=0.5, device=device)
+    
+    # 2. Safely open gripper (arm will not snap because PD error is 0)
+    gc.send_request(False)
+    
+    # 3. Hold position a little longer to let the physical shake settle
+    hold_position(robot, gains, snap.ee_pos, snap.ee_quat, default_dof_pos, duration_sec=0.5, device=device)
+    
+    # 4. Safely drop out of torque mode
     robot.end_control()
 
-    time.sleep(1)
-    gc.send_request(False)
-    time.sleep(2)
-
-
-       
+    # 5. Wait a moment before the Cartesian reset
+    full_pull_data = np.concatenate(pull_data, axis=0)
+    plot_and_save_data(full_pull_data, label=f"pull_theta{theta:.2f}_phi{phi:.2f}")
     
+    time.sleep(2.0)
     robot.reset_to_start_pose(home_pose_4x4)
-    time.sleep(1)
+    time.sleep(2.0)
+
 
 
 def main():
@@ -391,8 +458,10 @@ def main():
         0.0, 0.0, 1.0, 0.0,
         0.0, 0.0, 0.0, 1.0,
     ])
+    
     diag_robot.set_EE(NE_T_EE_cfg)
     diag_robot.set_K(EE_T_K_cfg)
+
 
     diag_state = diag_robot.read_once()
 
@@ -441,7 +510,8 @@ def main():
     print(f"  Home Pos: [{home_actual[0].item():.5f}, {home_actual[1].item():.5f}, {home_actual[2].item():.5f}]")
     print(f"  Home Orn (RPY deg): [{home_rpy_deg[0]:.2f}, {home_rpy_deg[1]:.2f}, {home_rpy_deg[2]:.2f}]")
 
-  
+    print(f"Calibrating... ")
+   
 
     input("  Press Enter to begin controller test...")
 
@@ -463,8 +533,8 @@ def main():
     # target[1] -= .04
     # apple_quat = snap.ee_quat.clone()
 
-    force_prop = 50 # 50 is default
-    gains = update_gains(gains, [force_prop, force_prop, force_prop, 30, 30, 30], device)
+    kp = 80 # 50 is default
+    gains = update_gains(gains, [kp, kp, kp, 30, 30, 30], device)
     print(gains["task_prop_gains"])
     print(gains["task_deriv_gains"])
     
@@ -480,7 +550,8 @@ def main():
     up_back_left = (3*pi/4, pi/4)
     up_back = (3*pi/4, pi/2)
     up_back_right = (3*pi/4, 3*pi/4)
-    angles = [back_left, back, back_right]
+    angles = [up_back_left, up_back, up_back_right, back_left, back, back_right]
+    angles = [back]
     for (theta, phi) in angles:
         pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device)
 
