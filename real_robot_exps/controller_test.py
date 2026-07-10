@@ -284,7 +284,7 @@ def main():
     # 2. Load gains from config
     print("\nLoading controller gains...")
     gains = load_gains_from_config(real_config, device)
-    force_prop = 40 # 50 is default
+    force_prop = 95 # 50 is default
     gains = update_gains(gains, [force_prop, force_prop, force_prop, 30, 30, 30], device)
     print(gains["task_prop_gains"])
     print(gains["task_deriv_gains"])

@@ -1,5 +1,2 @@
-Works with apple_pullto_static AND controller_test
-
-40, 50 (first), 60, 70
-
-DOES NOT WORK: 80 (shaking and then joint velocity safety violation during apple test )
+Working with apple_pullto_static for up_left_back, up_back, up_right_back, left_back, back, and right_back:
+30, 50 (default), 65, 80, 100
