@@ -19,6 +19,8 @@ import argparse
 import math
 import sys
 import time
+import warnings
+warnings.filterwarnings("ignore")
 
 import numpy as np
 import torch
@@ -71,12 +73,12 @@ def load_gains_from_config(real_config: dict, device: str = "cpu") -> dict:
             "set only one to true in control_gains"
         )
 
-    print(f"  task_prop_gains:  {task_prop_gains.tolist()}")
-    print(f"  task_deriv_gains: {task_deriv_gains.tolist()}")
-    print(f"  kp_null: {kp_null}, kd_null: {kd_null}")
-    print(f"  singularity_damping: {singularity_damping}")
-    print(f"  partial_inertia_decoupling: {partial_inertia_decoupling}")
-    print(f"  sep_ori: {sep_ori}")
+    # print(f"  task_prop_gains:  {task_prop_gains.tolist()}")
+    # print(f"  task_deriv_gains: {task_deriv_gains.tolist()}")
+    # print(f"  kp_null: {kp_null}, kd_null: {kd_null}")
+    # print(f"  singularity_damping: {singularity_damping}")
+    # print(f"  partial_inertia_decoupling: {partial_inertia_decoupling}")
+    # print(f"  sep_ori: {sep_ori}")
 
     return {
         'task_prop_gains': task_prop_gains,
@@ -263,12 +265,13 @@ def hold_and_record(robot: FrankaInterface, gains, target_pos, target_quat, defa
 
         ft -= base_ft
         ft_history.append(ft)
-    print(ft_history)
+    
+    # print(ft_history)
 
         
     return np.array(ft_history)
 
-def plot_and_save_data(raw_ft_data, label="pull", window_size=5, baseline=False):
+def plot_and_save_data(raw_ft_data, label="pull", window_size=5, baseline=False, plot=True):
     """Saves raw/smooth CSVs and plots the Fx, Fy, Fz forces."""
     # Create DataFrame
     cols = ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]
@@ -278,16 +281,17 @@ def plot_and_save_data(raw_ft_data, label="pull", window_size=5, baseline=False)
     df_raw.to_csv(f"{label}.csv", index=False)
     
     # Plot forces
-    plt.figure(figsize=(10, 5))
-    for axis, color in zip(["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"], ['r', 'g', 'b', 'yellow', 'teal', 'purple']):
-        plt.plot(df_raw[axis], color=color, alpha=1.0, label=f"Raw {axis}")
-        
-    plt.title(f"Force/Torque Profile: {label}")
-    plt.xlabel("Policy Steps (15Hz)")
-    plt.ylabel("Force (N) / Torque (Nm)")
-    plt.legend()
-    plt.grid(True)
-    plt.show()
+    if(plot):
+        plt.figure(figsize=(10, 5))
+        for axis, color in zip(["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"], ['r', 'g', 'b', 'yellow', 'teal', 'purple']):
+            plt.plot(df_raw[axis], color=color, alpha=1.0, label=f"Raw {axis}")
+            
+        plt.title(f"Force/Torque Profile: {label}")
+        plt.xlabel("Policy Steps (15Hz)")
+        plt.ylabel("Force (N) / Torque (Nm)")
+        plt.legend()
+        plt.grid(True)
+        plt.show()
 
 def hold_position(
     robot: FrankaInterface,
@@ -319,8 +323,9 @@ def update_gains(gains, new_prop_gains, device):
     gains["task_deriv_gains"] = torch.tensor(derivs, device=device, dtype=torch.float32)
     return gains
 
-def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False):
+def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5):
     
+    time.sleep(2.0) # let it settle
     robot.reset_to_start_pose(apple_pose_4x4)
     snap = robot.get_state_snapshot()
     #base_ft = snap.force_torque.cpu().numpy()
@@ -332,13 +337,18 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
     gc.send_request(True)
     time.sleep(2)
     
-    distance = .05
-    stops = 5
-    steps = 5 * 2
+    # distance = .05
+    # stops = 5
+    steps = stops
+    if(distance/steps > 0.01):
+        steps *= 2
+    print(f"steps is... {steps}")
 
     robot.start_torque_mode()
-    print("Settling torque controller...")
-    time.sleep(1.0) 
+    
+    # if debug:
+    #     print("Settling torque controller...")
+    # time.sleep(1.0) 
     
     
     snap = robot.get_state_snapshot()
@@ -354,7 +364,8 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
     pull_data = []
 
     for i in range(steps):
-        print(f"Starting {i+1} of {steps}...")
+        if(debug):
+            print(f"Starting {i+1} of {steps}...")
         
         
         target[0] -= (dx/steps)
@@ -362,18 +373,20 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
         target[2] -= (dz/steps)
         apple_quat = snap.ee_quat.clone()
         #gains[""]
-        run_move(robot, gains, target, apple_quat, default_dof_pos, f"closer #{i}", prnt=False, manage_control=False)
+        run_move(robot, gains, target, apple_quat, default_dof_pos, f"closer #{i}", prnt=debug, manage_control=False)
         
         if((i+1) % (steps/stops) == 0):
             s = 1
-            print(f"Holding position for {s}s...")
+            if(debug):
+                print(f"Holding position for {s}s...")
             data = hold_and_record(robot, gains, target, apple_quat, default_dof_pos, duration_sec=s, device=device)
             pull_data.append(data)
             #hold_position(robot, gains, target, apple_quat, default_dof_pos, duration_sec=s, device=device)
         
     
     # 1. Zero out the PD error so the arm stops trying to pull
-    print("Relaxing tension before release...")
+    if(debug):
+        print("Relaxing tension before release...")
     snap = robot.get_state_snapshot()
     hold_position(robot, gains, snap.ee_pos, snap.ee_quat, default_dof_pos, duration_sec=0.5, device=device)
     
@@ -391,7 +404,7 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
     label = f"pull_theta{theta:.2f}_phi{phi:.2f}"
     if baseline:
         label += "_baseline"
-    plot_and_save_data(full_pull_data, label=label)
+    plot_and_save_data(full_pull_data, label=label, plot=to_plot)
     
     time.sleep(2)
     robot.reset_to_start_pose(home_pose_4x4)
@@ -411,24 +424,36 @@ def main():
     parser.add_argument("--config", type=str, default="real_robot_exps/config.yaml", help="Real robot config path")
     parser.add_argument("--device", type=str, default="cpu", help="Torch device")
     parser.add_argument("--override", action="append", default=[], help="Override config values")
-    parser.add_argument("--mode", type=str, default="collect", help="collect/baseline")
-    parser.add_argument("--name", type=str, default="")
+    parser.add_argument("--mode", type=str, default="collect", choices=["collect", "baseline"], help="collect/baseline")
+    parser.add_argument("--plot", default=None, action="store_true", help="True/False[default]")
+    parser.add_argument("--debug", default="none", help="none/all/...")
+    parser.add_argument("--kp", type=int, default=80, help="kp from 20-120 (kd is auto calculated)")
+    parser.add_argument("distance", type=float, default=0.05, help="pull distance in meters (0.01 to 0.075)")
+    parser.add_argument("stops", type=int, default=5, help="number of stops to record data during pull")
     args = parser.parse_args()
 
     device = args.device
     mode = args.mode # collect or baseline
+    to_plot = args.plot is not None
+    debug = args.debug
+    kp = args.kp
+    distance = args.distance
+    stops = args.stops
     is_baseline = (mode == "baseline")
 
     if (mode != "collect") and (mode != "baseline"):
         print("Invalid mode command. Should be 'collect' or 'baseline'")
         sys.exit()
 
-    print("=" * 80)
-    print("CONTROLLER VERIFICATION TEST")
-    print("=" * 80)
+    if(debug != "none"):
+        print("=" * 80)
+        print("CONTROLLER VERIFICATION TEST")
+        print("=" * 80)
 
     # 1. Load config
-    print(f"\nLoading config: {args.config}")
+    if(debug != "none"):
+        print(f"\nLoading config: {args.config}")
+
     with open(args.config, 'r') as f:
         real_config = yaml.safe_load(f)
 
@@ -457,7 +482,8 @@ def main():
             print(f"  Override: {key_path} = {value}")
 
     # 2. Load gains from config
-    print("\nLoading controller gains...")
+    if debug != "none":
+        print("\nLoading controller gains...")
     gains = load_gains_from_config(real_config, device)
 
    
@@ -499,7 +525,8 @@ def main():
 
 
     # 3. Initialize robot
-    print("\nInitializing robot interface...")
+    if(debug != "none"):
+        print("\nInitializing robot interface...")
     robot = FrankaInterface(real_config, device=device)
 
  
@@ -516,8 +543,8 @@ def main():
                  [0, 0, 1.000],
                  [-0.11,  .991,  0 ]
                  ])
-    print(R)
-    print(apple_rot)
+    # print(R)
+    # print(apple_rot)
     apple_pose_4x4 = make_ee_target_pose_from_matrix(np.array([0, .9262, .41]), apple_rot)
 
     # 6. Move to home and wait for user
@@ -528,13 +555,10 @@ def main():
     home_quat = snap.ee_quat.clone()
     default_dof_pos = snap.joint_pos.clone()
     home_rpy_deg = _quat_to_rpy_deg(home_quat)
-    print(f"  Home Pos: [{home_actual[0].item():.5f}, {home_actual[1].item():.5f}, {home_actual[2].item():.5f}]")
-    print(f"  Home Orn (RPY deg): [{home_rpy_deg[0]:.2f}, {home_rpy_deg[1]:.2f}, {home_rpy_deg[2]:.2f}]")
+    # print(f"  Home Pos: [{home_actual[0].item():.5f}, {home_actual[1].item():.5f}, {home_actual[2].item():.5f}]")
+    # print(f"  Home Orn (RPY deg): [{home_rpy_deg[0]:.2f}, {home_rpy_deg[1]:.2f}, {home_rpy_deg[2]:.2f}]")   
 
-    print(f"Calibrating... ")
-   
-
-    input("  Press Enter to begin controller test...")
+    input("  Press Enter to begin apple pull run...")
 
 
     #target = home_actual.clone()
@@ -554,10 +578,10 @@ def main():
     # target[1] -= .04
     # apple_quat = snap.ee_quat.clone()
 
-    kp = 80 # 50 is default
+    # kp = 80 # 50 is default
     gains = update_gains(gains, [kp, kp, kp, 30, 30, 30], device)
-    print(gains["task_prop_gains"])
-    print(gains["task_deriv_gains"])
+    # print(gains["task_prop_gains"])
+    # print(gains["task_deriv_gains"])
     
     # run_move(robot, gains, target, apple_quat, default_dof_pos, "pull apple", device)
     # time.sleep(1.5)
@@ -574,7 +598,7 @@ def main():
     angles = [up_back_left, up_back, up_back_right, back_left, back, back_right]
     angles = [up_back_left, up_back, up_back_right]
     for (theta, phi) in angles:
-        pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline)
+        pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline, to_plot=to_plot, debug=(debug != "none"), distance=distance, stops=stops)
 
      
 

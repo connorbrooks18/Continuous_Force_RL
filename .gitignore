@@ -25,3 +25,4 @@ checkpoint_cache/pose_DR_breakable_f20_2026-02-25_17_29/qbfogzx6/policy.pt
 *.xz
 checkpoint_cache/
 pull_theta1.57_phi1.57_raw.csv
+*.csv

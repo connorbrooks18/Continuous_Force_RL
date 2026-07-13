@@ -263,7 +263,8 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
 
                     ctrl = robot.start_cartesian_pose_control(ControllerMode.JointImpedance)
                     state, _ = ctrl.readOnce()
-                    start_flat = np.array(state.O_T_EE_c)
+                    start_flat = np.array(state.O_T_EE)
+                    initial_pose = state.O_T_EE
 
                     start_R = np.array([
                         [start_flat[0], start_flat[4], start_flat[8]],
@@ -280,6 +281,14 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
 
                     n_steps = int(reset_duration_sec * 1000)
                     for i in range(n_steps):
+                        if i == 0:
+                            # 3. CRITICAL: Step 0 MUST be the exact, unmodified initial_pose 
+                            # to prevent floating-point velocity discontinuities.
+                            pose_cmd = CartesianPose(initial_pose)
+                            ctrl.writeOnce(pose_cmd)
+                            state, _ = ctrl.readOnce()
+                            continue
+
                         alpha = 0.5 * (1.0 - math.cos(math.pi * (i + 1) / n_steps))
                         interp_t = (1.0 - alpha) * start_t + alpha * target_t
                         interp_q = _quat_slerp(start_q, target_q, alpha)
