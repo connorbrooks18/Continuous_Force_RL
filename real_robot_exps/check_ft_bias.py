@@ -137,9 +137,9 @@ def main():
     )
 
     # --- Move to eval start pose ---
-    print(f"Target EE pos: {target_ee_pos.tolist()}")
-    print(f"Target RPY: {target_rpy}")
-    input("Press Enter to MOVE TO EVAL START POSE...")
+    # print(f"Target EE pos: {target_ee_pos.tolist()}")
+    # print(f"Target RPY: {target_rpy}")
+    # input("Press Enter to MOVE TO EVAL START POSE...")
 
     ctrl = robot.start_cartesian_pose_control(plf.ControllerMode.JointImpedance)
     state, _ = ctrl.readOnce()

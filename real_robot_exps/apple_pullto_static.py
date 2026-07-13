@@ -246,7 +246,7 @@ def run_move(
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def hold_and_record(robot: FrankaInterface, gains, target_pos, target_quat, default_dof_pos, duration_sec, device="cpu"):
+def hold_and_record(robot: FrankaInterface, gains, target_pos, target_quat, default_dof_pos, duration_sec, device="cpu", base_ft=np.array([0,0,0,0,0,0])):
     targets = build_position_targets(gains, target_pos, target_quat, default_dof_pos, device)
     steps = int(duration_sec * robot._control_rate_hz)
     ft_history = []
@@ -258,9 +258,13 @@ def hold_and_record(robot: FrankaInterface, gains, target_pos, target_quat, defa
         robot.set_control_targets(targets)
         
         # Grab the raw body-frame force and subtract the torque-mode tare
-        ft = snap.force_torque.cpu().numpy()
         
+        ft = snap.force_torque.cpu().numpy()
+
+        ft -= base_ft
         ft_history.append(ft)
+    print(ft_history)
+
         
     return np.array(ft_history)
 
@@ -318,6 +322,11 @@ def update_gains(gains, new_prop_gains, device):
 def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu"):
     
     robot.reset_to_start_pose(apple_pose_4x4)
+    snap = robot.get_state_snapshot()
+    #base_ft = snap.force_torque.cpu().numpy()
+    #print(f"post cartesian... base_ft {base_ft}")
+
+
     #new_ft_bias = robot.calibrate_ft_bias()
     #print(f"new ft_bias is {new_ft_bias}")
     gc.send_request(True)
@@ -333,6 +342,8 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
     
     
     snap = robot.get_state_snapshot()
+    #base_ft = snap.force_torque.cpu().numpy()
+    #print(f"base_ft {base_ft}")
     target = snap.ee_pos.clone()
     #theta = math.pi/2 #'roll' pi/3 to 2pi/3
     #phi = math.pi/4 # 'pitch'
@@ -398,9 +409,16 @@ def main():
     parser.add_argument("--config", type=str, default="real_robot_exps/config.yaml", help="Real robot config path")
     parser.add_argument("--device", type=str, default="cpu", help="Torch device")
     parser.add_argument("--override", action="append", default=[], help="Override config values")
+    parser.add_argument("--mode", type=str, default="collect", help="collect/baseline")
+    parser.add_argument("--name", type=str, default="")
     args = parser.parse_args()
 
     device = args.device
+    mode = args.mode # collect or baseline
+
+    if (mode != "collect") and (mode != "baseline"):
+        print("Invalid mode command. Should be 'collect' or 'baseline'")
+        sys.exit()
 
     print("=" * 80)
     print("CONTROLLER VERIFICATION TEST")
