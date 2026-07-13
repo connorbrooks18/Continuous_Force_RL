@@ -268,14 +268,14 @@ def hold_and_record(robot: FrankaInterface, gains, target_pos, target_quat, defa
         
     return np.array(ft_history)
 
-def plot_and_save_data(raw_ft_data, label="pull", window_size=5):
+def plot_and_save_data(raw_ft_data, label="pull", window_size=5, baseline=False):
     """Saves raw/smooth CSVs and plots the Fx, Fy, Fz forces."""
     # Create DataFrame
     cols = ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]
     df_raw = pd.DataFrame(raw_ft_data, columns=cols)
    
     # Save to CSV
-    df_raw.to_csv(f"{label}_raw.csv", index=False)
+    df_raw.to_csv(f"{label}.csv", index=False)
     
     # Plot forces
     plt.figure(figsize=(10, 5))
@@ -319,7 +319,7 @@ def update_gains(gains, new_prop_gains, device):
     gains["task_deriv_gains"] = torch.tensor(derivs, device=device, dtype=torch.float32)
     return gains
 
-def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu"):
+def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False):
     
     robot.reset_to_start_pose(apple_pose_4x4)
     snap = robot.get_state_snapshot()
@@ -388,11 +388,13 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
 
     # 5. Wait a moment before the Cartesian reset
     full_pull_data = np.concatenate(pull_data, axis=0)
-    plot_and_save_data(full_pull_data, label=f"pull_theta{theta:.2f}_phi{phi:.2f}")
+    label = f"pull_theta{theta:.2f}_phi{phi:.2f}"
+    if baseline:
+        label += "_baseline"
+    plot_and_save_data(full_pull_data, label=label)
     
-    time.sleep(2.0)
+    time.sleep(2)
     robot.reset_to_start_pose(home_pose_4x4)
-    time.sleep(2.0)
 
 
 
@@ -415,6 +417,7 @@ def main():
 
     device = args.device
     mode = args.mode # collect or baseline
+    is_baseline = (mode == "baseline")
 
     if (mode != "collect") and (mode != "baseline"):
         print("Invalid mode command. Should be 'collect' or 'baseline'")
@@ -569,9 +572,9 @@ def main():
     up_back = (3*pi/4, pi/2)
     up_back_right = (3*pi/4, 3*pi/4)
     angles = [up_back_left, up_back, up_back_right, back_left, back, back_right]
-    angles = [back]
+    angles = [up_back_left, up_back, up_back_right]
     for (theta, phi) in angles:
-        pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device)
+        pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline)
 
      
 
