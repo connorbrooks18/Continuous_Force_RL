@@ -12,19 +12,19 @@ Eventually, the pipeline will include doing a dry run / baseline run, calculatin
 ## Usage
 Run the script as a module from the root of your workspace:
 
-python -m real_robot_exps.controller_test [OPTIONS]
+python -m real_robot_exps.apple_pullto_static [OPTIONS]
 
 ### Examples
 
 ```bash
 # Standard Data Collection (Defaults: 5cm, 5 stops, up-back pull):
-python -m real_robot_exps.controller_test --mode collect --plot`
+python -m real_robot_exps.apple_pullto_static --mode collect --plot`
 
 # Baseline Collection (High Stiffness, Custom Distance & Stops):
-python -m real_robot_exps.controller_test --mode baseline --kp 100 --distance 0.075 --stops 10
+python -m real_robot_exps.apple_pullto_static --mode baseline --kp 100 --distance 0.075 --stops 10
 
 # Custom Angle Pull (Horizontal Back-Left):
-python -m real_robot_exps.controller_test --distance 0.05 --stops 5 --theta 1.57 --phi 0.79
+python -m real_robot_exps.apple_pullto_static --distance 0.05 --stops 5 --theta 1.57 --phi 0.79
 
 # Full Example
 python -m real_robot_exps.apple_pullto_static --config real_robot_exps/config.yaml --mode collect --theta 2.36 --phi 2.36 --distance 0.04 --stops 4 --plot --kp 100
