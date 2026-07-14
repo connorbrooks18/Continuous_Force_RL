@@ -51,10 +51,10 @@ All arguments are passed as optional flags.
 
 The script calculates the pull trajectory using a spherical coordinate system. Because the script subtracts the calculated vector from the target position, the arm pulls *away* from the origin (the apple). 
 
-* `theta`: Controls the vertical trajectory (inclination).
+* `theta`: Controls the vertical trajectory (inclination/altitude).
   * 1.57 (pi/2): Purely horizontal pull.
   * 2.36 (3pi/4): Pulls upward.
-* `phi`: Controls the horizontal (left/right/back) trajectory on the XY plane (azimuth).
+* `phi`: Controls the horizontal (left/right/back) trajectory on the XY plane (azimuth). (0 to pi to stay on front semisphere)
 
 ### Common Angle Configurations (Radians)
 

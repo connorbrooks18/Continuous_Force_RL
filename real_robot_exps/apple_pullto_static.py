@@ -384,26 +384,29 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
             #hold_position(robot, gains, target, apple_quat, default_dof_pos, duration_sec=s, device=device)
         
     
+        
+   
+    
     # 1. Zero out the PD error so the arm stops trying to pull
     if(debug):
         print("Relaxing tension before release...")
     snap = robot.get_state_snapshot()
-    hold_position(robot, gains, snap.ee_pos, snap.ee_quat, default_dof_pos, duration_sec=0.5, device=device)
-    
-    # 2. Safely open gripper (arm will not snap because PD error is 0)
+    hold_position(robot, gains, snap.ee_pos, snap.ee_quat, default_dof_pos, duration_sec=1.0, device=device)
+
     gc.send_request(False)
-    
-    # 3. Hold position a little longer to let the physical shake settle
-    hold_position(robot, gains, snap.ee_pos, snap.ee_quat, default_dof_pos, duration_sec=0.5, device=device)
-    
-    # 4. Safely drop out of torque mode
+    time.sleep(1) # wait for gripper to open
+
+    # Safely drop out of torque mode
     robot.end_control()
+
 
     # 5. Wait a moment before the Cartesian reset
     full_pull_data = np.concatenate(pull_data, axis=0)
     label = f"pull_theta{theta:.2f}_phi{phi:.2f}"
     if baseline:
         label += "_baseline"
+    else:
+        label += "_raw"
     plot_and_save_data(full_pull_data, label=label, plot=to_plot)
     
     time.sleep(2)

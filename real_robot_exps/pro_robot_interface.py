@@ -280,34 +280,39 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                     target_q = _rotation_matrix_to_quat_wxyz_np(target_R)
 
                     n_steps = int(reset_duration_sec * 1000)
-                    for i in range(n_steps):
-                        if i == 0:
-                            # 3. CRITICAL: Step 0 MUST be the exact, unmodified initial_pose 
-                            # to prevent floating-point velocity discontinuities.
-                            pose_cmd = CartesianPose(initial_pose)
+                    import gc
+                    gc.disable()
+                    try:
+                        for i in range(n_steps):
+                            if i == 0:
+                                # 3. CRITICAL: Step 0 MUST be the exact, unmodified initial_pose 
+                                # to prevent floating-point velocity discontinuities.
+                                pose_cmd = CartesianPose(initial_pose)
+                                ctrl.writeOnce(pose_cmd)
+                                state, _ = ctrl.readOnce()
+                                continue
+
+                            alpha = 0.5 * (1.0 - math.cos(math.pi * (i + 1) / n_steps))
+                            interp_t = (1.0 - alpha) * start_t + alpha * target_t
+                            interp_q = _quat_slerp(start_q, target_q, alpha)
+                            interp_R = _quat_wxyz_to_rotation_matrix_np(interp_q)
+
+                            interp_flat = np.array([
+                                interp_R[0, 0], interp_R[1, 0], interp_R[2, 0], 0.0,
+                                interp_R[0, 1], interp_R[1, 1], interp_R[2, 1], 0.0,
+                                interp_R[0, 2], interp_R[1, 2], interp_R[2, 2], 0.0,
+                                interp_t[0], interp_t[1], interp_t[2], 1.0,
+                            ])
+
+                            pose_cmd = CartesianPose(interp_flat.tolist())
+                            if i == n_steps - 1:
+                                pose_cmd.motion_finished = True
+                                ctrl.writeOnce(pose_cmd)
+                                break
                             ctrl.writeOnce(pose_cmd)
                             state, _ = ctrl.readOnce()
-                            continue
-
-                        alpha = 0.5 * (1.0 - math.cos(math.pi * (i + 1) / n_steps))
-                        interp_t = (1.0 - alpha) * start_t + alpha * target_t
-                        interp_q = _quat_slerp(start_q, target_q, alpha)
-                        interp_R = _quat_wxyz_to_rotation_matrix_np(interp_q)
-
-                        interp_flat = np.array([
-                            interp_R[0, 0], interp_R[1, 0], interp_R[2, 0], 0.0,
-                            interp_R[0, 1], interp_R[1, 1], interp_R[2, 1], 0.0,
-                            interp_R[0, 2], interp_R[1, 2], interp_R[2, 2], 0.0,
-                            interp_t[0], interp_t[1], interp_t[2], 1.0,
-                        ])
-
-                        pose_cmd = CartesianPose(interp_flat.tolist())
-                        if i == n_steps - 1:
-                            pose_cmd.motion_finished = True
-                            ctrl.writeOnce(pose_cmd)
-                            break
-                        ctrl.writeOnce(pose_cmd)
-                        state, _ = ctrl.readOnce()
+                    finally:
+                        gc.enable()
 
                     # Pack final state into shared memory
                     jac_flat = model.zero_jacobian(state)
