@@ -26,8 +26,8 @@ python -m real_robot_exps.controller_test --mode baseline --kp 100 --distance 0.
 # Custom Angle Pull (Horizontal Back-Left):
 python -m real_robot_exps.controller_test --distance 0.05 --stops 5 --theta 1.57 --phi 0.79
 
-# Custom Angle Pull (Horizontal Right):
-python -m real_robot_exps.controller_test --theta 1.57 --phi 3.14
+# Full Example
+python -m real_robot_exps.apple_pullto_static --config real_robot_exps/config.yaml --mode collect --theta 2.36 --phi 2.36 --distance 0.04 --stops 4 --plot --kp 100
 ```
 
 ## Command Line Arguments
