@@ -271,14 +271,18 @@ def hold_and_record(robot: FrankaInterface, gains, target_pos, target_quat, defa
         
     return np.array(ft_history)
 
-def plot_and_save_data(raw_ft_data, label="pull", window_size=5, baseline=False, plot=True):
+def plot_and_save_data(raw_ft_data, label="pull", window_size=5, baseline=False, plot=True, metadata=""):
     """Saves raw/smooth CSVs and plots the Fx, Fy, Fz forces."""
     # Create DataFrame
     cols = ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]
     df_raw = pd.DataFrame(raw_ft_data, columns=cols)
    
     # Save to CSV
-    df_raw.to_csv(f"{label}.csv", index=False)
+    name = f"{label}.csv"
+    df_raw.to_csv(name, index=False)
+    with open(name, "a") as f:
+        f.write(f"# {metadata}")
+    
     
     # Plot forces
     if(plot):
@@ -323,7 +327,7 @@ def update_gains(gains, new_prop_gains, device):
     gains["task_deriv_gains"] = torch.tensor(derivs, device=device, dtype=torch.float32)
     return gains
 
-def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5):
+def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5, args=""):
     
     time.sleep(2.0) # let it settle
     robot.reset_to_start_pose(apple_pose_4x4)
@@ -407,7 +411,7 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
         label += "_baseline"
     else:
         label += "_raw"
-    plot_and_save_data(full_pull_data, label=label, plot=to_plot)
+    plot_and_save_data(full_pull_data, label=label, plot=to_plot, metadata=args)
     
     time.sleep(2)
     robot.reset_to_start_pose(home_pose_4x4)
@@ -606,7 +610,7 @@ def main():
     angles = [up_back_left, up_back, up_back_right]
     angles = [(theta, phi)]
     for (theta, phi) in angles:
-        pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline, to_plot=to_plot, debug=(debug != "none"), distance=distance, stops=stops)
+        pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline, to_plot=to_plot, debug=(debug != "none"), distance=distance, stops=stops, args=vars(args))
 
      
 
