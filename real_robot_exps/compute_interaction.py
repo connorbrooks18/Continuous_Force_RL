@@ -42,9 +42,6 @@ def main():
     # Subtract baseline from collect to get pure interaction force
     df_interaction = df_collect - df_baseline
 
-    print(f"Saving interaction forces to {out_file}...")
-    df_interaction.to_csv(out_file, index=False)
-
     # 1. Extract the last line from the collect file
     with open(collect_file, 'r') as f:
         lines = f.readlines()
