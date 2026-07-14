@@ -248,7 +248,7 @@ def run_move(
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def hold_and_record(robot: FrankaInterface, gains, target_pos, target_quat, default_dof_pos, duration_sec, device="cpu", base_ft=np.array([0,0,0,0,0,0])):
+def hold_and_record(robot: FrankaInterface, gains, target_pos, target_quat, default_dof_pos, duration_sec, device="cpu"):
     targets = build_position_targets(gains, target_pos, target_quat, default_dof_pos, device)
     steps = int(duration_sec * robot._control_rate_hz)
     ft_history = []
@@ -263,7 +263,6 @@ def hold_and_record(robot: FrankaInterface, gains, target_pos, target_quat, defa
         
         ft = snap.force_torque.cpu().numpy()
 
-        ft -= base_ft
         ft_history.append(ft)
     
     # print(ft_history)
@@ -332,12 +331,9 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
     time.sleep(2.0) # let it settle
     robot.reset_to_start_pose(apple_pose_4x4)
     snap = robot.get_state_snapshot()
-    #base_ft = snap.force_torque.cpu().numpy()
-    #print(f"post cartesian... base_ft {base_ft}")
 
 
-    #new_ft_bias = robot.calibrate_ft_bias()
-    #print(f"new ft_bias is {new_ft_bias}")
+
     gc.send_request(True)
     time.sleep(2)
     
@@ -356,8 +352,6 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
     
     
     snap = robot.get_state_snapshot()
-    #base_ft = snap.force_torque.cpu().numpy()
-    #print(f"base_ft {base_ft}")
     target = snap.ee_pos.clone()
     #theta = math.pi/2 #'roll' pi/3 to 2pi/3
     #phi = math.pi/4 # 'pitch'
@@ -569,7 +563,7 @@ def main():
     # print(f"  Home Pos: [{home_actual[0].item():.5f}, {home_actual[1].item():.5f}, {home_actual[2].item():.5f}]")
     # print(f"  Home Orn (RPY deg): [{home_rpy_deg[0]:.2f}, {home_rpy_deg[1]:.2f}, {home_rpy_deg[2]:.2f}]")   
 
-    input("  Press Enter to begin apple pull run...")
+    input(f"Press Enter to begin apple pull {mode} run...")
 
 
     #target = home_actual.clone()

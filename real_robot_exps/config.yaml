@@ -6,7 +6,7 @@ robot:
   ip: "192.168.1.11"
   use_mock: false              # Set false for real robot
   control_rate_hz: 15.0       # Must match training policy_hz
-  reset_duration_sec: 4.5  # Duration for Cartesian reset motion
+  reset_duration_sec: 2  # Duration for Cartesian reset motion
   retract_height_m: 0.04      # Retract upward before reset to clear hole (meters)
   gripper_force_n: 62.0       # Grasp force in Newtons (max 70N continuous limit)
 
@@ -46,7 +46,8 @@ robot:
   # Set to [0,0,0,0,0,0] to disable.
   # ft_bias: [-2.3233, -0.0368, 0.2142, 0.2584, -0.9019, -0.0218]
   # ft_bias: [0.4635, -2.8804, 1.8923, 1.908, 0.2498, 0.0782]
-  ft_bias: [0, 0, 0, 0, 0, 0]
+  # ft_bias: [0, 0, 0, 0, 0, 0]
+  ft_bias: [-0.5978, -2.9898, 1.5221, 1.6927, -0.3472, 0.0992]
   # ft_bias: [-0.8578, -1.4123, 0.9413, 0.7662, -0.4923, 0.1242]
   
     
