@@ -16,17 +16,19 @@ python -m real_robot_exps.controller_test [OPTIONS]
 
 ### Examples
 
-1. Standard Data Collection (Defaults: 5cm, 5 stops, up-back pull):
-   python -m real_robot_exps.controller_test --mode collect --plot
+```bash
+# Standard Data Collection (Defaults: 5cm, 5 stops, up-back pull):
+python -m real_robot_exps.controller_test --mode collect --plot`
 
-2. Baseline Collection (High Stiffness, Custom Distance & Stops):
-   python -m real_robot_exps.controller_test --mode baseline --kp 100 --distance 0.075 --stops 10
+# Baseline Collection (High Stiffness, Custom Distance & Stops):
+python -m real_robot_exps.controller_test --mode baseline --kp 100 --distance 0.075 --stops 10
 
-3. Custom Angle Pull (Horizontal Back-Left):
-   python -m real_robot_exps.controller_test --distance 0.05 --stops 5 --theta 1.57 --phi 0.79
+# Custom Angle Pull (Horizontal Back-Left):
+python -m real_robot_exps.controller_test --distance 0.05 --stops 5 --theta 1.57 --phi 0.79
 
-4. Custom Angle Pull (Horizontal Right):
-   python -m real_robot_exps.controller_test --theta 1.57 --phi 3.14
+# Custom Angle Pull (Horizontal Right):
+python -m real_robot_exps.controller_test --theta 1.57 --phi 3.14
+```
 
 ## Command Line Arguments
 
