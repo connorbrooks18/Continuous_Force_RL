@@ -77,3 +77,12 @@ Here are the exact arguments you can pass to `--theta` and `--phi` to achieve sp
 For each test run, the script generates:
 1. CSV Data (pull_thetaX_phiY[_baseline].csv): Contains the concatenated raw F/T readings (Fx, Fy, Fz, Tx, Ty, Tz) across all stops.
 2. Plots: A 6-axis line chart of the force/torque profile over the 15Hz policy steps (if --plot is enabled).
+
+# Computing Interaction Force
+
+```bash
+
+# This preassumens a raw and a baseline file for a given theta and phi as "pull_theta2.36_phi2.36_[raw/baseline].csv with same distance and stop #
+python compute_interaction.py --theta 2.36 --phi 1.57 --plot
+
+```
