@@ -428,8 +428,10 @@ def main():
     parser.add_argument("--plot", default=None, action="store_true", help="True/False[default]")
     parser.add_argument("--debug", default="none", help="none/all/...")
     parser.add_argument("--kp", type=int, default=80, help="kp from 20-120 (kd is auto calculated)")
-    parser.add_argument("distance", type=float, default=0.05, help="pull distance in meters (0.01 to 0.075)")
-    parser.add_argument("stops", type=int, default=5, help="number of stops to record data during pull")
+    parser.add_argument("--distance", type=float, default=0.05, help="pull distance in meters (0.01 to 0.075)")
+    parser.add_argument("--stops", type=int, default=5, help="number of stops to record data during pull")
+    parser.add_argument("--theta", type=float, default=2.36, help="angle determining height of pull (z-direction) in radians")
+    parser.add_argument("--phi", type=float, default=1.57, help="angle determining left/right of pull (circle on xy plane) in radians")
     args = parser.parse_args()
 
     device = args.device
@@ -439,6 +441,8 @@ def main():
     kp = args.kp
     distance = args.distance
     stops = args.stops
+    theta = args.theta
+    phi = args.phi
     is_baseline = (mode == "baseline")
 
     if (mode != "collect") and (mode != "baseline"):
@@ -597,6 +601,7 @@ def main():
     up_back_right = (3*pi/4, 3*pi/4)
     angles = [up_back_left, up_back, up_back_right, back_left, back, back_right]
     angles = [up_back_left, up_back, up_back_right]
+    angles = [(theta, phi)]
     for (theta, phi) in angles:
         pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline, to_plot=to_plot, debug=(debug != "none"), distance=distance, stops=stops)
 
