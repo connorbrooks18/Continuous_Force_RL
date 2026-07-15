@@ -6,7 +6,7 @@ Eventually, the pipeline will include doing a dry run / baseline run, calculatin
 
 ## Prerequisites
 * Franka arm configured with `pylibfranka`.
-* Active ROS 2 environment with the `gripper_grab_client` service running.
+* Active ROS 2 environment with the `gripper_grab_client` service running from https://github.com/connorbrooks18/lfd_apples.
 * Required Python packages: `torch`, `numpy`, `pandas`, `matplotlib`, `pyyaml`.
 
 ## Usage
