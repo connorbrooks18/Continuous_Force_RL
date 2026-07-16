@@ -86,3 +86,49 @@ For each test run, the script generates:
 python compute_interaction.py --theta 2.36 --phi 1.57 --plot
 
 ```
+
+## Unified static system-ID Parquet
+
+The camera and robot collectors run as separate processes on the same computer
+and timestamp every sample with Unix wall-clock seconds from `time.time()`.
+Start the camera before the robot so it records frames at the robot's rest
+reference timestamp.
+
+```bash
+# Terminal 1: press q after the robot run finishes.
+cd at-tracking
+python Detecting.py --output tracking.parquet
+
+# Terminal 2: also writes the legacy wrench CSV.
+python -m real_robot_exps.apple_pullto_static --config real_robot_exps/config.yaml --mode collect --theta 2.36 --phi 2.36 --distance 0.04 --stops 4
+
+# After both collection processes have stopped:
+python -m real_robot_exps.compile_static_sysid \
+  --robot pull_robot.parquet \
+  --tracking tracking.parquet \
+  --output pull_unified.parquet \
+  --camera-frames 5
+```
+
+The compiler keeps all robot-rate static-hold rows and attaches a median camera
+estimate made from a few complete `Branch`, `Spur`, and `Apple` frames. The
+three woody parts are ordered as `fruiting_base -> Branch`, `Branch -> Spur`,
+and `Spur -> Apple`. For now, the fruiting base is the reference AprilTag
+origin; `--fruiting-base-pos X Y Z` can override it after calibration.
+
+The unified file stores the model fields as fixed-size Arrow lists and embeds
+collection, calibration, synchronization, topology, units, source-file hashes,
+software versions, and camera-selection diagnostics in `dataset_metadata` in
+the Parquet footer.
+
+To inspect a unified file over time, run:
+
+```bash
+python -m real_robot_exps.viz_static_sysid \
+  --input pull_unified.parquet \
+  --save pull_unified_viz.png
+```
+
+The viewer lays out wrench, TCP velocity, action, pose, bending angles, and
+experiment state on a shared timestamp axis, with hold boundaries marked for
+easy debugging.

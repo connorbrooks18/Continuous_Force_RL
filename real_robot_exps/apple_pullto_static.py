@@ -16,13 +16,21 @@ Usage:
 """
 
 import argparse
+import json
 import math
+import platform
+import socket
 import sys
 import time
 import warnings
+from datetime import datetime, timezone
+from pathlib import Path
+from uuid import uuid4
 warnings.filterwarnings("ignore")
 
 import numpy as np
+import pyarrow as pa
+import pyarrow.parquet as pq
 import torch
 import yaml
 
@@ -248,14 +256,45 @@ def run_move(
 import pandas as pd
 import matplotlib.pyplot as plt
 
-def hold_and_record(robot: FrankaInterface, gains, target_pos, target_quat, default_dof_pos, duration_sec, device="cpu"):
+def hold_and_record(
+    robot: FrankaInterface,
+    gains,
+    target_pos,
+    target_quat,
+    default_dof_pos,
+    duration_sec,
+    device="cpu",
+    *,
+    record_rows=None,
+    hold_number=-1,
+    n_holds=1,
+    direction_idx=0,
+    n_directions=1,
+    excitation_direction=None,
+    amplitude_m=0.0,
+):
+    """Hold a pose and optionally append complete system-ID robot rows.
+
+    The ndarray return value is retained for the F/T calibration caller.
+    """
     targets = build_position_targets(gains, target_pos, target_quat, default_dof_pos, device)
     steps = int(duration_sec * robot._control_rate_hz)
     ft_history = []
+    excitation_direction = np.asarray(
+        excitation_direction if excitation_direction is not None else np.zeros(3),
+        dtype=np.float32,
+    ).reshape(3)
+    hold_one_hot = np.zeros(int(n_holds), dtype=np.float32)
+    if 0 <= int(hold_number) < int(n_holds):
+        hold_one_hot[int(hold_number)] = 1.0
+    direction_one_hot = np.zeros(int(n_directions), dtype=np.float32)
+    if 0 <= int(direction_idx) < int(n_directions):
+        direction_one_hot[int(direction_idx)] = 1.0
     
-    for _ in range(steps):
+    for hold_step_idx in range(steps):
         robot.wait_for_policy_step()
         snap = robot.get_state_snapshot()
+        timestamp = time.time()
         robot.check_safety(snap)
         robot.set_control_targets(targets)
         
@@ -264,11 +303,55 @@ def hold_and_record(robot: FrankaInterface, gains, target_pos, target_quat, defa
         ft = snap.force_torque.cpu().numpy()
 
         ft_history.append(ft)
+        if record_rows is not None:
+            record_rows.append({
+                "timestamp": float(timestamp),
+                "hold_step_idx": int(hold_step_idx),
+                "hold_index": int(hold_number),
+                "hold_number": hold_one_hot.copy(),
+                "direction_index": int(direction_idx),
+                "direction": direction_one_hot.copy(),
+                "phase": 1,
+                "phase_name": "hold",
+                "amplitude_m": float(amplitude_m),
+                "ft_wrist": ft.astype(np.float32, copy=True),
+                "tcp_velocity": np.concatenate([
+                    snap.ee_linvel.cpu().numpy(),
+                    snap.ee_angvel.cpu().numpy(),
+                ]).astype(np.float32),
+                # Static-hold samples have no instantaneous EE velocity command.
+                "action": np.zeros(6, dtype=np.float32),
+                "tcp_pos": snap.ee_pos.cpu().numpy().astype(np.float32, copy=True),
+                "excitation_direction": excitation_direction.copy(),
+            })
     
     # print(ft_history)
 
         
     return np.array(ft_history)
+
+
+def save_robot_hold_parquet(rows, filename, metadata):
+    """Save raw robot-side hold rows and rich collection metadata."""
+    table = pa.Table.from_pylist(rows)
+    file_metadata = dict(metadata)
+    file_metadata.setdefault("schema_name", "real_static_sysid_robot_raw")
+    file_metadata.setdefault("schema_version", "1.0.0")
+    file_metadata.setdefault("created_utc", datetime.now(timezone.utc).isoformat())
+    file_metadata.setdefault("timestamp_clock", "Unix wall clock from time.time()")
+    file_metadata.setdefault("timestamp_unit", "seconds")
+    file_metadata.setdefault("host", socket.gethostname())
+    file_metadata.setdefault("platform", platform.platform())
+    file_metadata.setdefault("python_version", platform.python_version())
+    schema_metadata = dict(table.schema.metadata or {})
+    schema_metadata[b"dataset_metadata"] = json.dumps(
+        file_metadata, sort_keys=True, default=str
+    ).encode("utf-8")
+    table = table.replace_schema_metadata(schema_metadata)
+    output = Path(filename)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, output)
+    return output
 
 def plot_and_save_data(raw_ft_data, label="pull", window_size=5, baseline=False, plot=True, metadata=""):
     """Saves raw/smooth CSVs and plots the Fx, Fy, Fz forces."""
@@ -326,7 +409,10 @@ def update_gains(gains, new_prop_gains, device):
     gains["task_deriv_gains"] = torch.tensor(derivs, device=device, dtype=torch.float32)
     return gains
 
-def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5, args=""):
+def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5, args=None, config_snapshot=None):
+    collection_start_timestamp = time.time()
+    episode_id = str(uuid4())
+    run_args = dict(args or {})
     
     time.sleep(2.0) # let it settle
     robot.reset_to_start_pose(apple_pose_4x4)
@@ -358,8 +444,17 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
     dx = distance * math.sin(theta) * math.cos(phi)
     dy = distance * math.sin(theta) * math.sin(phi)
     dz = distance * math.cos(theta)
+    displacement = np.array([-dx, -dy, -dz], dtype=np.float64)
+    displacement_norm = float(np.linalg.norm(displacement))
+    if displacement_norm < 1e-12:
+        raise ValueError("pull distance and direction must define a non-zero displacement")
+    excitation_direction = (displacement / displacement_norm).astype(np.float32)
 
     pull_data = []
+    robot_rows = []
+    # This timestamp anchors camera samples for the frame-0/rest chord directions.
+    # It is captured after gripping and immediately before the first pull move.
+    rest_reference_timestamp = time.time()
 
     for i in range(steps):
         if(debug):
@@ -377,7 +472,23 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
             s = 1
             if(debug):
                 print(f"Holding position for {s}s...")
-            data = hold_and_record(robot, gains, target, apple_quat, default_dof_pos, duration_sec=s, device=device)
+            hold_idx = len(pull_data)
+            data = hold_and_record(
+                robot,
+                gains,
+                target,
+                apple_quat,
+                default_dof_pos,
+                duration_sec=s,
+                device=device,
+                record_rows=robot_rows,
+                hold_number=hold_idx,
+                n_holds=stops,
+                direction_idx=int(run_args.get("direction_index", 0)),
+                n_directions=int(run_args.get("num_directions", 1)),
+                excitation_direction=excitation_direction,
+                amplitude_m=distance * float(hold_idx + 1) / float(stops),
+            )
             pull_data.append(data)
             #hold_position(robot, gains, target, apple_quat, default_dof_pos, duration_sec=s, device=device)
         
@@ -405,7 +516,61 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
         label += "_baseline"
     else:
         label += "_raw"
-    plot_and_save_data(full_pull_data, label=label, plot=to_plot, metadata=args)
+    plot_and_save_data(full_pull_data, label=label, plot=to_plot, metadata=run_args)
+
+    robot_output = run_args.get("robot_output") or f"{label}_robot.parquet"
+    hold_ranges = []
+    for hold_idx in range(stops):
+        hold_timestamps = [
+            row["timestamp"] for row in robot_rows if row["hold_index"] == hold_idx
+        ]
+        if hold_timestamps:
+            hold_ranges.append({
+                "hold_index": hold_idx,
+                "start_timestamp": min(hold_timestamps),
+                "end_timestamp": max(hold_timestamps),
+                "n_robot_frames": len(hold_timestamps),
+            })
+    robot_metadata = {
+        "episode_id": episode_id,
+        "collection_start_timestamp": collection_start_timestamp,
+        "collection_end_timestamp": time.time(),
+        "rest_reference_timestamp": rest_reference_timestamp,
+        "collection_mode": "baseline" if baseline else "collect",
+        "excitation_type": "quasi_static",
+        "control_hz": float(robot._control_rate_hz),
+        "theta_rad": float(theta),
+        "phi_rad": float(phi),
+        "pull_direction": excitation_direction.tolist(),
+        "distance_m": float(distance),
+        "n_holds": int(stops),
+        "hold_duration_s": 1.0,
+        "hold_ranges": hold_ranges,
+        "direction_index": int(run_args.get("direction_index", 0)),
+        "num_directions": int(run_args.get("num_directions", 1)),
+        "action_semantics": "commanded EE twist [linear xyz, angular xyz]; zero during recorded static holds",
+        "phase_encoding": {"moving": 0, "hold": 1},
+        "ft_wrist_frame": "robot EE/body frame",
+        "ft_wrist_order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+        "ft_wrist_sign": "environment-on-robot; pro_robot_interface rotates base to body and negates",
+        "tcp_velocity_order": ["vx", "vy", "vz", "wx", "wy", "wz"],
+        "position_unit": "m",
+        "linear_velocity_unit": "m/s",
+        "angular_velocity_unit": "rad/s",
+        "force_unit": "N",
+        "torque_unit": "N*m",
+        "robot_start_pose_4x4": np.asarray(apple_pose_4x4).tolist(),
+        "home_pose_4x4": np.asarray(home_pose_4x4).tolist(),
+        "controller_gains": {
+            key: value.detach().cpu().tolist() if torch.is_tensor(value) else value
+            for key, value in gains.items()
+        },
+        "command_arguments": run_args,
+        "config_snapshot": config_snapshot,
+        "raw_robot_row_count": len(robot_rows),
+    }
+    saved_robot_path = save_robot_hold_parquet(robot_rows, robot_output, robot_metadata)
+    print(f"Wrote robot hold data to {saved_robot_path}")
     
     time.sleep(2)
     robot.reset_to_start_pose(home_pose_4x4)
@@ -433,7 +598,15 @@ def main():
     parser.add_argument("--stops", type=int, default=5, help="number of stops to record data during pull")
     parser.add_argument("--theta", type=float, default=2.36, help="angle determining height of pull (z-direction) in radians")
     parser.add_argument("--phi", type=float, default=1.57, help="angle determining left/right of pull (circle on xy plane) in radians")
+    parser.add_argument("--direction-index", type=int, default=0, help="Zero-based direction index for one-hot encoding")
+    parser.add_argument("--num-directions", type=int, default=1, help="Width of the direction one-hot vector")
+    parser.add_argument("--robot-output", default=None, help="Raw robot Parquet output path")
     args = parser.parse_args()
+
+    if args.num_directions < 1:
+        parser.error("--num-directions must be >= 1")
+    if not 0 <= args.direction_index < args.num_directions:
+        parser.error("--direction-index must be in [0, --num-directions)")
 
     device = args.device
     mode = args.mode # collect or baseline
@@ -604,7 +777,7 @@ def main():
     angles = [up_back_left, up_back, up_back_right]
     angles = [(theta, phi)]
     for (theta, phi) in angles:
-        pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline, to_plot=to_plot, debug=(debug != "none"), distance=distance, stops=stops, args=vars(args))
+        pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline, to_plot=to_plot, debug=(debug != "none"), distance=distance, stops=stops, args=vars(args), config_snapshot=real_config)
 
      
 
