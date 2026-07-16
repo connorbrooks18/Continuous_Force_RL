@@ -132,3 +132,8 @@ python -m real_robot_exps.viz_static_sysid \
 The viewer lays out wrench, TCP velocity, action, pose, bending angles, and
 experiment state on a shared timestamp axis, with hold boundaries marked for
 easy debugging.
+
+The same viewer also works on arm-only Parquets that do not contain camera
+fields. In that case it falls back to the robot signals and TCP position/time
+plots, so you can still inspect a run even if AprilTag data is missing or was
+not recorded.

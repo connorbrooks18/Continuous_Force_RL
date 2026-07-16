@@ -59,6 +59,39 @@ class VizStaticSysidTest(unittest.TestCase):
             fig = plot_static_sysid(data)
             self.assertEqual(len(fig.axes), 8)
 
+    def test_builds_figure_from_arm_only_parquet(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            path = tmp / "arm_only.parquet"
+            rows = []
+            for idx, timestamp in enumerate((1.0, 1.1, 2.0)):
+                rows.append({
+                    "timestamp": timestamp,
+                    "hold_step_idx": idx,
+                    "hold_index": idx // 2,
+                    "ft_wrist": np.arange(6, dtype=np.float32),
+                    "tcp_velocity": np.zeros(6, dtype=np.float32),
+                    "action": np.zeros(6, dtype=np.float32),
+                    "tcp_pos": np.ones(3, dtype=np.float32) * idx,
+                    "hold_number": np.eye(2, dtype=np.float32)[idx // 2],
+                    "direction": np.eye(1, dtype=np.float32)[0],
+                    "phase": 1,
+                    "phase_name": "hold",
+                    "amplitude_m": 0.01,
+                    "excitation_direction": np.array([0, 1, 0], dtype=np.float32),
+                })
+
+            table = pa.Table.from_pylist(rows)
+            table = table.replace_schema_metadata({
+                b"dataset_metadata": json.dumps({"schema_name": "real_static_sysid_robot_raw"}).encode("utf-8")
+            })
+            pq.write_table(table, path)
+
+            data = _load_plot_data(path)
+            self.assertFalse(data.has_camera)
+            fig = plot_static_sysid(data)
+            self.assertEqual(len(fig.axes), 6)
+
 
 if __name__ == "__main__":
     unittest.main()

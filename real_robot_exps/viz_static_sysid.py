@@ -57,6 +57,7 @@ class PlotData:
     timestamps: np.ndarray
     rows: list[dict[str, Any]]
     metadata: dict[str, Any]
+    has_camera: bool
 
 
 def _load_plot_data(path: Path) -> PlotData:
@@ -66,7 +67,18 @@ def _load_plot_data(path: Path) -> PlotData:
         raise ValueError(f"No rows found in {path}")
     timestamps = np.asarray([float(row["timestamp"]) for row in rows], dtype=np.float64)
     metadata = _read_dataset_metadata(path)
-    return PlotData(timestamps=timestamps, rows=rows, metadata=metadata)
+    required_camera_fields = {
+        "apple_pos",
+        "woody_part_start_pos",
+        "woody_part_end_pos",
+        "woody_bending_angles",
+        "camera_timestamp",
+        "robot_camera_timestamp_offset_s",
+        "camera_frame_count",
+        "camera_data_valid",
+    }
+    has_camera = required_camera_fields.issubset(rows[0].keys())
+    return PlotData(timestamps=timestamps, rows=rows, metadata=metadata, has_camera=has_camera)
 
 
 def _plot_vector_panel(ax, t, values, labels, title):
@@ -107,94 +119,126 @@ def plot_static_sysid(
     vel = _vector_columns(rows, "tcp_velocity")
     action = _vector_columns(rows, "action")
     tcp_pos = _vector_columns(rows, "tcp_pos")
-    apple_pos = _vector_columns(rows, "apple_pos")
-    start_pos = _vector_columns(rows, "woody_part_start_pos").reshape(len(rows), 3, 3)
-    end_pos = _vector_columns(rows, "woody_part_end_pos").reshape(len(rows), 3, 3)
-    bend = _vector_columns(rows, "woody_bending_angles")
+    has_camera = data.has_camera
+    if has_camera:
+        apple_pos = _vector_columns(rows, "apple_pos")
+        start_pos = _vector_columns(rows, "woody_part_start_pos").reshape(len(rows), 3, 3)
+        end_pos = _vector_columns(rows, "woody_part_end_pos").reshape(len(rows), 3, 3)
+        bend = _vector_columns(rows, "woody_bending_angles")
+        camera_offset = np.asarray([row["robot_camera_timestamp_offset_s"] for row in rows], dtype=np.float64)
+        camera_count = np.asarray([row["camera_frame_count"] for row in rows], dtype=np.float64)
+        camera_valid = np.asarray([row["camera_data_valid"] for row in rows], dtype=bool)
+    else:
+        apple_pos = start_pos = end_pos = bend = None
+        camera_offset = camera_count = camera_valid = None
     hold_number = np.asarray([row["hold_number"] for row in rows], dtype=np.float64)
     direction = np.asarray([row["direction"] for row in rows], dtype=np.float64)
     phase = np.asarray([row["phase"] for row in rows], dtype=np.float64)
     amplitude = np.asarray([row["amplitude_m"] for row in rows], dtype=np.float64)
-    camera_ts = np.asarray([row["camera_timestamp"] for row in rows], dtype=np.float64)
-    camera_offset = np.asarray([row["robot_camera_timestamp_offset_s"] for row in rows], dtype=np.float64)
-    camera_count = np.asarray([row["camera_frame_count"] for row in rows], dtype=np.float64)
-    camera_valid = np.asarray([row["camera_data_valid"] for row in rows], dtype=bool)
     hold_index = np.asarray([row["hold_index"] for row in rows], dtype=int)
     hold_step_idx = np.asarray([row["hold_step_idx"] for row in rows], dtype=int)
     episode_id = str(rows[0].get("episode_id", ""))
 
-    fig, axes = plt.subplots(8, 1, figsize=(16, 29), sharex=True, constrained_layout=True)
+    n_panels = 8 if has_camera else 6
+    fig, axes = plt.subplots(n_panels, 1, figsize=(16, 4 * n_panels), sharex=True, constrained_layout=True)
 
     _plot_vector_panel(axes[0], t, ft, ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"], "Wrist wrench")
     _plot_vector_panel(axes[1], t, vel, ["vx", "vy", "vz", "wx", "wy", "wz"], "TCP velocity")
     _plot_vector_panel(axes[2], t, action, ["ax", "ay", "az", "awx", "awy", "awz"], "Recorded action")
 
-    tcp_pos_cm = tcp_pos * 100.0
-    apple_pos_cm = apple_pos * 100.0
-    start_pos_cm = start_pos * 100.0
-    end_pos_cm = end_pos * 100.0
-    tcp_pos_delta_cm = _delta_cm(tcp_pos)
-    apple_pos_delta_cm = _delta_cm(apple_pos)
-    start_pos_delta_cm = _delta_cm(start_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
-    end_pos_delta_cm = _delta_cm(end_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
+    if has_camera:
+        tcp_pos_cm = tcp_pos * 100.0
+        apple_pos_cm = apple_pos * 100.0
+        start_pos_cm = start_pos * 100.0
+        end_pos_cm = end_pos * 100.0
+        tcp_pos_delta_cm = _delta_cm(tcp_pos)
+        apple_pos_delta_cm = _delta_cm(apple_pos)
+        start_pos_delta_cm = _delta_cm(start_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
+        end_pos_delta_cm = _delta_cm(end_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
 
-    axes[3].plot(t, tcp_pos_cm[:, 0], label="tcp x")
-    axes[3].plot(t, tcp_pos_cm[:, 1], label="tcp y")
-    axes[3].plot(t, tcp_pos_cm[:, 2], label="tcp z")
-    axes[3].plot(t, apple_pos_cm[:, 0], "--", label="apple x")
-    axes[3].plot(t, apple_pos_cm[:, 1], "--", label="apple y")
-    axes[3].plot(t, apple_pos_cm[:, 2], "--", label="apple z")
-    axes[3].set_title("Absolute positions")
-    axes[3].set_ylabel("cm")
-    axes[3].grid(True, alpha=0.25)
-    axes[3].legend(loc="upper right", ncol=3, fontsize=8)
+        axes[3].plot(t, tcp_pos_cm[:, 0], label="tcp x")
+        axes[3].plot(t, tcp_pos_cm[:, 1], label="tcp y")
+        axes[3].plot(t, tcp_pos_cm[:, 2], label="tcp z")
+        axes[3].plot(t, apple_pos_cm[:, 0], "--", label="apple x")
+        axes[3].plot(t, apple_pos_cm[:, 1], "--", label="apple y")
+        axes[3].plot(t, apple_pos_cm[:, 2], "--", label="apple z")
+        axes[3].set_title("Absolute positions")
+        axes[3].set_ylabel("cm")
+        axes[3].grid(True, alpha=0.25)
+        axes[3].legend(loc="upper right", ncol=3, fontsize=8)
 
-    axes[4].plot(t, tcp_pos_delta_cm[:, 0], label="tcp x")
-    axes[4].plot(t, tcp_pos_delta_cm[:, 1], label="tcp y")
-    axes[4].plot(t, tcp_pos_delta_cm[:, 2], label="tcp z")
-    axes[4].plot(t, apple_pos_delta_cm[:, 0], "--", label="apple x")
-    axes[4].plot(t, apple_pos_delta_cm[:, 1], "--", label="apple y")
-    axes[4].plot(t, apple_pos_delta_cm[:, 2], "--", label="apple z")
-    axes[4].set_title("Position deltas from first sample")
-    axes[4].set_ylabel("delta cm")
-    axes[4].grid(True, alpha=0.25)
-    axes[4].legend(loc="upper right", ncol=3, fontsize=8)
+        axes[4].plot(t, tcp_pos_delta_cm[:, 0], label="tcp x")
+        axes[4].plot(t, tcp_pos_delta_cm[:, 1], label="tcp y")
+        axes[4].plot(t, tcp_pos_delta_cm[:, 2], label="tcp z")
+        axes[4].plot(t, apple_pos_delta_cm[:, 0], "--", label="apple x")
+        axes[4].plot(t, apple_pos_delta_cm[:, 1], "--", label="apple y")
+        axes[4].plot(t, apple_pos_delta_cm[:, 2], "--", label="apple z")
+        axes[4].set_title("Position deltas from first sample")
+        axes[4].set_ylabel("delta cm")
+        axes[4].grid(True, alpha=0.25)
+        axes[4].legend(loc="upper right", ncol=3, fontsize=8)
 
-    axes[5].plot(t, start_pos_cm[:, 0, 0], label="Branch start x")
-    axes[5].plot(t, start_pos_cm[:, 0, 1], label="Branch start y")
-    axes[5].plot(t, start_pos_cm[:, 0, 2], label="Branch start z")
-    axes[5].plot(t, end_pos_cm[:, 0, 0], "--", label="Branch end x")
-    axes[5].plot(t, end_pos_cm[:, 0, 1], "--", label="Branch end y")
-    axes[5].plot(t, end_pos_cm[:, 0, 2], "--", label="Branch end z")
-    axes[5].set_title("Branch endpoint absolute positions")
-    axes[5].set_ylabel("cm")
-    axes[5].grid(True, alpha=0.25)
-    axes[5].legend(loc="upper right", ncol=3, fontsize=8)
+        axes[5].plot(t, start_pos_cm[:, 0, 0], label="Branch start x")
+        axes[5].plot(t, start_pos_cm[:, 0, 1], label="Branch start y")
+        axes[5].plot(t, start_pos_cm[:, 0, 2], label="Branch start z")
+        axes[5].plot(t, end_pos_cm[:, 0, 0], "--", label="Branch end x")
+        axes[5].plot(t, end_pos_cm[:, 0, 1], "--", label="Branch end y")
+        axes[5].plot(t, end_pos_cm[:, 0, 2], "--", label="Branch end z")
+        axes[5].set_title("Branch endpoint absolute positions")
+        axes[5].set_ylabel("cm")
+        axes[5].grid(True, alpha=0.25)
+        axes[5].legend(loc="upper right", ncol=3, fontsize=8)
 
-    axes[6].plot(t, start_pos_delta_cm[:, 0, 0], label="Branch start delta x")
-    axes[6].plot(t, start_pos_delta_cm[:, 0, 1], label="Branch start delta y")
-    axes[6].plot(t, start_pos_delta_cm[:, 0, 2], label="Branch start delta z")
-    axes[6].plot(t, end_pos_delta_cm[:, 0, 0], "--", label="Branch end delta x")
-    axes[6].plot(t, end_pos_delta_cm[:, 0, 1], "--", label="Branch end delta y")
-    axes[6].plot(t, end_pos_delta_cm[:, 0, 2], "--", label="Branch end delta z")
-    axes[6].set_title("Branch endpoint deltas from first sample")
-    axes[6].set_ylabel("delta cm")
-    axes[6].grid(True, alpha=0.25)
-    axes[6].legend(loc="upper right", ncol=3, fontsize=8)
+        axes[6].plot(t, start_pos_delta_cm[:, 0, 0], label="Branch start delta x")
+        axes[6].plot(t, start_pos_delta_cm[:, 0, 1], label="Branch start delta y")
+        axes[6].plot(t, start_pos_delta_cm[:, 0, 2], label="Branch start delta z")
+        axes[6].plot(t, end_pos_delta_cm[:, 0, 0], "--", label="Branch end delta x")
+        axes[6].plot(t, end_pos_delta_cm[:, 0, 1], "--", label="Branch end delta y")
+        axes[6].plot(t, end_pos_delta_cm[:, 0, 2], "--", label="Branch end delta z")
+        axes[6].set_title("Branch endpoint deltas from first sample")
+        axes[6].set_ylabel("delta cm")
+        axes[6].grid(True, alpha=0.25)
+        axes[6].legend(loc="upper right", ncol=3, fontsize=8)
 
-    axes[7].plot(t, bend[:, 0], label="Branch")
-    axes[7].plot(t, bend[:, 1], label="Spur")
-    axes[7].plot(t, bend[:, 2], label="Apple")
-    axes[7].set_title("Woody bending angles")
-    axes[7].set_ylabel("rad")
-    axes[7].grid(True, alpha=0.25)
-    axes[7].legend(loc="upper right")
+        axes[7].plot(t, bend[:, 0], label="Branch")
+        axes[7].plot(t, bend[:, 1], label="Spur")
+        axes[7].plot(t, bend[:, 2], label="Apple")
+        axes[7].set_title("Woody bending angles")
+        axes[7].set_ylabel("rad")
+        axes[7].grid(True, alpha=0.25)
+        axes[7].legend(loc="upper right")
+    else:
+        axes[3].plot(t, tcp_pos[:, 0] * 100.0, label="tcp x")
+        axes[3].plot(t, tcp_pos[:, 1] * 100.0, label="tcp y")
+        axes[3].plot(t, tcp_pos[:, 2] * 100.0, label="tcp z")
+        axes[3].set_title("TCP position")
+        axes[3].set_ylabel("cm")
+        axes[3].grid(True, alpha=0.25)
+        axes[3].legend(loc="upper right", ncol=3, fontsize=8)
+
+        axes[4].plot(t, _delta_cm(tcp_pos)[:, 0], label="tcp x")
+        axes[4].plot(t, _delta_cm(tcp_pos)[:, 1], label="tcp y")
+        axes[4].plot(t, _delta_cm(tcp_pos)[:, 2], label="tcp z")
+        axes[4].set_title("TCP position deltas from first sample")
+        axes[4].set_ylabel("delta cm")
+        axes[4].grid(True, alpha=0.25)
+        axes[4].legend(loc="upper right", ncol=3, fontsize=8)
+
+        axes[5].plot(t, hold_index, label="hold_index")
+        axes[5].plot(t, hold_step_idx, label="hold_step_idx", alpha=0.8)
+        axes[5].plot(t, phase, label="phase", alpha=0.8)
+        axes[5].plot(t, amplitude, label="amplitude_m", alpha=0.8)
+        axes[5].plot(t, direction.argmax(axis=1), label="direction idx", alpha=0.8)
+        axes[5].plot(t, hold_number.argmax(axis=1), label="hold idx one-hot", alpha=0.8)
+        axes[5].set_title("Experiment state")
+        axes[5].grid(True, alpha=0.25)
+        axes[5].legend(loc="upper right", ncol=3, fontsize=8)
 
     boundaries = _hold_boundaries(rows)
     for ax in axes:
         for boundary in boundaries:
             ax.axvline(boundary, color="k", alpha=0.12, linewidth=1)
-        if len(t):
+        if has_camera and len(t):
             ax.scatter(t[~camera_valid], np.zeros(np.count_nonzero(~camera_valid)), s=12, color="red", alpha=0.3)
 
     axes[-1].set_xlabel("timestamp (Unix seconds)")
@@ -203,8 +247,13 @@ def plot_static_sysid(
         f"episode_id: {episode_id}",
         f"rows: {len(rows)}",
         f"unique holds: {len(np.unique(hold_index))}",
-        f"camera valid rows: {int(np.count_nonzero(camera_valid))}/{len(camera_valid)}",
-        "position units: absolute cm and delta cm shown together",
+        f"camera present: {has_camera}",
+        (
+            f"camera valid rows: {int(np.count_nonzero(camera_valid))}/{len(camera_valid)}"
+            if has_camera
+            else "camera valid rows: n/a"
+        ),
+        "position units: centimeters for plotting; deltas are relative to first sample",
     ]
     top = "\n".join(meta_lines)
     fig.suptitle(title or "Unified static system-ID viewer", fontsize=14)
