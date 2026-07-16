@@ -446,8 +446,8 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
     dz = distance * math.cos(theta)
     displacement = np.array([-dx, -dy, -dz], dtype=np.float64)
     displacement_norm = float(np.linalg.norm(displacement))
-    if displacement_norm < 1e-12:
-        raise ValueError("pull distance and direction must define a non-zero displacement")
+    # if displacement_norm < 1e-12:
+    #     raise ValueError("pull distance and direction must define a non-zero displacement")
     excitation_direction = (displacement / displacement_norm).astype(np.float32)
 
     pull_data = []
