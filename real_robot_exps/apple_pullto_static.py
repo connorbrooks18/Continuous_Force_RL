@@ -516,7 +516,7 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
         label += "_baseline"
     else:
         label += "_raw"
-    plot_and_save_data(full_pull_data, label=label, plot=to_plot, metadata=run_args)
+    #plot_and_save_data(full_pull_data, label=label, plot=to_plot, metadata=run_args)
 
     robot_output = run_args.get("robot_output") or f"{label}_robot.parquet"
     hold_ranges = []

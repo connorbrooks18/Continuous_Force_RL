@@ -38,7 +38,7 @@ robot:
 
   # F/T EMA low-pass filter coefficient (applied at 1kHz inside read_state)
   # alpha=0.2 at 1kHz ~ 32Hz cutoff frequency (-3dB)
-  ft_ema_alpha: 1.0 #0.02 # .08
+  ft_ema_alpha: .2 #0.02 # .08
 
   # Constant F/T bias subtracted from O_F_ext_hat_K BEFORE negation/rotation.
   # Measured in free space with check_ft_bias.py — compensates for unmodeled
@@ -48,7 +48,7 @@ robot:
   # ft_bias: [0.4635, -2.8804, 1.8923, 1.908, 0.2498, 0.0782]
   # ft_bias: [0, 0, 0, 0, 0, 0]
   # ft_bias: [-0.5978, -2.9898, 1.5221, 1.6927, -0.3472, 0.0992]
-  ft_bias: [0.3166, 1.3107, 0.6777, -0.8852, 0.0336, -0.1754]  
+  ft_bias: [0, 0, 0, 0, 0, 0]  
   # ft_bias: [-0.8578, -1.4123, 0.9413, 0.7662, -0.4923, 0.1242]
   
     
