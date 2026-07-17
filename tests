@@ -1,0 +1,8 @@
+Tests
+1. Do a baseline and then a collect run (no camera data). See if corrected data is near 0. It is.
+2. Do above but with end effector attatched. F/T data seems pretty good.
+3. Do a full F/T data collection process (still ignoring camera data) with the apple. pulling straight back. expecting force in 'y' and 'z' direction. torque about x-axis. 
+    Results: Reasonable data
+
+4. Does Kp cause the nonzero baseline data? No. Similar values at 40, 60, and 120. 
+5. Does Kd cause the nonzero baseline data? I'll fix Kp = 80. 
