@@ -72,11 +72,13 @@ _ctx = mp.get_context('spawn')
 _SHM_Q       = (0,   7)    # joint positions [7]
 _SHM_DQ      = (7,   14)   # joint velocities [7]
 _SHM_O_T_EE  = (14,  30)   # EE pose column-major [16]
-_SHM_TAU_J   = (30,  37)   # joint torques [7]
-_SHM_FT_EMA  = (37,  43)   # EMA-filtered F/T [6]
-_SHM_JAC     = (43,  85)   # Jacobian 6x7 flat [42]
-_SHM_MASS    = (85,  134)  # Mass matrix 7x7 flat [49]
-_SHM_STATE_SIZE = 134
+_SHM_TAU_J   = (30,  37)   # measured link-side joint torques [7]
+_SHM_TAU_EXT = (37,  44)   # filtered estimated external joint torques [7]
+_SHM_TAU_J_D = (44,  51)   # desired link-side joint torques without gravity [7]
+_SHM_FT_EMA  = (51,  57)   # EMA-filtered F/T [6]
+_SHM_JAC     = (57,  99)   # Jacobian 6x7 flat [42]
+_SHM_MASS    = (99,  148)  # Mass matrix 7x7 flat [49]
+_SHM_STATE_SIZE = 148
 
 _SHM_TORQUE_SIZE = 7
 _SHM_WRENCH = (7, 13)            # task_wrench [6] (compute process writes)
@@ -90,7 +92,7 @@ _SHM_TORQUE_WRENCH_SIZE = 13     # total torque_shm size
 def _build_snapshot_from_shm(state_shm, device):
     """Build StateSnapshot entirely from shared memory data.
 
-    Reads all 134 doubles from state_shm, constructs torch tensors for
+    Reads all shared state values and constructs torch tensors for
     ee_pos, ee_quat, joint_pos, joint_vel, etc. Computes ee_linvel/ee_angvel
     via J @ dq. Negates ft_ema (training convention).
 
@@ -108,6 +110,8 @@ def _build_snapshot_from_shm(state_shm, device):
     dq = list(state_shm[_SHM_DQ[0]:_SHM_DQ[1]])
     T = list(state_shm[_SHM_O_T_EE[0]:_SHM_O_T_EE[1]])
     tau_J = list(state_shm[_SHM_TAU_J[0]:_SHM_TAU_J[1]])
+    tau_ext = list(state_shm[_SHM_TAU_EXT[0]:_SHM_TAU_EXT[1]])
+    tau_J_d = list(state_shm[_SHM_TAU_J_D[0]:_SHM_TAU_J_D[1]])
     ft_ema = list(state_shm[_SHM_FT_EMA[0]:_SHM_FT_EMA[1]])
     jac_flat = list(state_shm[_SHM_JAC[0]:_SHM_JAC[1]])
     mass_flat = list(state_shm[_SHM_MASS[0]:_SHM_MASS[1]])
@@ -123,7 +127,9 @@ def _build_snapshot_from_shm(state_shm, device):
 
     joint_pos = torch.tensor(q, device=device, dtype=torch.float32)
     joint_vel = torch.tensor(dq, device=device, dtype=torch.float32)
-    joint_torques = torch.tensor(tau_J, device=device, dtype=torch.float32)
+    tau_J = torch.tensor(tau_J, device=device, dtype=torch.float32)
+    tau_ext_hat_filtered = torch.tensor(tau_ext, device=device, dtype=torch.float32)
+    tau_J_d = torch.tensor(tau_J_d, device=device, dtype=torch.float32)
 
     jacobian = torch.tensor(jac_flat, device=device, dtype=torch.float32).reshape(7, 6).T
     mass_matrix = torch.tensor(mass_flat, device=device, dtype=torch.float32).reshape(7, 7)
@@ -149,7 +155,8 @@ def _build_snapshot_from_shm(state_shm, device):
 
     return StateSnapshot(
         ee_pos, ee_quat, ee_linvel, ee_angvel, force_torque,
-        joint_pos, joint_vel, joint_torques, jacobian, mass_matrix,
+        joint_pos, joint_vel, tau_J, tau_ext_hat_filtered, tau_J_d,
+        jacobian, mass_matrix,
     )
 
 
@@ -244,6 +251,8 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
         state_shm[_SHM_DQ[0]:_SHM_DQ[1]] = state.dq
         state_shm[_SHM_O_T_EE[0]:_SHM_O_T_EE[1]] = state.O_T_EE
         state_shm[_SHM_TAU_J[0]:_SHM_TAU_J[1]] = state.tau_J
+        state_shm[_SHM_TAU_EXT[0]:_SHM_TAU_EXT[1]] = state.tau_ext_hat_filtered
+        state_shm[_SHM_TAU_J_D[0]:_SHM_TAU_J_D[1]] = state.tau_J_d
         state_shm[_SHM_FT_EMA[0]:_SHM_FT_EMA[1]] = ft_ema
         state_shm[_SHM_JAC[0]:_SHM_JAC[1]] = jac_flat
         state_shm[_SHM_MASS[0]:_SHM_MASS[1]] = mass_flat
@@ -400,6 +409,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                         mass_flat = model.mass(state)
 
                         # Capture raw F/T (write to numpy BEFORE bias subtraction)
+                        # O_F_ext_hat_K base frame. ref: https://frankarobotics.github.io/libfranka/0.15.0/structfranka_1_1RobotState.html#a5a830b4f9d6a3c2dc92e4a9cc6050493
                         ft = list(state.O_F_ext_hat_K)
                         if log_trajectory and _tidx < _TRAJ_ALLOC:
                             _buf_ft_raw[_tidx] = ft

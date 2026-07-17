@@ -158,7 +158,7 @@ control_gains:
   # use_rr_gains is true. If enabled, the corresponding gain array below
   # is required.
   enable_force_derivative: false
-  enable_force_integral: true
+  enable_force_integral: false
 
   # Force gains [6] (hybrid only, ignored for pose-only control)
   # Zeroing based on ctrl_mode is applied automatically after loading.

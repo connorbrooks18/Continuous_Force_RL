@@ -34,6 +34,9 @@ class CompileStaticSysidTest(unittest.TestCase):
                         "hold_step_idx": hold_step_idx,
                         "hold_index": hold_idx,
                         "ft_wrist": np.arange(6, dtype=np.float32),
+                        "tau_J": np.arange(7, dtype=np.float32),
+                        "tau_ext_hat_filtered": np.arange(7, dtype=np.float32) + 10,
+                        "tau_J_d": np.arange(7, dtype=np.float32) + 20,
                         "tcp_velocity": np.zeros(6, dtype=np.float32),
                         "action": np.zeros(6, dtype=np.float32),
                         "tcp_pos": np.ones(3, dtype=np.float32),
@@ -101,6 +104,9 @@ class CompileStaticSysidTest(unittest.TestCase):
             self.assertEqual(metadata["topology"]["n_woody_parts"], 3)
             self.assertEqual(metadata["camera_aggregation"]["requested_frame_count"], 2)
             self.assertIn("source_files", metadata)
+            self.assertIn("tau_J", output.schema.names)
+            self.assertIn("tau_ext_hat_filtered", output.schema.names)
+            self.assertIn("tau_J_d", output.schema.names)
 
 
 if __name__ == "__main__":

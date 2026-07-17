@@ -47,7 +47,9 @@ def print_snapshot(snap: StateSnapshot):
     print(f"  force_torque:  [{', '.join(f'{v:.4f}' for v in snap.force_torque.tolist())}]")
     print(f"  joint_pos:     [{', '.join(f'{v:.4f}' for v in snap.joint_pos.tolist())}]")
     print(f"  joint_vel:     [{', '.join(f'{v:.6f}' for v in snap.joint_vel.tolist())}]")
-    print(f"  joint_torques: [{', '.join(f'{v:.4f}' for v in snap.joint_torques.tolist())}]")
+    print(f"  tau_J: [{', '.join(f'{v:.4f}' for v in snap.tau_J.tolist())}]")
+    print(f"  tau_ext_hat_filtered: [{', '.join(f'{v:.4f}' for v in snap.tau_ext_hat_filtered.tolist())}]")
+    print(f"  tau_J_d: [{', '.join(f'{v:.4f}' for v in snap.tau_J_d.tolist())}]")
     print(f"  jacobian:      shape={list(snap.jacobian.shape)}")
     print(f"  mass_matrix:   shape={list(snap.mass_matrix.shape)}")
 

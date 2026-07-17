@@ -227,7 +227,9 @@ def phase3_torque_control_snapshot(robot: FrankaInterface):
         print(f"  force_torque: {[f'{v:.4f}' for v in snap.force_torque.tolist()]}")
         print(f"  joint_pos:  {[f'{v:.4f}' for v in snap.joint_pos.tolist()]}")
         print(f"  joint_vel:  {[f'{v:.6f}' for v in snap.joint_vel.tolist()]}")
-        print(f"  joint_torq: {[f'{v:.4f}' for v in snap.joint_torques.tolist()]}")
+        print(f"  tau_J: {[f'{v:.4f}' for v in snap.tau_J.tolist()]}")
+        print(f"  tau_ext_hat_filtered: {[f'{v:.4f}' for v in snap.tau_ext_hat_filtered.tolist()]}")
+        print(f"  tau_J_d: {[f'{v:.4f}' for v in snap.tau_J_d.tolist()]}")
 
         J = snap.jacobian
         M = snap.mass_matrix

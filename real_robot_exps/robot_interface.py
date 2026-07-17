@@ -26,7 +26,9 @@ StateSnapshot = namedtuple('StateSnapshot', [
     'force_torque',     # [6] torch.float32
     'joint_pos',        # [7] torch.float32
     'joint_vel',        # [7] torch.float32
-    'joint_torques',    # [7] torch.float32
+    'tau_J',                    # [7] measured link-side joint torques [N m]
+    'tau_ext_hat_filtered',     # [7] filtered estimated external joint torques [N m]
+    'tau_J_d',                  # [7] desired link-side joint torques, excluding gravity [N m]
     'jacobian',         # [6,7] torch.float32
     'mass_matrix',      # [7,7] torch.float32
 ])
@@ -800,7 +802,11 @@ class FrankaInterface:
         # Joint state
         joint_pos = torch.tensor(state.q, device=device, dtype=torch.float32)
         joint_vel = torch.tensor(state.dq, device=device, dtype=torch.float32)
-        joint_torques = torch.tensor(state.tau_J, device=device, dtype=torch.float32)
+        tau_J = torch.tensor(state.tau_J, device=device, dtype=torch.float32)
+        tau_ext_hat_filtered = torch.tensor(
+            state.tau_ext_hat_filtered, device=device, dtype=torch.float32
+        )
+        tau_J_d = torch.tensor(state.tau_J_d, device=device, dtype=torch.float32)
 
         # Jacobian and mass matrix (model calls — done here, NOT in comm thread)
         jac_flat = np.array(self._model.zero_jacobian(state))
@@ -825,6 +831,6 @@ class FrankaInterface:
 
         return StateSnapshot(
             ee_pos, ee_quat, ee_linvel, ee_angvel, force_torque,
-            joint_pos, joint_vel, joint_torques, jacobian, mass_matrix,
+            joint_pos, joint_vel, tau_J, tau_ext_hat_filtered, tau_J_d,
+            jacobian, mass_matrix,
         )
-

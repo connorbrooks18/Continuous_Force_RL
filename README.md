@@ -121,6 +121,24 @@ collection, calibration, synchronization, topology, units, source-file hashes,
 software versions, and camera-selection diagnostics in `dataset_metadata` in
 the Parquet footer.
 
+Three distinct robot-side joint-torque fields are recorded directly from the
+same `pylibfranka.RobotState` sample. Each is a 7-vector in Franka joint order
+`[joint_1, ..., joint_7]` (base to end effector), in N·m:
+
+- `tau_J`: measured link-side joint torque sensor signals. This is the sensor
+  measurement; this collection code does not subtract gravity from it.
+- `tau_ext_hat_filtered`: libfranka's low-pass-filtered estimate of torque due
+  to external forces. It is the difference between `tau_J` and model-expected
+  torque and does not include configured end-effector/load or robot
+  mass/dynamics contributions.
+- `tau_J_d`: desired link-side joint torque signal without gravity. This is a
+  desired/controller signal, not a second measurement.
+
+The process-based robot interface transports all three signals through shared
+memory. The raw robot Parquet and compiled unified Parquet retain the three
+names separately; no additional bias subtraction or gravity compensation is
+applied to any of them by the data-collection/compiler pipeline.
+
 To inspect a unified file over time, run:
 
 ```bash
@@ -129,11 +147,25 @@ python -m real_robot_exps.viz_static_sysid \
   --save pull_unified_viz.png
 ```
 
-The viewer lays out wrench, TCP velocity, action, pose, bending angles, and
-experiment state on a shared timestamp axis, with hold boundaries marked for
-easy debugging.
+The viewer gives `tau_J`, `tau_ext_hat_filtered`, and `tau_J_d` separate plots,
+then lays out wrench, TCP velocity, action, pose, bending angles, and experiment
+state on a shared timestamp axis, with hold boundaries marked for debugging.
 
 The same viewer also works on arm-only Parquets that do not contain camera
 fields. In that case it falls back to the robot signals and TCP position/time
 plots, so you can still inspect a run even if AprilTag data is missing or was
 not recorded.
+
+To debug wrench zeroing and pose-dependent offsets without doing a pull, run a
+short rest-pose sweep near the normal home and apple poses:
+
+```bash
+python -m real_robot_exps.ft_rest_pose_sweep \
+  --config real_robot_exps/config.yaml \
+  --output ft_rest_pose_sweep.parquet \
+  --hold-seconds 3 \
+  --offset-cm 2
+```
+
+This records the same robot-side wrench and pose fields as the pull script, but
+only while the arm is stationary at a few nearby poses.

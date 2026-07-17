@@ -315,6 +315,9 @@ def hold_and_record(
                 "phase_name": "hold",
                 "amplitude_m": float(amplitude_m),
                 "ft_wrist": ft.astype(np.float32, copy=True),
+                "tau_J": snap.tau_J.cpu().numpy().astype(np.float32, copy=True),
+                "tau_ext_hat_filtered": snap.tau_ext_hat_filtered.cpu().numpy().astype(np.float32, copy=True),
+                "tau_J_d": snap.tau_J_d.cpu().numpy().astype(np.float32, copy=True),
                 "tcp_velocity": np.concatenate([
                     snap.ee_linvel.cpu().numpy(),
                     snap.ee_angvel.cpu().numpy(),
@@ -409,7 +412,7 @@ def update_gains(gains, new_prop_gains, device):
     gains["task_deriv_gains"] = torch.tensor(derivs, device=device, dtype=torch.float32)
     return gains
 
-def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5, args=None, config_snapshot=None):
+def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5, args=None, config_snapshot=None, ee_config=None, ft_calibration_enabled: bool = False):
     collection_start_timestamp = time.time()
     episode_id = str(uuid4())
     run_args = dict(args or {})
@@ -553,6 +556,19 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
         "ft_wrist_frame": "robot EE/body frame",
         "ft_wrist_order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
         "ft_wrist_sign": "environment-on-robot; pro_robot_interface rotates base to body and negates",
+        "joint_torque_fields": {
+            "order": [f"joint_{i}" for i in range(1, 8)],
+            "order_direction": "base-to-end-effector",
+            "unit": "N*m",
+            "tau_J": "measured link-side joint torque sensor signals",
+            "tau_ext_hat_filtered": "low-pass filtered external torque estimate; excludes configured EE/load and robot dynamics",
+            "tau_J_d": "desired link-side joint torques without gravity",
+        },
+        "ft_calibration": {
+            "enabled": bool(ft_calibration_enabled),
+            "note": "ft_bias is a measurement-time calibration offset; ee_config describes the physical/tool model.",
+        },
+        "ee_config": ee_config,
         "tcp_velocity_order": ["vx", "vy", "vz", "wx", "wy", "wz"],
         "position_unit": "m",
         "linear_velocity_unit": "m/s",
@@ -699,6 +715,19 @@ def main():
     pos = T[12:15]
 
    
+    ee_config = {
+        "F_T_EE": np.asarray(diag_state.F_T_EE, dtype=np.float64).tolist(),
+        "EE_T_K": np.asarray(diag_state.EE_T_K, dtype=np.float64).tolist(),
+        "m_ee": float(getattr(diag_state, "m_ee", 0.0)),
+        "F_x_Cee": np.asarray(getattr(diag_state, "F_x_Cee", [0.0, 0.0, 0.0]), dtype=np.float64).tolist(),
+        "I_ee": np.asarray(getattr(diag_state, "I_ee", [0.0] * 9), dtype=np.float64).tolist(),
+        "m_load": float(getattr(diag_state, "m_load", 0.0)),
+        "F_x_Cload": np.asarray(getattr(diag_state, "F_x_Cload", [0.0, 0.0, 0.0]), dtype=np.float64).tolist(),
+        "I_load": np.asarray(getattr(diag_state, "I_load", [0.0] * 9), dtype=np.float64).tolist(),
+        "source": "pylibfranka RobotState",
+        "note": "Recorded from the live robot state, not from config.yaml.",
+    }
+
     diag_robot.stop()
 
 
@@ -777,7 +806,7 @@ def main():
     angles = [up_back_left, up_back, up_back_right]
     angles = [(theta, phi)]
     for (theta, phi) in angles:
-        pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline, to_plot=to_plot, debug=(debug != "none"), distance=distance, stops=stops, args=vars(args), config_snapshot=real_config)
+        pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline, to_plot=to_plot, debug=(debug != "none"), distance=distance, stops=stops, args=vars(args), config_snapshot=real_config, ee_config=ee_config, ft_calibration_enabled=bool(real_config.get("robot", {}).get("ft_calibration_duration_sec", 0)))
 
      
 

@@ -81,6 +81,19 @@ def _load_plot_data(path: Path) -> PlotData:
     return PlotData(timestamps=timestamps, rows=rows, metadata=metadata, has_camera=has_camera)
 
 
+def _episode_id_from_metadata(metadata: dict[str, Any], rows: list[dict[str, Any]]) -> str:
+    candidates = [
+        metadata.get("episode_id"),
+        metadata.get("source_metadata", {}).get("robot", {}).get("episode_id"),
+        metadata.get("source_metadata", {}).get("robot", {}).get("command_arguments", {}).get("episode_id"),
+        rows[0].get("episode_id") if rows else None,
+    ]
+    for candidate in candidates:
+        if candidate:
+            return str(candidate)
+    return ""
+
+
 def _plot_vector_panel(ax, t, values, labels, title):
     for idx, label in enumerate(labels):
         ax.plot(t, values[:, idx], label=label, linewidth=1.4)
@@ -116,6 +129,22 @@ def plot_static_sysid(
     t = data.timestamps
 
     ft = _vector_columns(rows, "ft_wrist")
+    torque_fields = [
+        ("tau_J", "Measured joint torque $\\tau_J$"),
+        ("tau_ext_hat_filtered", "Estimated external joint torque $\\hat{\\tau}_{ext}$ (filtered)"),
+        ("tau_J_d", "Desired joint torque $\\tau_{J,d}$ (without gravity)"),
+    ]
+    available_torques = [
+        (field, title, _vector_columns(rows, field))
+        for field, title in torque_fields if field in rows[0]
+    ]
+    # Allow older files to remain inspectable; new collection files use the
+    # explicit libfranka field names above.
+    if not available_torques and "joint_torques" in rows[0]:
+        available_torques = [
+            ("joint_torques", "Measured joint torque (legacy tau_J field)",
+             _vector_columns(rows, "joint_torques"))
+        ]
     vel = _vector_columns(rows, "tcp_velocity")
     action = _vector_columns(rows, "action")
     tcp_pos = _vector_columns(rows, "tcp_pos")
@@ -137,14 +166,22 @@ def plot_static_sysid(
     amplitude = np.asarray([row["amplitude_m"] for row in rows], dtype=np.float64)
     hold_index = np.asarray([row["hold_index"] for row in rows], dtype=int)
     hold_step_idx = np.asarray([row["hold_step_idx"] for row in rows], dtype=int)
-    episode_id = str(rows[0].get("episode_id", ""))
+    episode_id = _episode_id_from_metadata(data.metadata, rows)
 
-    n_panels = 8 if has_camera else 6
+    torque_panel_count = len(available_torques)
+    n_panels = (8 if has_camera else 6) + torque_panel_count
     fig, axes = plt.subplots(n_panels, 1, figsize=(16, 4 * n_panels), sharex=True, constrained_layout=True)
 
     _plot_vector_panel(axes[0], t, ft, ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"], "Wrist wrench")
-    _plot_vector_panel(axes[1], t, vel, ["vx", "vy", "vz", "wx", "wy", "wz"], "TCP velocity")
-    _plot_vector_panel(axes[2], t, action, ["ax", "ay", "az", "awx", "awy", "awz"], "Recorded action")
+    for panel_idx, (_, panel_title, values) in enumerate(available_torques, start=1):
+        _plot_vector_panel(
+            axes[panel_idx], t, values,
+            [f"joint {i}" for i in range(1, 8)], panel_title,
+        )
+        axes[panel_idx].set_ylabel("N m")
+    offset = torque_panel_count
+    _plot_vector_panel(axes[1 + offset], t, vel, ["vx", "vy", "vz", "wx", "wy", "wz"], "TCP velocity")
+    _plot_vector_panel(axes[2 + offset], t, action, ["ax", "ay", "az", "awx", "awy", "awz"], "Recorded action")
 
     if has_camera:
         tcp_pos_cm = tcp_pos * 100.0
@@ -156,83 +193,83 @@ def plot_static_sysid(
         start_pos_delta_cm = _delta_cm(start_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
         end_pos_delta_cm = _delta_cm(end_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
 
-        axes[3].plot(t, tcp_pos_cm[:, 0], label="tcp x")
-        axes[3].plot(t, tcp_pos_cm[:, 1], label="tcp y")
-        axes[3].plot(t, tcp_pos_cm[:, 2], label="tcp z")
-        axes[3].plot(t, apple_pos_cm[:, 0], "--", label="apple x")
-        axes[3].plot(t, apple_pos_cm[:, 1], "--", label="apple y")
-        axes[3].plot(t, apple_pos_cm[:, 2], "--", label="apple z")
-        axes[3].set_title("Absolute positions")
-        axes[3].set_ylabel("cm")
-        axes[3].grid(True, alpha=0.25)
-        axes[3].legend(loc="upper right", ncol=3, fontsize=8)
+        axes[3 + offset].plot(t, tcp_pos_cm[:, 0], label="tcp x")
+        axes[3 + offset].plot(t, tcp_pos_cm[:, 1], label="tcp y")
+        axes[3 + offset].plot(t, tcp_pos_cm[:, 2], label="tcp z")
+        axes[3 + offset].plot(t, apple_pos_cm[:, 0], "--", label="apple x")
+        axes[3 + offset].plot(t, apple_pos_cm[:, 1], "--", label="apple y")
+        axes[3 + offset].plot(t, apple_pos_cm[:, 2], "--", label="apple z")
+        axes[3 + offset].set_title("Absolute positions")
+        axes[3 + offset].set_ylabel("cm")
+        axes[3 + offset].grid(True, alpha=0.25)
+        axes[3 + offset].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[4].plot(t, tcp_pos_delta_cm[:, 0], label="tcp x")
-        axes[4].plot(t, tcp_pos_delta_cm[:, 1], label="tcp y")
-        axes[4].plot(t, tcp_pos_delta_cm[:, 2], label="tcp z")
-        axes[4].plot(t, apple_pos_delta_cm[:, 0], "--", label="apple x")
-        axes[4].plot(t, apple_pos_delta_cm[:, 1], "--", label="apple y")
-        axes[4].plot(t, apple_pos_delta_cm[:, 2], "--", label="apple z")
-        axes[4].set_title("Position deltas from first sample")
-        axes[4].set_ylabel("delta cm")
-        axes[4].grid(True, alpha=0.25)
-        axes[4].legend(loc="upper right", ncol=3, fontsize=8)
+        axes[4 + offset].plot(t, tcp_pos_delta_cm[:, 0], label="tcp x")
+        axes[4 + offset].plot(t, tcp_pos_delta_cm[:, 1], label="tcp y")
+        axes[4 + offset].plot(t, tcp_pos_delta_cm[:, 2], label="tcp z")
+        axes[4 + offset].plot(t, apple_pos_delta_cm[:, 0], "--", label="apple x")
+        axes[4 + offset].plot(t, apple_pos_delta_cm[:, 1], "--", label="apple y")
+        axes[4 + offset].plot(t, apple_pos_delta_cm[:, 2], "--", label="apple z")
+        axes[4 + offset].set_title("Position deltas from first sample")
+        axes[4 + offset].set_ylabel("delta cm")
+        axes[4 + offset].grid(True, alpha=0.25)
+        axes[4 + offset].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[5].plot(t, start_pos_cm[:, 0, 0], label="Branch start x")
-        axes[5].plot(t, start_pos_cm[:, 0, 1], label="Branch start y")
-        axes[5].plot(t, start_pos_cm[:, 0, 2], label="Branch start z")
-        axes[5].plot(t, end_pos_cm[:, 0, 0], "--", label="Branch end x")
-        axes[5].plot(t, end_pos_cm[:, 0, 1], "--", label="Branch end y")
-        axes[5].plot(t, end_pos_cm[:, 0, 2], "--", label="Branch end z")
-        axes[5].set_title("Branch endpoint absolute positions")
-        axes[5].set_ylabel("cm")
-        axes[5].grid(True, alpha=0.25)
-        axes[5].legend(loc="upper right", ncol=3, fontsize=8)
+        axes[5 + offset].plot(t, start_pos_cm[:, 0, 0], label="Branch start x")
+        axes[5 + offset].plot(t, start_pos_cm[:, 0, 1], label="Branch start y")
+        axes[5 + offset].plot(t, start_pos_cm[:, 0, 2], label="Branch start z")
+        axes[5 + offset].plot(t, end_pos_cm[:, 0, 0], "--", label="Branch end x")
+        axes[5 + offset].plot(t, end_pos_cm[:, 0, 1], "--", label="Branch end y")
+        axes[5 + offset].plot(t, end_pos_cm[:, 0, 2], "--", label="Branch end z")
+        axes[5 + offset].set_title("Branch endpoint absolute positions")
+        axes[5 + offset].set_ylabel("cm")
+        axes[5 + offset].grid(True, alpha=0.25)
+        axes[5 + offset].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[6].plot(t, start_pos_delta_cm[:, 0, 0], label="Branch start delta x")
-        axes[6].plot(t, start_pos_delta_cm[:, 0, 1], label="Branch start delta y")
-        axes[6].plot(t, start_pos_delta_cm[:, 0, 2], label="Branch start delta z")
-        axes[6].plot(t, end_pos_delta_cm[:, 0, 0], "--", label="Branch end delta x")
-        axes[6].plot(t, end_pos_delta_cm[:, 0, 1], "--", label="Branch end delta y")
-        axes[6].plot(t, end_pos_delta_cm[:, 0, 2], "--", label="Branch end delta z")
-        axes[6].set_title("Branch endpoint deltas from first sample")
-        axes[6].set_ylabel("delta cm")
-        axes[6].grid(True, alpha=0.25)
-        axes[6].legend(loc="upper right", ncol=3, fontsize=8)
+        axes[6 + offset].plot(t, start_pos_delta_cm[:, 0, 0], label="Branch start delta x")
+        axes[6 + offset].plot(t, start_pos_delta_cm[:, 0, 1], label="Branch start delta y")
+        axes[6 + offset].plot(t, start_pos_delta_cm[:, 0, 2], label="Branch start delta z")
+        axes[6 + offset].plot(t, end_pos_delta_cm[:, 0, 0], "--", label="Branch end delta x")
+        axes[6 + offset].plot(t, end_pos_delta_cm[:, 0, 1], "--", label="Branch end delta y")
+        axes[6 + offset].plot(t, end_pos_delta_cm[:, 0, 2], "--", label="Branch end delta z")
+        axes[6 + offset].set_title("Branch endpoint deltas from first sample")
+        axes[6 + offset].set_ylabel("delta cm")
+        axes[6 + offset].grid(True, alpha=0.25)
+        axes[6 + offset].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[7].plot(t, bend[:, 0], label="Branch")
-        axes[7].plot(t, bend[:, 1], label="Spur")
-        axes[7].plot(t, bend[:, 2], label="Apple")
-        axes[7].set_title("Woody bending angles")
-        axes[7].set_ylabel("rad")
-        axes[7].grid(True, alpha=0.25)
-        axes[7].legend(loc="upper right")
+        axes[7 + offset].plot(t, bend[:, 0], label="Branch")
+        axes[7 + offset].plot(t, bend[:, 1], label="Spur")
+        axes[7 + offset].plot(t, bend[:, 2], label="Apple")
+        axes[7 + offset].set_title("Woody bending angles")
+        axes[7 + offset].set_ylabel("rad")
+        axes[7 + offset].grid(True, alpha=0.25)
+        axes[7 + offset].legend(loc="upper right")
     else:
-        axes[3].plot(t, tcp_pos[:, 0] * 100.0, label="tcp x")
-        axes[3].plot(t, tcp_pos[:, 1] * 100.0, label="tcp y")
-        axes[3].plot(t, tcp_pos[:, 2] * 100.0, label="tcp z")
-        axes[3].set_title("TCP position")
-        axes[3].set_ylabel("cm")
-        axes[3].grid(True, alpha=0.25)
-        axes[3].legend(loc="upper right", ncol=3, fontsize=8)
+        axes[3 + offset].plot(t, tcp_pos[:, 0] * 100.0, label="tcp x")
+        axes[3 + offset].plot(t, tcp_pos[:, 1] * 100.0, label="tcp y")
+        axes[3 + offset].plot(t, tcp_pos[:, 2] * 100.0, label="tcp z")
+        axes[3 + offset].set_title("TCP position")
+        axes[3 + offset].set_ylabel("cm")
+        axes[3 + offset].grid(True, alpha=0.25)
+        axes[3 + offset].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[4].plot(t, _delta_cm(tcp_pos)[:, 0], label="tcp x")
-        axes[4].plot(t, _delta_cm(tcp_pos)[:, 1], label="tcp y")
-        axes[4].plot(t, _delta_cm(tcp_pos)[:, 2], label="tcp z")
-        axes[4].set_title("TCP position deltas from first sample")
-        axes[4].set_ylabel("delta cm")
-        axes[4].grid(True, alpha=0.25)
-        axes[4].legend(loc="upper right", ncol=3, fontsize=8)
+        axes[4 + offset].plot(t, _delta_cm(tcp_pos)[:, 0], label="tcp x")
+        axes[4 + offset].plot(t, _delta_cm(tcp_pos)[:, 1], label="tcp y")
+        axes[4 + offset].plot(t, _delta_cm(tcp_pos)[:, 2], label="tcp z")
+        axes[4 + offset].set_title("TCP position deltas from first sample")
+        axes[4 + offset].set_ylabel("delta cm")
+        axes[4 + offset].grid(True, alpha=0.25)
+        axes[4 + offset].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[5].plot(t, hold_index, label="hold_index")
-        axes[5].plot(t, hold_step_idx, label="hold_step_idx", alpha=0.8)
-        axes[5].plot(t, phase, label="phase", alpha=0.8)
-        axes[5].plot(t, amplitude, label="amplitude_m", alpha=0.8)
-        axes[5].plot(t, direction.argmax(axis=1), label="direction idx", alpha=0.8)
-        axes[5].plot(t, hold_number.argmax(axis=1), label="hold idx one-hot", alpha=0.8)
-        axes[5].set_title("Experiment state")
-        axes[5].grid(True, alpha=0.25)
-        axes[5].legend(loc="upper right", ncol=3, fontsize=8)
+        axes[5 + offset].plot(t, hold_index, label="hold_index")
+        axes[5 + offset].plot(t, hold_step_idx, label="hold_step_idx", alpha=0.8)
+        axes[5 + offset].plot(t, phase, label="phase", alpha=0.8)
+        axes[5 + offset].plot(t, amplitude, label="amplitude_m", alpha=0.8)
+        axes[5 + offset].plot(t, direction.argmax(axis=1), label="direction idx", alpha=0.8)
+        axes[5 + offset].plot(t, hold_number.argmax(axis=1), label="hold idx one-hot", alpha=0.8)
+        axes[5 + offset].set_title("Experiment state")
+        axes[5 + offset].grid(True, alpha=0.25)
+        axes[5 + offset].legend(loc="upper right", ncol=3, fontsize=8)
 
     boundaries = _hold_boundaries(rows)
     for ax in axes:
@@ -244,7 +281,7 @@ def plot_static_sysid(
     axes[-1].set_xlabel("timestamp (Unix seconds)")
 
     meta_lines = [
-        f"episode_id: {episode_id}",
+        f"episode_id: {episode_id or 'n/a'}",
         f"rows: {len(rows)}",
         f"unique holds: {len(np.unique(hold_index))}",
         f"camera present: {has_camera}",
