@@ -1,13 +1,124 @@
 # Apple Pull Test & Controller Verification
 
-This script executes a parameterized, multi-stop pull test using a Franka FR3 robot to simulate pulling an apple from a branch. It utilizes a hybrid force/position controller to execute trajectory steps, records Wrench (Force/Torque) data at each stop, and exports the results to CSV files and plots.
+This project executes parameterized, multi-stop pull tests using a Franka FR3
+robot, records robot and optional camera data, saves metadata-rich Parquet
+files, compiles synchronized system-identification episodes, and generates
+diagnostic plots.
 
-Eventually, the pipeline will include doing a dry run / baseline run, calculating the interaction force `F_{int} = F_m - F_b` where `F_m and F_b` are measured and baseline force/torque measurements respectively.
+The pipeline supports an unloaded dry/baseline run followed by a matched
+measurement run. It calculates interaction wrench dynamically across each
+hold as `F_int = F_raw - F_baseline`.
 
 ## Prerequisites
 * Franka arm configured with `pylibfranka`.
 * Active ROS 2 environment with the `gripper_grab_client` service running from https://github.com/connorbrooks18/lfd_apples.
 * Required Python packages: `torch`, `numpy`, `pandas`, `matplotlib`, `pyyaml`.
+
+## Full collection process
+
+The normal workflow uses one unloaded dry run as a dynamic baseline followed
+by one loaded run with exactly the same trajectory. Camera tracking is needed
+only for the loaded run that will be compiled into the unified dataset.
+
+### 1. Choose and verify the pull setup
+
+Near the top of `real_robot_exps/apple_pullto_static.py`, select the starting
+pose and baseline behavior:
+
+```python
+USE_CLOSE_PULL_START_POSE = True
+CLOSE_PULL_START_POSITION_M = np.array([0.0, 0.7, 0.35])
+CLOSE_PULL_ROLL_FORWARD_DEG = 20.0
+USE_DYNAMIC_BASELINE_CORRECTION = True
+```
+
+Use the same values for the baseline and loaded run. Confirm the Franka Desk
+end-effector/load configuration and keep the physical gripper configuration,
+controller gains, pull direction, distance, and hold count unchanged between
+the two runs.
+
+### 2. Record the unloaded dynamic baseline
+
+Remove the apple/contact load, but otherwise preserve the loaded-run setup.
+Run the complete trajectory in `baseline` mode:
+
+```bash
+python -m real_robot_exps.apple_pullto_static \
+  --config real_robot_exps/config.yaml \
+  --mode baseline \
+  --theta 2.36 --phi 1.57 \
+  --distance 0.04 --stops 4 \
+  --kp 100
+```
+
+With these values, the default output is
+`pull_theta2.36_phi1.57_baseline_robot.parquet`. It contains the unloaded
+profile and is not itself baseline-corrected.
+
+### 3. Record the matched loaded run and camera tracking
+
+Start the tracker before the robot run. The two programs run separately on the
+same computer and synchronize using Unix wall-clock timestamps.
+
+```bash
+# Terminal 1
+cd at-tracking
+python Detecting.py --output tracking.parquet
+
+# Terminal 2: use exactly the baseline trajectory arguments
+python -m real_robot_exps.apple_pullto_static \
+  --config real_robot_exps/config.yaml \
+  --mode collect \
+  --theta 2.36 --phi 1.57 \
+  --distance 0.04 --stops 4 \
+  --kp 100
+```
+
+The collect run locates the default baseline file, verifies compatible angles,
+distance, hold count, selected pose, and exact starting transform, and then
+interpolates the unloaded wrench over normalized time within each hold. It
+saves:
+
+- `ft_wrist_raw`: loaded-run wrench before baseline correction.
+- `ft_wrist_baseline`: interpolated unloaded wrench profile.
+- `ft_wrist`: interaction wrench, `ft_wrist_raw - ft_wrist_baseline`.
+
+The default loaded output is
+`pull_theta2.36_phi1.57_raw_robot.parquet`. Stop the camera with `q` after the
+robot run finishes. If an explicitly uncorrected collect run is needed, set
+`USE_DYNAMIC_BASELINE_CORRECTION = False` before running it.
+
+### 4. Compile the synchronized episode
+
+```bash
+python -m real_robot_exps.compile_static_sysid \
+  --robot pull_theta2.36_phi1.57_raw_robot.parquet \
+  --tracking tracking.parquet \
+  --output pull_unified.parquet \
+  --camera-frames 5
+```
+
+The compiler retains every robot-rate hold row and attaches a robust median
+camera estimate from a few valid Branch, Spur, and Apple frames. Source hashes,
+source metadata, synchronization information, topology, units, and compiler
+details are stored in the Parquet footer.
+
+### 5. Inspect and visualize the result
+
+```bash
+# Inspect headers, footer metadata, and the first 15 rows.
+python -m real_robot_exps.dump_parquet_preview pull_unified.parquet
+
+# Create the time-series diagnostic figure.
+python -m real_robot_exps.viz_static_sysid \
+  --input pull_unified.parquet \
+  --save pull_unified_viz.png
+```
+
+Check the episode ID, baseline source/hash, raw versus corrected wrench,
+force/torque magnitudes, joint-torque signals, camera validity, hold boundaries,
+absolute positions, position deltas, and woody bending angles before accepting
+the episode.
 
 ## Usage
 Run the script as a module from the root of your workspace:
@@ -18,10 +129,14 @@ python -m real_robot_exps.apple_pullto_static [OPTIONS]
 
 ```bash
 # Standard Data Collection (Defaults: 5cm, 5 stops, up-back pull):
-python -m real_robot_exps.apple_pullto_static --mode collect --plot`
+python -m real_robot_exps.apple_pullto_static --mode collect --plot
 
-# Baseline Collection (High Stiffness, Custom Distance & Stops):
-python -m real_robot_exps.apple_pullto_static --mode baseline --kp 100 --distance 0.075 --stops 10
+# 1. Unloaded dry run; saves pull_theta2.36_phi1.57_baseline_robot.parquet.
+python -m real_robot_exps.apple_pullto_static --mode baseline --theta 2.36 --phi 1.57 --distance 0.04 --stops 4
+
+# 2. Repeat with the interaction/load present. The matching baseline is
+# automatically loaded and subtracted across each hold.
+python -m real_robot_exps.apple_pullto_static --mode collect --theta 2.36 --phi 1.57 --distance 0.04 --stops 4
 
 # Custom Angle Pull (Horizontal Back-Left):
 python -m real_robot_exps.apple_pullto_static --distance 0.05 --stops 5 --theta 1.57 --phi 0.79
@@ -43,11 +158,13 @@ All arguments are passed as optional flags.
 ### Configuration & System:
 * `--config` (str, default: real_robot_exps/config.yaml): Path to the real robot configuration YAML file.
 * `--device` (str, default: cpu): Torch device to use for tensor operations.
-* `--mode` (str, default: collect): Operation mode. Use 'collect' for standard runs or 'baseline' to append a baseline tag to the output files.
-* `--plot`: If provided, displays a matplotlib graph of the F/T data at the end of each pull.
+* `--mode` (str, default: collect): `baseline` saves an unloaded dynamic-bias profile; `collect` loads the matching default-named baseline and applies it when `USE_DYNAMIC_BASELINE_CORRECTION` is enabled near the top of the script.
+* `--plot`: Legacy compatibility flag. Use `viz_static_sysid.py` for the current Parquet visualization workflow.
 * `--debug` (str, default: none): Set to "all" to print verbose step-by-step wrench and trajectory data.
 * `--kp` (int, default: 80): The proportional gain for the controller (recommended 20-120). Derivative gains are automatically calculated.
 * `--override` (str): Append config overrides in key=value format (e.g., --override robot.gripper_force_n=60).
+* `--direction-index` / `--num-directions`: Select the index and width of the direction one-hot vector stored in each row.
+* `--robot-output`: Override the raw robot Parquet filename. Dynamic baseline auto-discovery uses the default baseline filename, so custom baseline naming currently requires placing/copying it at the expected default path before `collect` mode.
 
 ## Understanding Pull Angles (theta & phi)
 
@@ -74,17 +191,32 @@ Here are the exact arguments you can pass to `--theta` and `--phi` to achieve sp
 | Up-Back-Right     | 2.36    | 2.36   | 3pi/4 / 3pi/4     |
 
 ## Outputs
-For each test run, the script generates:
-1. CSV Data (pull_thetaX_phiY[_baseline].csv): Contains the concatenated raw F/T readings (Fx, Fy, Fz, Tx, Ty, Tz) across all stops.
-2. Plots: A 6-axis line chart of the force/torque profile over the 15Hz policy steps (if --plot is enabled).
+Baseline mode saves an unloaded `*_baseline_robot.parquet`. Corrected collect
+runs retain three separate wrench fields:
 
-# Computing Interaction Force
+- `ft_wrist_raw`: the original loaded-run wrench.
+- `ft_wrist_baseline`: unloaded bias interpolated over normalized time within
+  the corresponding hold.
+- `ft_wrist`: corrected interaction wrench (`raw - baseline`), used by the
+  unified system-ID schema.
+
+Baseline compatibility is checked using pull angles, distance, hold count,
+selected starting pose, and exact starting transform. A mismatch raises an
+error instead of combining unrelated runs. Set
+`USE_DYNAMIC_BASELINE_CORRECTION = False` for an explicitly uncorrected collect
+run. The baseline source path, SHA-256, interpolation method, and field
+semantics are stored in Parquet metadata.
+
+The older CSV-only `compute_interaction.py` utility remains for legacy files,
+but new Parquet runs perform the matched dynamic subtraction directly in
+`apple_pullto_static.py` and preserve all three wrench representations.
+
+The original legacy example is retained for existing CSV pairs named
+`pull_theta2.36_phi1.57_raw.csv` and
+`pull_theta2.36_phi1.57_baseline.csv`:
 
 ```bash
-
-# This preassumens a raw and a baseline file for a given theta and phi as "pull_theta2.36_phi2.36_[raw/baseline].csv with same distance and stop #
-python compute_interaction.py --theta 2.36 --phi 1.57 --plot
-
+python -m real_robot_exps.compute_interaction --theta 2.36 --phi 1.57 --plot
 ```
 
 ## Unified static system-ID Parquet
@@ -99,12 +231,13 @@ reference timestamp.
 cd at-tracking
 python Detecting.py --output tracking.parquet
 
-# Terminal 2: also writes the legacy wrench CSV.
+# Terminal 2: writes the corrected raw-robot Parquet.
+# First ensure the matching default-named baseline run already exists.
 python -m real_robot_exps.apple_pullto_static --config real_robot_exps/config.yaml --mode collect --theta 2.36 --phi 2.36 --distance 0.04 --stops 4
 
 # After both collection processes have stopped:
 python -m real_robot_exps.compile_static_sysid \
-  --robot pull_robot.parquet \
+  --robot pull_theta2.36_phi2.36_raw_robot.parquet \
   --tracking tracking.parquet \
   --output pull_unified.parquet \
   --camera-frames 5
@@ -162,6 +295,35 @@ collection, calibration, synchronization, topology, units, source-file hashes,
 software versions, and camera-selection diagnostics in `dataset_metadata` in
 the Parquet footer.
 
+### Per-step Parquet fields
+
+The principal collected/compiled fields are:
+
+| Field | Dim | Units / meaning |
+| --- | ---: | --- |
+| `ft_wrist` | 6 | Interaction wrench `[Fx,Fy,Fz,Tx,Ty,Tz]` after dynamic subtraction when enabled; otherwise uncorrected. Robot EE/body convention, N and N·m. |
+| `ft_wrist_raw` | 6 | Loaded-run wrench before dynamic baseline subtraction. |
+| `ft_wrist_baseline` | 6 | Interpolated unloaded wrench subtracted from the raw wrench. |
+| `tau_J` | 7 | Measured link-side joint torque, joints 1–7, base to EE; N·m. |
+| `tau_ext_hat_filtered` | 7 | Franka low-pass-filtered external joint-torque estimate; N·m. |
+| `tau_J_d` | 7 | Desired link-side torque without gravity; N·m. |
+| `gravity_torques` | 7 | `Model.gravity(state)`; N·m. |
+| `tcp_velocity` | 6 | TCP linear XYZ in m/s plus angular XYZ in rad/s. |
+| `action` | 6 | Recorded EE velocity command; zero during the recorded static holds. |
+| `tcp_pos` | 3 | Robot TCP position in metres. |
+| `apple_pos` | 3 | Camera-derived Apple position in the reference-AprilTag frame; metres. |
+| `woody_part_start_pos` | 9 | Three XYZ starts flattened in Branch, Spur, Apple order; metres. |
+| `woody_part_end_pos` | 9 | Matching three XYZ ends; metres. |
+| `woody_bending_angles` | 3 | Chord deflection from the frame-0 rest direction; radians. |
+| `hold_number` | number of holds | One-hot hold encoding. |
+| `direction` | number of directions | One-hot direction encoding. |
+| `phase` | 1 | Static hold = 1, moving = 0. Recorded rows are static holds. |
+| `excitation_direction` | 3 | Unit pull-direction vector. |
+
+The unified file additionally contains episode/step identifiers and camera
+selection/timestamp diagnostics. Baseline-only raw files contain the robot
+fields but do not contain camera geometry.
+
 Three distinct robot-side joint-torque fields are recorded directly from the
 same `pylibfranka.RobotState` sample. Each is a 7-vector in Franka joint order
 `[joint_1, ..., joint_7]` (base to end effector), in N·m:
@@ -179,9 +341,11 @@ reference: https://frankarobotics.github.io/libfranka/0.15.0/structfranka_1_1Rob
 
 The process-based robot interface transports all three robot-state signals,
 plus the model gravity vector, through shared memory. The raw robot Parquet and
-compiled unified Parquet retain the names separately; no additional bias
-subtraction or gravity compensation is applied by the collection/compiler
-pipeline.
+compiled unified Parquet retain the names separately. The compiler does not
+apply torque or gravity corrections. Wrench baseline subtraction occurs only
+in `apple_pullto_static.py` collect mode when
+`USE_DYNAMIC_BASELINE_CORRECTION` is enabled, and the raw and baseline wrench
+fields remain available alongside the corrected `ft_wrist`.
 
 The collector also records and plots `gravity_torques`, the 7-vector returned
 by `pylibfranka`'s `Model.gravity(state)`.

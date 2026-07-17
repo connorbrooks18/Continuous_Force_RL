@@ -16,6 +16,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import math
 import platform
@@ -47,9 +48,13 @@ MOVE_DISTANCE = 0.02     # 5cm
 
 # One-line switch for unloaded/system-identification trials closer to the robot.
 # False uses the normal apple pose; True uses CLOSE_PULL_START_POSITION_M.
-USE_CLOSE_PULL_START_POSE = True
+USE_CLOSE_PULL_START_POSE = False
 CLOSE_PULL_START_POSITION_M = np.array([0.0, 0.7, 0.35], dtype=np.float64)
 CLOSE_PULL_ROLL_FORWARD_DEG = 20.0
+
+# Baseline mode records an unloaded wrench profile. When this is True, collect
+# mode subtracts the matching profile point-by-point within each static hold.
+USE_DYNAMIC_BASELINE_CORRECTION = True
 
 
 def load_gains_from_config(real_config: dict, device: str = "cpu") -> dict:
@@ -321,6 +326,7 @@ def hold_and_record(
                 "phase_name": "hold",
                 "amplitude_m": float(amplitude_m),
                 "ft_wrist": ft.astype(np.float32, copy=True),
+                "ft_wrist_raw": ft.astype(np.float32, copy=True),
                 "tau_J": snap.tau_J.cpu().numpy().astype(np.float32, copy=True),
                 "tau_ext_hat_filtered": snap.tau_ext_hat_filtered.cpu().numpy().astype(np.float32, copy=True),
                 "tau_J_d": snap.tau_J_d.cpu().numpy().astype(np.float32, copy=True),
@@ -362,6 +368,95 @@ def save_robot_hold_parquet(rows, filename, metadata):
     output.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(table, output)
     return output
+
+
+def _read_parquet_metadata(path: Path) -> dict:
+    payload = (pq.read_schema(path).metadata or {}).get(b"dataset_metadata")
+    return json.loads(payload.decode("utf-8")) if payload else {}
+
+
+def _validate_baseline_compatibility(current: dict, baseline: dict, baseline_path: Path) -> None:
+    comparisons = (
+        ("theta_rad", 1e-9),
+        ("phi_rad", 1e-9),
+        ("distance_m", 1e-9),
+        ("n_holds", 0.0),
+        ("pull_start_pose_name", None),
+    )
+    mismatches = []
+    for key, tolerance in comparisons:
+        if key not in current or key not in baseline:
+            mismatches.append(f"{key}=missing")
+            continue
+        if tolerance is None:
+            matches = current[key] == baseline[key]
+        elif tolerance == 0.0:
+            matches = int(current[key]) == int(baseline[key])
+        else:
+            matches = abs(float(current[key]) - float(baseline[key])) <= tolerance
+        if not matches:
+            mismatches.append(f"{key}: collect={current[key]!r}, baseline={baseline[key]!r}")
+
+    current_pose = np.asarray(current.get("robot_start_pose_4x4", []), dtype=np.float64)
+    baseline_pose = np.asarray(baseline.get("robot_start_pose_4x4", []), dtype=np.float64)
+    if current_pose.shape != (4, 4) or baseline_pose.shape != (4, 4) or not np.allclose(
+        current_pose, baseline_pose, atol=1e-7, rtol=0.0
+    ):
+        mismatches.append("robot_start_pose_4x4 differs")
+    if mismatches:
+        raise ValueError(
+            f"Baseline {baseline_path} is incompatible with this collect run: "
+            + "; ".join(mismatches)
+        )
+
+
+def apply_dynamic_baseline(robot_rows: list[dict], baseline_path: Path) -> dict:
+    """Subtract an unloaded baseline profile within each corresponding hold."""
+    baseline_table = pq.read_table(baseline_path)
+    baseline_rows = baseline_table.to_pylist()
+    if not baseline_rows:
+        raise ValueError(f"Baseline file has no rows: {baseline_path}")
+
+    baseline_by_hold = {}
+    for row in baseline_rows:
+        baseline_by_hold.setdefault(int(row["hold_index"]), []).append(row)
+    current_hold_indices = sorted({int(row["hold_index"]) for row in robot_rows})
+    if current_hold_indices != sorted(baseline_by_hold):
+        raise ValueError(
+            f"Baseline hold indices {sorted(baseline_by_hold)} do not match "
+            f"collect hold indices {current_hold_indices}"
+        )
+
+    for hold_index in current_hold_indices:
+        current_hold = [row for row in robot_rows if int(row["hold_index"]) == hold_index]
+        baseline_hold = sorted(
+            baseline_by_hold[hold_index], key=lambda row: int(row.get("hold_step_idx", 0))
+        )
+        baseline_ft = np.asarray(
+            [row.get("ft_wrist_raw", row["ft_wrist"]) for row in baseline_hold],
+            dtype=np.float64,
+        )
+        baseline_progress = np.linspace(0.0, 1.0, len(baseline_ft))
+        current_progress = np.linspace(0.0, 1.0, len(current_hold))
+        interpolated = np.column_stack([
+            np.interp(current_progress, baseline_progress, baseline_ft[:, component])
+            for component in range(6)
+        ])
+        for row, dynamic_bias in zip(current_hold, interpolated):
+            raw = np.asarray(row.get("ft_wrist_raw", row["ft_wrist"]), dtype=np.float64)
+            row["ft_wrist_raw"] = raw.astype(np.float32)
+            row["ft_wrist_baseline"] = dynamic_bias.astype(np.float32)
+            row["ft_wrist"] = (raw - dynamic_bias).astype(np.float32)
+
+    return {
+        "method": "per-hold normalized-time linear interpolation",
+        "source_path": str(baseline_path.resolve()),
+        "source_sha256": hashlib.sha256(baseline_path.read_bytes()).hexdigest(),
+        "source_row_count": len(baseline_rows),
+        "corrected_field": "ft_wrist",
+        "raw_field": "ft_wrist_raw",
+        "bias_field": "ft_wrist_baseline",
+    }
 
 def plot_and_save_data(raw_ft_data, label="pull", window_size=5, baseline=False, plot=True, metadata=""):
     """Saves raw/smooth CSVs and plots the Fx, Fy, Fz forces."""
@@ -521,7 +616,8 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
 
     # 5. Wait a moment before the Cartesian reset
     full_pull_data = np.concatenate(pull_data, axis=0)
-    label = f"pull_theta{theta:.2f}_phi{phi:.2f}"
+    base_label = f"pull_theta{theta:.2f}_phi{phi:.2f}"
+    label = base_label
     if baseline:
         label += "_baseline"
     else:
@@ -594,6 +690,32 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         "config_snapshot": config_snapshot,
         "raw_robot_row_count": len(robot_rows),
     }
+    if baseline:
+        robot_metadata["dynamic_baseline"] = {
+            "role": "unloaded_baseline_source",
+            "applied": False,
+            "profile_field": "ft_wrist_raw",
+            "note": "Use this file with a matching collect run; no correction is applied to baseline rows.",
+        }
+    elif USE_DYNAMIC_BASELINE_CORRECTION:
+        baseline_path = Path(f"{base_label}_baseline_robot.parquet")
+        if not baseline_path.exists():
+            raise FileNotFoundError(
+                f"Dynamic baseline correction is enabled, but {baseline_path} does not exist. "
+                "Run the same trajectory with --mode baseline first, or set "
+                "USE_DYNAMIC_BASELINE_CORRECTION = False."
+            )
+        baseline_metadata = _read_parquet_metadata(baseline_path)
+        _validate_baseline_compatibility(robot_metadata, baseline_metadata, baseline_path)
+        correction_metadata = apply_dynamic_baseline(robot_rows, baseline_path)
+        correction_metadata.update({"role": "corrected_collect_run", "applied": True})
+        robot_metadata["dynamic_baseline"] = correction_metadata
+    else:
+        robot_metadata["dynamic_baseline"] = {
+            "role": "uncorrected_collect_run",
+            "applied": False,
+            "reason": "USE_DYNAMIC_BASELINE_CORRECTION is False",
+        }
     saved_robot_path = save_robot_hold_parquet(robot_rows, robot_output, robot_metadata)
     print(f"Wrote robot hold data to {saved_robot_path}")
     

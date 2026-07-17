@@ -187,6 +187,8 @@ def _unified_schema(n_holds: int, n_directions: int) -> pa.Schema:
         pa.field("hold_step_idx", pa.int32()),
         pa.field("hold_index", pa.int32()),
         pa.field("ft_wrist", vector(6), metadata={b"frame": b"robot EE/body"}),
+        pa.field("ft_wrist_raw", vector(6), metadata={b"frame": b"robot EE/body"}),
+        pa.field("ft_wrist_baseline", vector(6), metadata={b"frame": b"robot EE/body"}),
         pa.field("tau_J", vector(7), metadata={b"unit": b"N m", b"source": b"RobotState.tau_J"}),
         pa.field("tau_ext_hat_filtered", vector(7), metadata={b"unit": b"N m", b"source": b"RobotState.tau_ext_hat_filtered"}),
         pa.field("tau_J_d", vector(7), metadata={b"unit": b"N m", b"source": b"RobotState.tau_J_d"}),
@@ -329,6 +331,8 @@ def compile_static_episode(
             "hold_step_idx": int(robot_row.get("hold_step_idx", step_idx)),
             "hold_index": hold_idx,
             "ft_wrist": _as_list(robot_row["ft_wrist"]),
+            "ft_wrist_raw": _as_list(robot_row.get("ft_wrist_raw", robot_row["ft_wrist"])),
+            "ft_wrist_baseline": _as_list(robot_row.get("ft_wrist_baseline", np.zeros(6))),
             "tau_J": _as_list(robot_row["tau_J"]),
             "tau_ext_hat_filtered": _as_list(robot_row["tau_ext_hat_filtered"]),
             "tau_J_d": _as_list(robot_row["tau_J_d"]),
@@ -406,6 +410,14 @@ def compile_static_episode(
         "hold_camera_summaries": hold_camera_summaries,
         "field_layout": {
             "ft_wrist": {"dim": 6, "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]},
+            "ft_wrist_raw": {
+                "dim": 6, "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+                "description": "uncorrected measured/model-estimated wrench before dynamic baseline subtraction",
+            },
+            "ft_wrist_baseline": {
+                "dim": 6, "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+                "description": "time-varying unloaded baseline subtracted from ft_wrist_raw",
+            },
             "tau_J": {
                 "dim": 7, "order": [f"joint_{i}" for i in range(1, 8)], "unit": "N m",
                 "description": "measured link-side joint torque sensor signals",
