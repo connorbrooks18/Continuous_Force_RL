@@ -190,6 +190,7 @@ def _unified_schema(n_holds: int, n_directions: int) -> pa.Schema:
         pa.field("tau_J", vector(7), metadata={b"unit": b"N m", b"source": b"RobotState.tau_J"}),
         pa.field("tau_ext_hat_filtered", vector(7), metadata={b"unit": b"N m", b"source": b"RobotState.tau_ext_hat_filtered"}),
         pa.field("tau_J_d", vector(7), metadata={b"unit": b"N m", b"source": b"RobotState.tau_J_d"}),
+        pa.field("gravity_torques", vector(7), metadata={b"unit": b"N m", b"source": b"Model.gravity(state)"}),
         pa.field("tcp_velocity", vector(6)),
         pa.field("action", vector(6), metadata={b"semantics": b"commanded EE twist"}),
         pa.field("tcp_pos", vector(3)),
@@ -235,7 +236,7 @@ def compile_static_episode(
         raise ValueError("Robot input contains no hold rows")
     required_robot_fields = {
         "timestamp", "hold_index", "ft_wrist", "tau_J", "tau_ext_hat_filtered",
-        "tau_J_d", "tcp_velocity", "action",
+        "tau_J_d", "gravity_torques", "tcp_velocity", "action",
         "tcp_pos", "hold_number", "direction", "phase", "excitation_direction",
     }
     missing = required_robot_fields - set(robot_rows[0])
@@ -331,6 +332,7 @@ def compile_static_episode(
             "tau_J": _as_list(robot_row["tau_J"]),
             "tau_ext_hat_filtered": _as_list(robot_row["tau_ext_hat_filtered"]),
             "tau_J_d": _as_list(robot_row["tau_J_d"]),
+            "gravity_torques": _as_list(robot_row["gravity_torques"]),
             "tcp_velocity": _as_list(robot_row["tcp_velocity"]),
             "action": _as_list(robot_row["action"]),
             "tcp_pos": _as_list(robot_row["tcp_pos"]),
@@ -415,6 +417,10 @@ def compile_static_episode(
             "tau_J_d": {
                 "dim": 7, "order": [f"joint_{i}" for i in range(1, 8)], "unit": "N m",
                 "description": "desired link-side joint torque without gravity",
+            },
+            "gravity_torques": {
+                "dim": 7, "order": [f"joint_{i}" for i in range(1, 8)], "unit": "N m",
+                "description": "gravity torque from pylibfranka Model.gravity(state)",
             },
             "tcp_velocity": {"dim": 6, "order": ["vx", "vy", "vz", "wx", "wy", "wz"]},
             "action": {"dim": 6, "order": ["vx", "vy", "vz", "wx", "wy", "wz"]},

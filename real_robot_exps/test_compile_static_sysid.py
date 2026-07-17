@@ -37,6 +37,7 @@ class CompileStaticSysidTest(unittest.TestCase):
                         "tau_J": np.arange(7, dtype=np.float32),
                         "tau_ext_hat_filtered": np.arange(7, dtype=np.float32) + 10,
                         "tau_J_d": np.arange(7, dtype=np.float32) + 20,
+                        "gravity_torques": np.arange(7, dtype=np.float32) + 30,
                         "tcp_velocity": np.zeros(6, dtype=np.float32),
                         "action": np.zeros(6, dtype=np.float32),
                         "tcp_pos": np.ones(3, dtype=np.float32),
@@ -107,6 +108,7 @@ class CompileStaticSysidTest(unittest.TestCase):
             self.assertIn("tau_J", output.schema.names)
             self.assertIn("tau_ext_hat_filtered", output.schema.names)
             self.assertIn("tau_J_d", output.schema.names)
+            self.assertIn("gravity_torques", output.schema.names)
 
 
 if __name__ == "__main__":

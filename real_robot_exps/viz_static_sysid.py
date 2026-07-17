@@ -138,6 +138,11 @@ def plot_static_sysid(
         (field, title, _vector_columns(rows, field))
         for field, title in torque_fields if field in rows[0]
     ]
+    if "gravity_torques" in rows[0]:
+        gravity_torques = _vector_columns(rows, "gravity_torques")
+        available_torques.append(
+            ("gravity_torques", "Model gravity torque $g(q)$", gravity_torques)
+        )
     # Allow older files to remain inspectable; new collection files use the
     # explicit libfranka field names above.
     if not available_torques and "joint_torques" in rows[0]:
@@ -169,17 +174,26 @@ def plot_static_sysid(
     episode_id = _episode_id_from_metadata(data.metadata, rows)
 
     torque_panel_count = len(available_torques)
-    n_panels = (8 if has_camera else 6) + torque_panel_count
+    n_panels = (9 if has_camera else 7) + torque_panel_count
     fig, axes = plt.subplots(n_panels, 1, figsize=(16, 4 * n_panels), sharex=True, constrained_layout=True)
 
     _plot_vector_panel(axes[0], t, ft, ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"], "Wrist wrench")
-    for panel_idx, (_, panel_title, values) in enumerate(available_torques, start=1):
+    force_magnitude = np.linalg.norm(ft[:, :3], axis=1)
+    torque_magnitude = np.linalg.norm(ft[:, 3:], axis=1)
+    axes[1].plot(t, force_magnitude, label=r"$\|F\|$ [N]", linewidth=1.5)
+    axes[1].plot(t, torque_magnitude, label=r"$\|T\|$ [N m]", linewidth=1.5)
+    axes[1].set_title("Wrist wrench magnitudes")
+    axes[1].set_ylabel("magnitude")
+    axes[1].grid(True, alpha=0.25)
+    axes[1].legend(loc="upper right")
+
+    for panel_idx, (_, panel_title, values) in enumerate(available_torques, start=2):
         _plot_vector_panel(
             axes[panel_idx], t, values,
             [f"joint {i}" for i in range(1, 8)], panel_title,
         )
         axes[panel_idx].set_ylabel("N m")
-    offset = torque_panel_count
+    offset = torque_panel_count + 1
     _plot_vector_panel(axes[1 + offset], t, vel, ["vx", "vy", "vz", "wx", "wy", "wz"], "TCP velocity")
     _plot_vector_panel(axes[2 + offset], t, action, ["ax", "ay", "az", "awx", "awy", "awz"], "Recorded action")
 

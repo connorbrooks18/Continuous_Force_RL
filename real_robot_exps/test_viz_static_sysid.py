@@ -30,6 +30,7 @@ class VizStaticSysidTest(unittest.TestCase):
                     "tau_J": np.arange(7, dtype=np.float32),
                     "tau_ext_hat_filtered": np.arange(7, dtype=np.float32) + 10,
                     "tau_J_d": np.arange(7, dtype=np.float32) + 20,
+                    "gravity_torques": np.arange(7, dtype=np.float32) + 30,
                     "tcp_velocity": np.zeros(6, dtype=np.float32),
                     "action": np.zeros(6, dtype=np.float32),
                     "tcp_pos": np.ones(3, dtype=np.float32),
@@ -60,7 +61,7 @@ class VizStaticSysidTest(unittest.TestCase):
 
             data = _load_plot_data(path)
             fig = plot_static_sysid(data)
-            self.assertEqual(len(fig.axes), 11)
+            self.assertEqual(len(fig.axes), 13)
 
     def test_builds_figure_from_arm_only_parquet(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -76,6 +77,7 @@ class VizStaticSysidTest(unittest.TestCase):
                     "tau_J": np.arange(7, dtype=np.float32),
                     "tau_ext_hat_filtered": np.arange(7, dtype=np.float32) + 10,
                     "tau_J_d": np.arange(7, dtype=np.float32) + 20,
+                    "gravity_torques": np.arange(7, dtype=np.float32) + 30,
                     "tcp_velocity": np.zeros(6, dtype=np.float32),
                     "action": np.zeros(6, dtype=np.float32),
                     "tcp_pos": np.ones(3, dtype=np.float32) * idx,
@@ -96,7 +98,7 @@ class VizStaticSysidTest(unittest.TestCase):
             data = _load_plot_data(path)
             self.assertFalse(data.has_camera)
             fig = plot_static_sysid(data)
-            self.assertEqual(len(fig.axes), 9)
+            self.assertEqual(len(fig.axes), 11)
 
 
 if __name__ == "__main__":

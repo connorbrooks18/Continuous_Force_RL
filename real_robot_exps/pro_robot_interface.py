@@ -75,10 +75,11 @@ _SHM_O_T_EE  = (14,  30)   # EE pose column-major [16]
 _SHM_TAU_J   = (30,  37)   # measured link-side joint torques [7]
 _SHM_TAU_EXT = (37,  44)   # filtered estimated external joint torques [7]
 _SHM_TAU_J_D = (44,  51)   # desired link-side joint torques without gravity [7]
-_SHM_FT_EMA  = (51,  57)   # EMA-filtered F/T [6]
-_SHM_JAC     = (57,  99)   # Jacobian 6x7 flat [42]
-_SHM_MASS    = (99,  148)  # Mass matrix 7x7 flat [49]
-_SHM_STATE_SIZE = 148
+_SHM_GRAVITY = (51,  58)   # model gravity torques [7]
+_SHM_FT_EMA  = (58,  64)   # EMA-filtered F/T [6]
+_SHM_JAC     = (64,  106)  # Jacobian 6x7 flat [42]
+_SHM_MASS    = (106, 155)  # Mass matrix 7x7 flat [49]
+_SHM_STATE_SIZE = 155
 
 _SHM_TORQUE_SIZE = 7
 _SHM_WRENCH = (7, 13)            # task_wrench [6] (compute process writes)
@@ -112,6 +113,7 @@ def _build_snapshot_from_shm(state_shm, device):
     tau_J = list(state_shm[_SHM_TAU_J[0]:_SHM_TAU_J[1]])
     tau_ext = list(state_shm[_SHM_TAU_EXT[0]:_SHM_TAU_EXT[1]])
     tau_J_d = list(state_shm[_SHM_TAU_J_D[0]:_SHM_TAU_J_D[1]])
+    gravity = list(state_shm[_SHM_GRAVITY[0]:_SHM_GRAVITY[1]])
     ft_ema = list(state_shm[_SHM_FT_EMA[0]:_SHM_FT_EMA[1]])
     jac_flat = list(state_shm[_SHM_JAC[0]:_SHM_JAC[1]])
     mass_flat = list(state_shm[_SHM_MASS[0]:_SHM_MASS[1]])
@@ -130,6 +132,7 @@ def _build_snapshot_from_shm(state_shm, device):
     tau_J = torch.tensor(tau_J, device=device, dtype=torch.float32)
     tau_ext_hat_filtered = torch.tensor(tau_ext, device=device, dtype=torch.float32)
     tau_J_d = torch.tensor(tau_J_d, device=device, dtype=torch.float32)
+    gravity_torques = torch.tensor(gravity, device=device, dtype=torch.float32)
 
     jacobian = torch.tensor(jac_flat, device=device, dtype=torch.float32).reshape(7, 6).T
     mass_matrix = torch.tensor(mass_flat, device=device, dtype=torch.float32).reshape(7, 7)
@@ -156,6 +159,7 @@ def _build_snapshot_from_shm(state_shm, device):
     return StateSnapshot(
         ee_pos, ee_quat, ee_linvel, ee_angvel, force_torque,
         joint_pos, joint_vel, tau_J, tau_ext_hat_filtered, tau_J_d,
+        gravity_torques,
         jacobian, mass_matrix,
     )
 
@@ -246,13 +250,14 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
         return
 
     # --- Helper: pack state into shared memory ---
-    def _pack_state(state, ft_ema, jac_flat, mass_flat):
+    def _pack_state(state, ft_ema, jac_flat, mass_flat, gravity):
         state_shm[_SHM_Q[0]:_SHM_Q[1]] = state.q
         state_shm[_SHM_DQ[0]:_SHM_DQ[1]] = state.dq
         state_shm[_SHM_O_T_EE[0]:_SHM_O_T_EE[1]] = state.O_T_EE
         state_shm[_SHM_TAU_J[0]:_SHM_TAU_J[1]] = state.tau_J
         state_shm[_SHM_TAU_EXT[0]:_SHM_TAU_EXT[1]] = state.tau_ext_hat_filtered
         state_shm[_SHM_TAU_J_D[0]:_SHM_TAU_J_D[1]] = state.tau_J_d
+        state_shm[_SHM_GRAVITY[0]:_SHM_GRAVITY[1]] = gravity
         state_shm[_SHM_FT_EMA[0]:_SHM_FT_EMA[1]] = ft_ema
         state_shm[_SHM_JAC[0]:_SHM_JAC[1]] = jac_flat
         state_shm[_SHM_MASS[0]:_SHM_MASS[1]] = mass_flat
@@ -326,7 +331,8 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                     # Pack final state into shared memory
                     jac_flat = model.zero_jacobian(state)
                     mass_flat = model.mass(state)
-                    _pack_state(state, [0.0] * 6, jac_flat, mass_flat)
+                    gravity = model.gravity(state)
+                    _pack_state(state, [0.0] * 6, jac_flat, mass_flat, gravity)
                     state_ready.set()
 
                     robot.stop()
@@ -355,10 +361,11 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                 # Compute initial Jacobian and mass matrix
                 jac_flat = model.zero_jacobian(state)
                 mass_flat = model.mass(state)
+                gravity = model.gravity(state)
 
                 # Pack initial state
                 ft_ema = [0.0] * 6
-                _pack_state(state, ft_ema, jac_flat, mass_flat)
+                _pack_state(state, ft_ema, jac_flat, mass_flat, gravity)
                 state_ready.set()
 
                 response_queue.put(("torque_started", None))
@@ -407,6 +414,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                         # AFTER writeOnce: compute Jacobian and mass matrix
                         jac_flat = model.zero_jacobian(state)
                         mass_flat = model.mass(state)
+                        gravity = model.gravity(state)
 
                         # Capture raw F/T (write to numpy BEFORE bias subtraction)
                         # O_F_ext_hat_K base frame. ref: https://frankarobotics.github.io/libfranka/0.15.0/structfranka_1_1RobotState.html#a5a830b4f9d6a3c2dc92e4a9cc6050493
@@ -424,7 +432,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                             ft_ema[i] = alpha * ft[i] + one_minus_alpha * ft_ema[i]
 
                         # Pack state into shared memory
-                        _pack_state(state, ft_ema, jac_flat, mass_flat)
+                        _pack_state(state, ft_ema, jac_flat, mass_flat, gravity)
 
                         # Write 1kHz snapshot into pre-allocated numpy buffers
                         # (no Python list objects created — data goes straight to C doubles)

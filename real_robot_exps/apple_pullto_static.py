@@ -45,6 +45,12 @@ CONVERGE_FRAMES = 10
 MAX_STEPS = 500             # ~33s at 15Hz safety cap
 MOVE_DISTANCE = 0.02     # 5cm
 
+# One-line switch for unloaded/system-identification trials closer to the robot.
+# False uses the normal apple pose; True uses CLOSE_PULL_START_POSITION_M.
+USE_CLOSE_PULL_START_POSE = True
+CLOSE_PULL_START_POSITION_M = np.array([0.0, 0.7, 0.35], dtype=np.float64)
+CLOSE_PULL_ROLL_FORWARD_DEG = 20.0
+
 
 def load_gains_from_config(real_config: dict, device: str = "cpu") -> dict:
     """Load controller gains from real robot config control_gains section.
@@ -318,6 +324,7 @@ def hold_and_record(
                 "tau_J": snap.tau_J.cpu().numpy().astype(np.float32, copy=True),
                 "tau_ext_hat_filtered": snap.tau_ext_hat_filtered.cpu().numpy().astype(np.float32, copy=True),
                 "tau_J_d": snap.tau_J_d.cpu().numpy().astype(np.float32, copy=True),
+                "gravity_torques": snap.gravity_torques.cpu().numpy().astype(np.float32, copy=True),
                 "tcp_velocity": np.concatenate([
                     snap.ee_linvel.cpu().numpy(),
                     snap.ee_angvel.cpu().numpy(),
@@ -412,13 +419,13 @@ def update_gains(gains, new_prop_gains, device):
     gains["task_deriv_gains"] = torch.tensor(derivs, device=device, dtype=torch.float32)
     return gains
 
-def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5, args=None, config_snapshot=None, ee_config=None, ft_calibration_enabled: bool = False):
+def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5, args=None, config_snapshot=None, ee_config=None, ft_calibration_enabled: bool = False):
     collection_start_timestamp = time.time()
     episode_id = str(uuid4())
     run_args = dict(args or {})
     
     time.sleep(2.0) # let it settle
-    robot.reset_to_start_pose(apple_pose_4x4)
+    robot.reset_to_start_pose(pull_start_pose_4x4)
     snap = robot.get_state_snapshot()
 
 
@@ -563,6 +570,7 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
             "tau_J": "measured link-side joint torque sensor signals",
             "tau_ext_hat_filtered": "low-pass filtered external torque estimate; excludes configured EE/load and robot dynamics",
             "tau_J_d": "desired link-side joint torques without gravity",
+            "gravity_torques": "gravity torque from pylibfranka Model.gravity(state)",
         },
         "ft_calibration": {
             "enabled": bool(ft_calibration_enabled),
@@ -575,7 +583,8 @@ def pull_test(theta, phi, robot: FrankaInterface, apple_pose_4x4, default_dof_po
         "angular_velocity_unit": "rad/s",
         "force_unit": "N",
         "torque_unit": "N*m",
-        "robot_start_pose_4x4": np.asarray(apple_pose_4x4).tolist(),
+        "robot_start_pose_4x4": np.asarray(pull_start_pose_4x4).tolist(),
+        "pull_start_pose_name": str(run_args.get("pull_start_pose_name", "unspecified")),
         "home_pose_4x4": np.asarray(home_pose_4x4).tolist(),
         "controller_gains": {
             key: value.detach().cpu().tolist() if torch.is_tensor(value) else value
@@ -753,6 +762,27 @@ def main():
     # print(R)
     # print(apple_rot)
     apple_pose_4x4 = make_ee_target_pose_from_matrix(np.array([0, .9262, .41]), apple_rot)
+    close_roll_rad = math.radians(CLOSE_PULL_ROLL_FORWARD_DEG)
+    close_roll_local_x = np.array([
+        [1.0, 0.0, 0.0],
+        [0.0, math.cos(close_roll_rad), -math.sin(close_roll_rad)],
+        [0.0, math.sin(close_roll_rad), math.cos(close_roll_rad)],
+    ], dtype=np.float64)
+    # Post-multiplication rolls about the local EE X axis. For apple_rot, a
+    # positive angle tips the close-pose tool axis downward in base Z.
+    close_rot = apple_rot @ close_roll_local_x
+    close_pose_4x4 = make_ee_target_pose_from_matrix(
+        CLOSE_PULL_START_POSITION_M,
+        close_rot,
+    )
+    pull_start_pose_4x4 = (
+        close_pose_4x4 if USE_CLOSE_PULL_START_POSE else apple_pose_4x4
+    )
+    pull_start_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else "apple_pose_4x4"
+    print(
+        f"Pull start selection: {pull_start_pose_name} at "
+        f"{pull_start_pose_4x4[:3, 3].tolist()} m"
+    )
 
     # 6. Move to home and wait for user
     print("\nMoving to home position...")
@@ -773,7 +803,7 @@ def main():
 
     # Move to target (orientation goal = home_quat, should not change)
 
-    target = apple_pose_4x4
+    target = pull_start_pose_4x4
     
 
     #run_move(robot, gains, home_actual, home_quat, default_dof_pos, "Apple", device)
@@ -805,8 +835,17 @@ def main():
     angles = [up_back_left, up_back, up_back_right, back_left, back, back_right]
     angles = [up_back_left, up_back, up_back_right]
     angles = [(theta, phi)]
+    run_arguments = dict(vars(args))
+    run_arguments.update({
+        "use_close_pull_start_pose": bool(USE_CLOSE_PULL_START_POSE),
+        "pull_start_pose_name": pull_start_pose_name,
+        "close_pull_start_position_m": CLOSE_PULL_START_POSITION_M.tolist(),
+        "close_pull_roll_forward_deg": float(CLOSE_PULL_ROLL_FORWARD_DEG),
+        "apple_pose_4x4": apple_pose_4x4.tolist(),
+        "close_pose_4x4": close_pose_4x4.tolist(),
+    })
     for (theta, phi) in angles:
-        pull_test(theta, phi, robot, apple_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline, to_plot=to_plot, debug=(debug != "none"), distance=distance, stops=stops, args=vars(args), config_snapshot=real_config, ee_config=ee_config, ft_calibration_enabled=bool(real_config.get("robot", {}).get("ft_calibration_duration_sec", 0)))
+        pull_test(theta, phi, robot, pull_start_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline, to_plot=to_plot, debug=(debug != "none"), distance=distance, stops=stops, args=run_arguments, config_snapshot=real_config, ee_config=ee_config, ft_calibration_enabled=bool(real_config.get("robot", {}).get("ft_calibration_duration_sec", 0)))
 
      
 

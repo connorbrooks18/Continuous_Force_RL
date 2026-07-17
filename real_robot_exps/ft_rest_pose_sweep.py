@@ -171,7 +171,7 @@ def main() -> None:
                 np.mean(np.asarray([row[field] for row in hold_rows], dtype=np.float64), axis=0).tolist()
                 if hold_rows else [float("nan")] * 7
             )
-            for field in ("tau_J", "tau_ext_hat_filtered", "tau_J_d")
+            for field in ("tau_J", "tau_ext_hat_filtered", "tau_J_d", "gravity_torques")
         }
         robot.end_control()
         pose_summaries.append({
@@ -186,6 +186,7 @@ def main() -> None:
             "tau_J_mean": torque_means["tau_J"],
             "tau_ext_hat_filtered_mean": torque_means["tau_ext_hat_filtered"],
             "tau_J_d_mean": torque_means["tau_J_d"],
+            "gravity_torques_mean": torque_means["gravity_torques"],
         })
 
     robot.reset_to_start_pose(home_pose)
@@ -211,6 +212,7 @@ def main() -> None:
             "tau_J": "measured link-side joint torque sensor signals",
             "tau_ext_hat_filtered": "low-pass filtered external torque estimate; excludes configured EE/load and robot dynamics",
             "tau_J_d": "desired link-side joint torques without gravity",
+            "gravity_torques": "gravity torque from pylibfranka Model.gravity(state)",
         },
         "note": "Rest-pose wrench sweep with no pull motion; intended for zero/bias debugging.",
     }

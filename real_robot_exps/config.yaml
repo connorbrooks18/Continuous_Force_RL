@@ -6,7 +6,7 @@ robot:
   ip: "192.168.1.11"
   use_mock: false              # Set false for real robot
   control_rate_hz: 15.0       # Must match training policy_hz
-  reset_duration_sec: 2  # Duration for Cartesian reset motion
+  reset_duration_sec: 5  # Duration for Cartesian reset motion
   retract_height_m: 0.04      # Retract upward before reset to clear hole (meters)
   gripper_force_n: 62.0       # Grasp force in Newtons (max 70N continuous limit)
 
