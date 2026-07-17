@@ -5,4 +5,6 @@ Tests
     Results: Reasonable data
 
 4. Does Kp cause the nonzero baseline data? No. Similar values at 40, 60, and 120. 
-5. Does Kd cause the nonzero baseline data? I'll fix Kp = 80. 
+5. Does Kd cause the nonzero baseline data? I'll fix Kp = 80. With Kd = c * sqrt(Kp) and c at 1.5, 1.75, 2.0, 2.25, and 2.5, there was no significant difference
+
+6. 

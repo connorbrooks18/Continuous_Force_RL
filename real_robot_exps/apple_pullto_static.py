@@ -510,7 +510,7 @@ def update_gains(gains, new_prop_gains, device):
     gains["task_prop_gains"] = torch.tensor(new_prop_gains, device=device, dtype=torch.float32)
     derivs = [0, 0, 0, 0, 0, 0]
     for i in range(len(new_prop_gains)):
-        derivs[i] = 1.75 * math.sqrt(new_prop_gains[i])
+        derivs[i] =  1.75 * math.sqrt(new_prop_gains[i]) # 1.75 was working best
     gains["task_deriv_gains"] = torch.tensor(derivs, device=device, dtype=torch.float32)
     return gains
 
