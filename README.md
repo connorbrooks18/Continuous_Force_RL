@@ -26,9 +26,7 @@ Near the top of `real_robot_exps/apple_pullto_static.py`, select the starting
 pose and baseline behavior:
 
 ```python
-USE_CLOSE_PULL_START_POSE = True
-CLOSE_PULL_START_POSITION_M = np.array([0.0, 0.7, 0.35])
-CLOSE_PULL_ROLL_FORWARD_DEG = 20.0
+USE_CLOSE_PULL_START_POSE = False
 USE_DYNAMIC_BASELINE_CORRECTION = True
 ```
 
