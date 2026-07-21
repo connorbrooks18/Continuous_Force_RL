@@ -293,7 +293,9 @@ origin; `--fruiting-base-pos X Y Z` can override it after calibration.
 The unified file stores the model fields as fixed-size Arrow lists and embeds
 collection, calibration, synchronization, topology, units, source-file hashes,
 software versions, and camera-selection diagnostics in `dataset_metadata` in
-the Parquet footer.
+the Parquet footer. Camera-derived positions and transforms are converted into
+the Franka base `O` frame before writing, while the original tag-frame inputs
+remain recorded in metadata for traceability.
 
 ### Per-step Parquet fields
 
@@ -311,9 +313,10 @@ The principal collected/compiled fields are:
 | `tcp_velocity` | 6 | TCP linear XYZ in m/s plus angular XYZ in rad/s. |
 | `action` | 6 | Recorded EE velocity command; zero during the recorded static holds. |
 | `tcp_pos` | 3 | Robot TCP position in metres. |
-| `apple_pos` | 3 | Camera-derived Apple position in the reference-AprilTag frame; metres. |
-| `woody_part_start_pos` | 9 | Three XYZ starts flattened in Branch, Spur, Apple order; metres. |
-| `woody_part_end_pos` | 9 | Matching three XYZ ends; metres. |
+| `apple_pos` | 3 | Camera-derived Apple position in the Franka base `O` frame; metres. |
+| `apple_pose_4x4` | 16 | Camera-derived Apple pose in the Franka base `O` frame, flattened row-major. |
+| `woody_part_start_pos` | 9 | Three XYZ starts flattened in Branch, Spur, Apple order in the Franka base `O` frame; metres. |
+| `woody_part_end_pos` | 9 | Matching three XYZ ends in the Franka base `O` frame; metres. |
 | `woody_bending_angles` | 3 | Chord deflection from the frame-0 rest direction; radians. |
 | `hold_number` | number of holds | One-hot hold encoding. |
 | `direction` | number of directions | One-hot direction encoding. |

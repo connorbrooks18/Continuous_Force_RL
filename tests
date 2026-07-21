@@ -7,4 +7,6 @@ Tests
 4. Does Kp cause the nonzero baseline data? No. Similar values at 40, 60, and 120. 
 5. Does Kd cause the nonzero baseline data? I'll fix Kp = 80. With Kd = c * sqrt(Kp) and c at 1.5, 1.75, 2.0, 2.25, and 2.5, there was no significant difference
 
-6. 
+6. Test F/T data With apple (find 0 torque location also). Good have Tx and Fy noticeable. Consistent ~1.5N (negative) Fy from a 160g fake apple (labelled). NOTE: A positive reading is seen when the apple is attatched and pulling up on the grabber. Makes sense.
+
+7. Full pull run (camera, gripper, arm) look at data. Validate transformation from reference tag to base frame

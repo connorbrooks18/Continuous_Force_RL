@@ -61,7 +61,7 @@ class VizStaticSysidTest(unittest.TestCase):
 
             data = _load_plot_data(path)
             fig = plot_static_sysid(data)
-            self.assertEqual(len(fig.axes), 13)
+            self.assertEqual(len(fig.axes), 6)
 
     def test_builds_figure_from_arm_only_parquet(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -98,7 +98,7 @@ class VizStaticSysidTest(unittest.TestCase):
             data = _load_plot_data(path)
             self.assertFalse(data.has_camera)
             fig = plot_static_sysid(data)
-            self.assertEqual(len(fig.axes), 11)
+            self.assertEqual(len(fig.axes), 4)
 
 
 if __name__ == "__main__":

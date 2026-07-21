@@ -36,6 +36,21 @@ SCHEMA_VERSION = "1.0.0"
 TRACKED_NAMES = ("Branch", "Spur", "Apple")
 WOODY_PART_NAMES = ("Branch", "Spur", "Apple")
 
+# Edit this block when the tag-to-base calibration changes.
+# Current convention:
+#   base x = tag x
+#   base y = tag z
+#   base z = -tag y
+#
+# The translation below is the reference tag origin in the Franka base O frame.
+# It is hardcoded here so the unified compiler stays explicit and easy to audit.
+REFERENCE_TAG_TO_BASE_4X4_DEFAULT = np.array([
+    [1.0, 0.0, 0.0, 0.0],
+    [0.0, 0.0, 1.0, 1.03525121],
+    [0.0, -1.0, 0.0, 0.66258599],
+    [0.0, 0.0, 0.0, 1.0],
+], dtype=np.float64)
+
 
 def _read_dataset_metadata(path: Path) -> dict[str, Any]:
     raw = pq.read_schema(path).metadata or {}
@@ -98,21 +113,9 @@ def _load_tracking_frames(path: Path) -> pd.DataFrame:
     tracking["timestamp"] = pd.to_numeric(tracking["timestamp"], errors="coerce")
     tracking = tracking[np.isfinite(tracking["timestamp"])].copy()
 
-    rows: list[dict[str, Any]] = []
-    for timestamp, group in tracking.groupby("timestamp", sort=True):
-        by_name = {str(row["name"]): row for _, row in group.iterrows()}
-        if not all(name in by_name for name in TRACKED_NAMES):
-            continue
-        row: dict[str, Any] = {"timestamp": float(timestamp)}
-        for name in TRACKED_NAMES:
-            row[name] = np.array(
-                [by_name[name]["x"], by_name[name]["y"], by_name[name]["z"]],
-                dtype=np.float64,
-            )
-        rows.append(row)
-    if not rows:
+    if tracking.empty:
         raise ValueError("Tracking input contains no complete valid Branch/Spur/Apple frames")
-    return pd.DataFrame(rows).sort_values("timestamp").reset_index(drop=True)
+    return tracking.sort_values("timestamp").reset_index(drop=True)
 
 
 def _select_frames(
@@ -124,33 +127,121 @@ def _select_frames(
     interval: tuple[float, float] | None = None,
     prefer_before: bool = False,
 ) -> pd.DataFrame:
-    candidates = frames
+    complete_timestamps = []
+    for timestamp, group in frames.groupby("timestamp", sort=True):
+        by_name = set(str(name) for name in group["name"].tolist())
+        if all(name in by_name for name in TRACKED_NAMES):
+            complete_timestamps.append(float(timestamp))
+    candidates = frames[frames["timestamp"].isin(complete_timestamps)]
     if interval is not None:
         start, end = interval
         in_interval = frames[(frames["timestamp"] >= start) & (frames["timestamp"] <= end)]
         if not in_interval.empty:
-            candidates = in_interval
+            in_interval_ts = [
+                float(timestamp)
+                for timestamp, group in in_interval.groupby("timestamp", sort=True)
+                if all(name in set(str(n) for n in group["name"].tolist()) for name in TRACKED_NAMES)
+            ]
+            if in_interval_ts:
+                candidates = frames[frames["timestamp"].isin(in_interval_ts)]
     if prefer_before:
-        before = candidates[candidates["timestamp"] <= center]
-        if not before.empty:
-            candidates = before
-    candidates = candidates.assign(
-        _abs_delta=(candidates["timestamp"] - float(center)).abs()
+        before_ts = sorted({float(t) for t in candidates["timestamp"].tolist() if float(t) <= center})
+        if before_ts:
+            candidates = candidates[candidates["timestamp"].isin(before_ts)]
+    timestamp_df = (
+        candidates.groupby("timestamp", as_index=False)
+        .size()
+        .assign(_abs_delta=lambda df: (df["timestamp"] - float(center)).abs())
     )
-    candidates = candidates[candidates["_abs_delta"] <= float(max_delta_s)]
-    selected = candidates.nsmallest(int(count), "_abs_delta").sort_values("timestamp")
+    timestamp_df = timestamp_df[timestamp_df["_abs_delta"] <= float(max_delta_s)]
+    selected_ts = timestamp_df.nsmallest(int(count), "_abs_delta").sort_values("timestamp")["timestamp"].tolist()
+    selected = candidates[candidates["timestamp"].isin(selected_ts)].sort_values(["timestamp", "name"])
     if selected.empty:
         raise ValueError(
             f"No complete camera frames within {max_delta_s:.3f}s of timestamp {center:.6f}"
         )
-    return selected.drop(columns=["_abs_delta"])
+    return selected
 
 
 def _median_positions(frames: pd.DataFrame) -> dict[str, np.ndarray]:
-    return {
-        name: np.median(np.stack(frames[name].to_list(), axis=0), axis=0)
-        for name in TRACKED_NAMES
-    }
+    positions: dict[str, np.ndarray] = {}
+    for name in TRACKED_NAMES:
+        subset = frames[frames["name"] == name][["x", "y", "z"]]
+        if subset.empty:
+            raise ValueError(f"Tracking selection is missing {name}")
+        positions[name] = np.median(subset.to_numpy(dtype=np.float64), axis=0)
+    return positions
+
+
+def _quat_xyzw_to_rotmat(quat_xyzw: np.ndarray) -> np.ndarray:
+    q = np.asarray(quat_xyzw, dtype=np.float64).reshape(4)
+    norm = float(np.linalg.norm(q))
+    if norm < 1e-12:
+        raise ValueError("Cannot convert zero-length quaternion to rotation matrix")
+    x, y, z, w = q / norm
+    xx, yy, zz = x * x, y * y, z * z
+    xy, xz, yz = x * y, x * z, y * z
+    wx, wy, wz = w * x, w * y, w * z
+    return np.array([
+        [1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)],
+        [2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)],
+        [2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)],
+    ], dtype=np.float64)
+
+
+def _rotmat_to_quat_xyzw(R: np.ndarray) -> np.ndarray:
+    R = np.asarray(R, dtype=np.float64).reshape(3, 3)
+    trace = float(np.trace(R))
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        qw = 0.25 * s
+        qx = (R[2, 1] - R[1, 2]) / s
+        qy = (R[0, 2] - R[2, 0]) / s
+        qz = (R[1, 0] - R[0, 1]) / s
+    else:
+        idx = int(np.argmax(np.diag(R)))
+        if idx == 0:
+            s = math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+            qw = (R[2, 1] - R[1, 2]) / s
+            qx = 0.25 * s
+            qy = (R[0, 1] + R[1, 0]) / s
+            qz = (R[0, 2] + R[2, 0]) / s
+        elif idx == 1:
+            s = math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+            qw = (R[0, 2] - R[2, 0]) / s
+            qx = (R[0, 1] + R[1, 0]) / s
+            qy = 0.25 * s
+            qz = (R[1, 2] + R[2, 1]) / s
+        else:
+            s = math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+            qw = (R[1, 0] - R[0, 1]) / s
+            qx = (R[0, 2] + R[2, 0]) / s
+            qy = (R[1, 2] + R[2, 1]) / s
+            qz = 0.25 * s
+    q = np.array([qx, qy, qz, qw], dtype=np.float64)
+    return q / np.linalg.norm(q)
+
+
+def _make_transform(pos: np.ndarray, quat_xyzw: np.ndarray) -> np.ndarray:
+    T = np.eye(4, dtype=np.float64)
+    T[:3, :3] = _quat_xyzw_to_rotmat(quat_xyzw)
+    T[:3, 3] = np.asarray(pos, dtype=np.float64).reshape(3)
+    return T
+
+
+def _transform_tracking_geometry(
+    positions: dict[str, np.ndarray],
+    poses: dict[str, np.ndarray],
+    tag_to_base_T: np.ndarray,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    base_positions: dict[str, np.ndarray] = {}
+    base_poses: dict[str, np.ndarray] = {}
+    for name in TRACKED_NAMES:
+        tag_pose = poses[name]
+        base_pose = tag_to_base_T @ tag_pose
+        base_positions[name] = base_pose[:3, 3].copy()
+        base_poses[name] = base_pose
+    return base_positions, base_poses
 
 
 def _endpoints(
@@ -196,9 +287,10 @@ def _unified_schema(n_holds: int, n_directions: int) -> pa.Schema:
         pa.field("tcp_velocity", vector(6)),
         pa.field("action", vector(6), metadata={b"semantics": b"commanded EE twist"}),
         pa.field("tcp_pos", vector(3)),
-        pa.field("apple_pos", vector(3), metadata={b"frame": b"reference_apriltag"}),
-        pa.field("woody_part_start_pos", vector(9)),
-        pa.field("woody_part_end_pos", vector(9)),
+        pa.field("apple_pos", vector(3), metadata={b"frame": b"franka_base_o"}),
+        pa.field("apple_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
+        pa.field("woody_part_start_pos", vector(9), metadata={b"frame": b"franka_base_o"}),
+        pa.field("woody_part_end_pos", vector(9), metadata={b"frame": b"franka_base_o"}),
         pa.field("woody_bending_angles", vector(3), metadata={b"unit": b"rad"}),
         pa.field("hold_number", vector(n_holds), metadata={b"encoding": b"one_hot"}),
         pa.field("direction", vector(n_directions), metadata={b"encoding": b"one_hot"}),
@@ -224,6 +316,7 @@ def compile_static_episode(
     camera_frame_count: int = 5,
     max_camera_delta_s: float = 1.0,
     fruiting_base_pos: np.ndarray | None = None,
+    reference_tag_to_base_4x4: np.ndarray | None = None,
     command_argv: list[str] | None = None,
 ) -> Path:
     robot_path = Path(robot_path)
@@ -250,13 +343,15 @@ def compile_static_episode(
     camera_frames = _load_tracking_frames(tracking_path)
 
     fruiting_base_was_explicit = fruiting_base_pos is not None
-    if fruiting_base_pos is None:
-        # Current assumption: the reference AprilTag origin is the fruiting base.
-        # TODO: replace this fallback with a calibrated tag-to-base translation.
-        fruiting_base_pos = np.asarray(
-            tracking_metadata.get("fruiting_base_pos", [0.0, 0.0, 0.0]),
+    tag_to_base_was_explicit = reference_tag_to_base_4x4 is not None
+    if reference_tag_to_base_4x4 is None:
+        reference_tag_to_base_4x4 = np.asarray(
+            tracking_metadata.get("reference_tag_to_base_4x4", REFERENCE_TAG_TO_BASE_4X4_DEFAULT),
             dtype=np.float64,
         )
+    reference_tag_to_base_4x4 = np.asarray(reference_tag_to_base_4x4, dtype=np.float64).reshape(4, 4)
+    if fruiting_base_pos is None:
+        fruiting_base_pos = reference_tag_to_base_4x4[:3, 3]
     fruiting_base_pos = np.asarray(fruiting_base_pos, dtype=np.float64).reshape(3)
 
     rest_timestamp = float(
@@ -272,7 +367,15 @@ def compile_static_episode(
         max_delta_s=float(max_camera_delta_s),
         prefer_before=True,
     )
-    rest_positions = _median_positions(rest_frames)
+    rest_positions_tag = _median_positions(rest_frames)
+    rest_poses_tag = {}
+    for name in TRACKED_NAMES:
+        pose_rows = rest_frames[rest_frames["name"] == name][["qx", "qy", "qz", "qw"]].to_numpy()
+        quat = np.median(pose_rows.astype(np.float64), axis=0)
+        rest_poses_tag[name] = _make_transform(rest_positions_tag[name], quat)
+    rest_positions, _ = _transform_tracking_geometry(
+        rest_positions_tag, rest_poses_tag, reference_tag_to_base_4x4
+    )
     rest_starts, rest_ends, rest_chords = _endpoints(rest_positions, fruiting_base_pos)
 
     hold_indices = sorted({int(row["hold_index"]) for row in robot_rows})
@@ -291,21 +394,31 @@ def compile_static_episode(
             max_delta_s=float(max_camera_delta_s),
             interval=(start, end),
         )
-        positions = _median_positions(selected)
+        positions_tag = _median_positions(selected)
+        poses_tag = {}
+        for name in TRACKED_NAMES:
+            pose_rows = selected[selected["name"] == name][["qx", "qy", "qz", "qw"]].to_numpy()
+            quat = np.median(pose_rows.astype(np.float64), axis=0)
+            poses_tag[name] = _make_transform(positions_tag[name], quat)
+        positions, poses = _transform_tracking_geometry(
+            positions_tag, poses_tag, reference_tag_to_base_4x4
+        )
         starts, ends, chords = _endpoints(positions, fruiting_base_pos)
         bending = _chord_deflections(chords, rest_chords)
         selected_timestamps = selected["timestamp"].astype(float).tolist()
         camera_center = float(np.median(selected_timestamps))
+        unique_selected_timestamps = sorted(set(selected_timestamps))
         geometry = {
             "apple_pos": positions["Apple"],
+            "apple_pose_4x4": poses["Apple"],
             "woody_part_start_pos": starts.reshape(-1),
             "woody_part_end_pos": ends.reshape(-1),
             "woody_bending_angles": bending,
             "camera_selected_timestamps": selected_timestamps,
             "camera_timestamp": camera_center,
-            "camera_window_start_timestamp": min(selected_timestamps),
-            "camera_window_end_timestamp": max(selected_timestamps),
-            "camera_frame_count": len(selected_timestamps),
+            "camera_window_start_timestamp": min(unique_selected_timestamps),
+            "camera_window_end_timestamp": max(unique_selected_timestamps),
+            "camera_frame_count": len(unique_selected_timestamps),
         }
         hold_geometry[hold_idx] = geometry
         hold_camera_summaries.append({
@@ -315,6 +428,7 @@ def compile_static_episode(
             "robot_midpoint_timestamp": center,
             "selected_camera_timestamps": selected_timestamps,
             "camera_median_timestamp": camera_center,
+            "camera_frame_count": len(unique_selected_timestamps),
             "bending_angles_rad": bending.tolist(),
         })
 
@@ -341,6 +455,7 @@ def compile_static_episode(
             "action": _as_list(robot_row["action"]),
             "tcp_pos": _as_list(robot_row["tcp_pos"]),
             "apple_pos": _as_list(geometry["apple_pos"]),
+            "apple_pose_4x4": _as_list(geometry["apple_pose_4x4"]),
             "woody_part_start_pos": _as_list(geometry["woody_part_start_pos"]),
             "woody_part_end_pos": _as_list(geometry["woody_part_end_pos"]),
             "woody_bending_angles": _as_list(geometry["woody_bending_angles"]),
@@ -373,6 +488,7 @@ def compile_static_episode(
         "timestamp_clock": "Unix wall clock from time.time() on the shared host",
         "timestamp_unit": "seconds",
         "coordinate_frame": "reference_apriltag",
+        "data_frame": "franka_base_o_frame",
         "position_unit": "m",
         "angle_unit": "rad",
         "topology": {
@@ -387,7 +503,14 @@ def compile_static_episode(
         "fruiting_base_source": (
             "explicit compiler argument"
             if fruiting_base_was_explicit
-            else "tracking metadata; currently reference-tag origin"
+            else "derived from reference_tag_to_base_4x4 translation"
+        ),
+        "reference_tag_to_base_4x4_used": reference_tag_to_base_4x4.tolist(),
+        "reference_tag_to_base_4x4": reference_tag_to_base_4x4.tolist(),
+        "reference_tag_to_base_source": (
+            "explicit compiler argument"
+            if tag_to_base_was_explicit
+            else "hardcoded default in compile_static_sysid.py"
         ),
         "bending_definition": (
             "Per-part unsigned chord deflection from frame-0/rest: "
@@ -438,6 +561,7 @@ def compile_static_episode(
             "action": {"dim": 6, "order": ["vx", "vy", "vz", "wx", "wy", "wz"]},
             "tcp_pos": {"dim": 3, "order": ["x", "y", "z"]},
             "apple_pos": {"dim": 3, "order": ["x", "y", "z"]},
+            "apple_pose_4x4": {"dim": 16, "reshape": [4, 4]},
             "woody_part_start_pos": {"dim": 9, "reshape": [3, 3]},
             "woody_part_end_pos": {"dim": 9, "reshape": [3, 3]},
             "woody_bending_angles": {"dim": 3, "part_order": list(WOODY_PART_NAMES)},
@@ -497,9 +621,21 @@ def main() -> None:
         nargs=3,
         metavar=("X", "Y", "Z"),
         default=None,
-        help="Override fruiting base in the reference-tag frame",
+        help="Override fruiting base position in the Franka base frame",
+    )
+    parser.add_argument(
+        "--reference-tag-to-base-pos",
+        type=float,
+        nargs=3,
+        metavar=("X", "Y", "Z"),
+        default=None,
+        help="Override reference-tag origin position in the Franka base frame",
     )
     args = parser.parse_args()
+    reference_tag_to_base_4x4 = None
+    if args.reference_tag_to_base_pos is not None:
+        reference_tag_to_base_4x4 = np.eye(4, dtype=np.float64)
+        reference_tag_to_base_4x4[:3, 3] = np.asarray(args.reference_tag_to_base_pos, dtype=np.float64)
     output = compile_static_episode(
         args.robot,
         args.tracking,
@@ -507,6 +643,7 @@ def main() -> None:
         camera_frame_count=args.camera_frames,
         max_camera_delta_s=args.max_camera_delta,
         fruiting_base_pos=args.fruiting_base_pos,
+        reference_tag_to_base_4x4=reference_tag_to_base_4x4,
         command_argv=sys.argv,
     )
     print(f"Wrote unified static system-ID episode to {output}")
