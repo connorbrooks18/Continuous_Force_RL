@@ -244,14 +244,13 @@ def _transform_tracking_geometry(
     return base_positions, base_poses
 
 
-def _endpoints(
-    positions: dict[str, np.ndarray], fruiting_base_pos: np.ndarray
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+def _endpoints(positions: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     branch = positions["Branch"]
     spur = positions["Spur"]
     apple = positions["Apple"]
-    starts = np.stack([fruiting_base_pos, branch, spur], axis=0)
-    ends = np.stack([branch, spur, apple], axis=0)
+    # Keep three slots, but remove the synthetic fruiting_base point.
+    starts = np.stack([branch, branch, spur], axis=0)
+    ends = np.stack([spur, apple, apple], axis=0)
     return starts, ends, ends - starts
 
 
@@ -315,7 +314,6 @@ def compile_static_episode(
     *,
     camera_frame_count: int = 5,
     max_camera_delta_s: float = 1.0,
-    fruiting_base_pos: np.ndarray | None = None,
     reference_tag_to_base_4x4: np.ndarray | None = None,
     command_argv: list[str] | None = None,
 ) -> Path:
@@ -342,7 +340,6 @@ def compile_static_episode(
     tracking_metadata = _read_dataset_metadata(tracking_path)
     camera_frames = _load_tracking_frames(tracking_path)
 
-    fruiting_base_was_explicit = fruiting_base_pos is not None
     tag_to_base_was_explicit = reference_tag_to_base_4x4 is not None
     if reference_tag_to_base_4x4 is None:
         reference_tag_to_base_4x4 = np.asarray(
@@ -350,9 +347,6 @@ def compile_static_episode(
             dtype=np.float64,
         )
     reference_tag_to_base_4x4 = np.asarray(reference_tag_to_base_4x4, dtype=np.float64).reshape(4, 4)
-    if fruiting_base_pos is None:
-        fruiting_base_pos = reference_tag_to_base_4x4[:3, 3]
-    fruiting_base_pos = np.asarray(fruiting_base_pos, dtype=np.float64).reshape(3)
 
     rest_timestamp = float(
         robot_metadata.get(
@@ -376,7 +370,7 @@ def compile_static_episode(
     rest_positions, _ = _transform_tracking_geometry(
         rest_positions_tag, rest_poses_tag, reference_tag_to_base_4x4
     )
-    rest_starts, rest_ends, rest_chords = _endpoints(rest_positions, fruiting_base_pos)
+    rest_starts, rest_ends, rest_chords = _endpoints(rest_positions)
 
     hold_indices = sorted({int(row["hold_index"]) for row in robot_rows})
     hold_geometry: dict[int, dict[str, Any]] = {}
@@ -403,7 +397,7 @@ def compile_static_episode(
         positions, poses = _transform_tracking_geometry(
             positions_tag, poses_tag, reference_tag_to_base_4x4
         )
-        starts, ends, chords = _endpoints(positions, fruiting_base_pos)
+        starts, ends, chords = _endpoints(positions)
         bending = _chord_deflections(chords, rest_chords)
         selected_timestamps = selected["timestamp"].astype(float).tolist()
         camera_center = float(np.median(selected_timestamps))
@@ -492,19 +486,13 @@ def compile_static_episode(
         "position_unit": "m",
         "angle_unit": "rad",
         "topology": {
-            "node_order": ["fruiting_base", "Branch", "Spur", "Apple"],
+            "node_order": ["Branch", "Spur", "Apple"],
             "junction_names": list(WOODY_PART_NAMES),
             "n_woody_parts": 3,
-            "start_nodes": ["fruiting_base", "Branch", "Spur"],
-            "end_nodes": ["Branch", "Spur", "Apple"],
+            "start_nodes": ["Branch", "Branch", "Spur"],
+            "end_nodes": ["Spur", "Apple", "Apple"],
             "shared_endpoints": True,
         },
-        "fruiting_base_pos": fruiting_base_pos.tolist(),
-        "fruiting_base_source": (
-            "explicit compiler argument"
-            if fruiting_base_was_explicit
-            else "derived from reference_tag_to_base_4x4 translation"
-        ),
         "reference_tag_to_base_4x4_used": reference_tag_to_base_4x4.tolist(),
         "reference_tag_to_base_4x4": reference_tag_to_base_4x4.tolist(),
         "reference_tag_to_base_source": (
@@ -616,14 +604,6 @@ def main() -> None:
         help="Maximum allowed camera-to-reference time difference in seconds",
     )
     parser.add_argument(
-        "--fruiting-base-pos",
-        type=float,
-        nargs=3,
-        metavar=("X", "Y", "Z"),
-        default=None,
-        help="Override fruiting base position in the Franka base frame",
-    )
-    parser.add_argument(
         "--reference-tag-to-base-pos",
         type=float,
         nargs=3,
@@ -642,7 +622,6 @@ def main() -> None:
         args.output,
         camera_frame_count=args.camera_frames,
         max_camera_delta_s=args.max_camera_delta,
-        fruiting_base_pos=args.fruiting_base_pos,
         reference_tag_to_base_4x4=reference_tag_to_base_4x4,
         command_argv=sys.argv,
     )

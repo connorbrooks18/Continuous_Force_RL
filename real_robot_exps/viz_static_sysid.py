@@ -120,6 +120,13 @@ def _delta_cm(values: np.ndarray) -> np.ndarray:
     return (values - values[0]) * 100.0
 
 
+def _timestamp_spacing(timestamps: np.ndarray) -> np.ndarray:
+    if timestamps.size == 0:
+        return np.asarray([], dtype=np.float64)
+    spacing = np.diff(timestamps)
+    return np.concatenate(([0.0], spacing))
+
+
 def plot_static_sysid(
     data: PlotData,
     *,
@@ -130,6 +137,7 @@ def plot_static_sysid(
 
     ft = _vector_columns(rows, "ft_wrist")
     tcp_pos = _vector_columns(rows, "tcp_pos")
+    timestamp_spacing = _timestamp_spacing(t)
     has_camera = data.has_camera
     if has_camera:
         apple_pos = _vector_columns(rows, "apple_pos")
@@ -143,7 +151,7 @@ def plot_static_sysid(
     hold_index = np.asarray([row["hold_index"] for row in rows], dtype=int)
     episode_id = _episode_id_from_metadata(data.metadata, rows)
 
-    n_panels = 7 if has_camera else 4
+    n_panels = 8 if has_camera else 5
     fig, axes = plt.subplots(n_panels, 1, figsize=(16, 4 * n_panels), sharex=True, constrained_layout=True)
 
     _plot_vector_panel(axes[0], t, ft, ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"], "Wrist wrench")
@@ -156,6 +164,17 @@ def plot_static_sysid(
     axes[1].grid(True, alpha=0.25)
     axes[1].legend(loc="upper right")
 
+    axes[2].plot(t, timestamp_spacing, color="tab:gray", linewidth=1.5, label="robot timestamp spacing")
+    axes[2].axhline(0.0, color="k", linewidth=1, alpha=0.2)
+    if timestamp_spacing.size:
+        gap_idx = int(np.argmax(timestamp_spacing))
+        axes[2].scatter([t[gap_idx]], [timestamp_spacing[gap_idx]], color="tab:red", s=35, zorder=3,
+                        label=f"max gap {timestamp_spacing[gap_idx]:.3f}s")
+    axes[2].set_title("Robot timestamp spacing")
+    axes[2].set_ylabel("seconds")
+    axes[2].grid(True, alpha=0.25)
+    axes[2].legend(loc="upper right", fontsize=8)
+
     if has_camera:
         tcp_pos_cm = tcp_pos * 100.0
         apple_pos_cm = apple_pos * 100.0
@@ -166,74 +185,74 @@ def plot_static_sysid(
         start_pos_delta_cm = _delta_cm(start_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
         end_pos_delta_cm = _delta_cm(end_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
 
-        axes[2].plot(t, tcp_pos_cm[:, 0], label="tcp x")
-        axes[2].plot(t, tcp_pos_cm[:, 1], label="tcp y")
-        axes[2].plot(t, tcp_pos_cm[:, 2], label="tcp z")
-        axes[2].plot(t, apple_pos_cm[:, 0], "--", label="apple x")
-        axes[2].plot(t, apple_pos_cm[:, 1], "--", label="apple y")
-        axes[2].plot(t, apple_pos_cm[:, 2], "--", label="apple z")
-        axes[2].set_title("Absolute positions")
-        axes[2].set_ylabel("cm")
-        axes[2].grid(True, alpha=0.25)
-        axes[2].legend(loc="upper right", ncol=3, fontsize=8)
-
-        axes[3].plot(t, tcp_pos_delta_cm[:, 0], label="tcp x")
-        axes[3].plot(t, tcp_pos_delta_cm[:, 1], label="tcp y")
-        axes[3].plot(t, tcp_pos_delta_cm[:, 2], label="tcp z")
-        axes[3].plot(t, apple_pos_delta_cm[:, 0], "--", label="apple x")
-        axes[3].plot(t, apple_pos_delta_cm[:, 1], "--", label="apple y")
-        axes[3].plot(t, apple_pos_delta_cm[:, 2], "--", label="apple z")
-        axes[3].set_title("Position deltas from first sample")
-        axes[3].set_ylabel("delta cm")
+        axes[3].plot(t, tcp_pos_cm[:, 0], label="tcp x")
+        axes[3].plot(t, tcp_pos_cm[:, 1], label="tcp y")
+        axes[3].plot(t, tcp_pos_cm[:, 2], label="tcp z")
+        axes[3].plot(t, apple_pos_cm[:, 0], "--", label="apple x")
+        axes[3].plot(t, apple_pos_cm[:, 1], "--", label="apple y")
+        axes[3].plot(t, apple_pos_cm[:, 2], "--", label="apple z")
+        axes[3].set_title("Absolute positions")
+        axes[3].set_ylabel("cm")
         axes[3].grid(True, alpha=0.25)
         axes[3].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[4].plot(t, apple_tcp_dist_cm, color="tab:purple", label="apple-tcp distance")
-        axes[4].set_title("Apple to TCP distance")
-        axes[4].set_ylabel("cm")
+        axes[4].plot(t, tcp_pos_delta_cm[:, 0], label="tcp x")
+        axes[4].plot(t, tcp_pos_delta_cm[:, 1], label="tcp y")
+        axes[4].plot(t, tcp_pos_delta_cm[:, 2], label="tcp z")
+        axes[4].plot(t, apple_pos_delta_cm[:, 0], "--", label="apple x")
+        axes[4].plot(t, apple_pos_delta_cm[:, 1], "--", label="apple y")
+        axes[4].plot(t, apple_pos_delta_cm[:, 2], "--", label="apple z")
+        axes[4].set_title("Position deltas from first sample")
+        axes[4].set_ylabel("delta cm")
         axes[4].grid(True, alpha=0.25)
-        axes[4].legend(loc="upper right", fontsize=8)
+        axes[4].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[5].plot(t, start_pos_cm[:, 0, 0], label="Branch start x")
-        axes[5].plot(t, start_pos_cm[:, 0, 1], label="Branch start y")
-        axes[5].plot(t, start_pos_cm[:, 0, 2], label="Branch start z")
-        axes[5].plot(t, end_pos_cm[:, 0, 0], "--", label="Branch end x")
-        axes[5].plot(t, end_pos_cm[:, 0, 1], "--", label="Branch end y")
-        axes[5].plot(t, end_pos_cm[:, 0, 2], "--", label="Branch end z")
-        axes[5].set_title("Branch endpoint absolute positions")
+        axes[5].plot(t, apple_tcp_dist_cm, color="tab:purple", label="apple-tcp distance")
+        axes[5].set_title("Apple to TCP distance")
         axes[5].set_ylabel("cm")
         axes[5].grid(True, alpha=0.25)
-        axes[5].legend(loc="upper right", ncol=3, fontsize=8)
+        axes[5].legend(loc="upper right", fontsize=8)
 
-        axes[6].plot(t, start_pos_delta_cm[:, 0, 0], label="Branch start delta x")
-        axes[6].plot(t, start_pos_delta_cm[:, 0, 1], label="Branch start delta y")
-        axes[6].plot(t, start_pos_delta_cm[:, 0, 2], label="Branch start delta z")
-        axes[6].plot(t, end_pos_delta_cm[:, 0, 0], "--", label="Branch end delta x")
-        axes[6].plot(t, end_pos_delta_cm[:, 0, 1], "--", label="Branch end delta y")
-        axes[6].plot(t, end_pos_delta_cm[:, 0, 2], "--", label="Branch end delta z")
-        axes[6].plot(t, bend[:, 0], label="Branch bend", alpha=0.8)
-        axes[6].plot(t, bend[:, 1], label="Spur bend", alpha=0.8)
-        axes[6].plot(t, bend[:, 2], label="Apple bend", alpha=0.8)
-        axes[6].set_title("Branch endpoint deltas and woody bending")
-        axes[6].set_ylabel("delta cm / rad")
+        axes[6].plot(t, start_pos_cm[:, 0, 0], label="Branch start x")
+        axes[6].plot(t, start_pos_cm[:, 0, 1], label="Branch start y")
+        axes[6].plot(t, start_pos_cm[:, 0, 2], label="Branch start z")
+        axes[6].plot(t, end_pos_cm[:, 0, 0], "--", label="Branch end x")
+        axes[6].plot(t, end_pos_cm[:, 0, 1], "--", label="Branch end y")
+        axes[6].plot(t, end_pos_cm[:, 0, 2], "--", label="Branch end z")
+        axes[6].set_title("Branch endpoint absolute positions")
+        axes[6].set_ylabel("cm")
         axes[6].grid(True, alpha=0.25)
         axes[6].legend(loc="upper right", ncol=3, fontsize=8)
-    else:
-        axes[2].plot(t, tcp_pos[:, 0] * 100.0, label="tcp x")
-        axes[2].plot(t, tcp_pos[:, 1] * 100.0, label="tcp y")
-        axes[2].plot(t, tcp_pos[:, 2] * 100.0, label="tcp z")
-        axes[2].set_title("TCP position")
-        axes[2].set_ylabel("cm")
-        axes[2].grid(True, alpha=0.25)
-        axes[2].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[3].plot(t, _delta_cm(tcp_pos)[:, 0], label="tcp x")
-        axes[3].plot(t, _delta_cm(tcp_pos)[:, 1], label="tcp y")
-        axes[3].plot(t, _delta_cm(tcp_pos)[:, 2], label="tcp z")
-        axes[3].set_title("TCP position deltas from first sample")
-        axes[3].set_ylabel("delta cm")
+        axes[7].plot(t, start_pos_delta_cm[:, 0, 0], label="Branch start delta x")
+        axes[7].plot(t, start_pos_delta_cm[:, 0, 1], label="Branch start delta y")
+        axes[7].plot(t, start_pos_delta_cm[:, 0, 2], label="Branch start delta z")
+        axes[7].plot(t, end_pos_delta_cm[:, 0, 0], "--", label="Branch end delta x")
+        axes[7].plot(t, end_pos_delta_cm[:, 0, 1], "--", label="Branch end delta y")
+        axes[7].plot(t, end_pos_delta_cm[:, 0, 2], "--", label="Branch end delta z")
+        axes[7].plot(t, bend[:, 0], label="Branch bend", alpha=0.8)
+        axes[7].plot(t, bend[:, 1], label="Spur bend", alpha=0.8)
+        axes[7].plot(t, bend[:, 2], label="Apple bend", alpha=0.8)
+        axes[7].set_title("Branch endpoint deltas and woody bending")
+        axes[7].set_ylabel("delta cm / rad")
+        axes[7].grid(True, alpha=0.25)
+        axes[7].legend(loc="upper right", ncol=3, fontsize=8)
+    else:
+        axes[3].plot(t, tcp_pos[:, 0] * 100.0, label="tcp x")
+        axes[3].plot(t, tcp_pos[:, 1] * 100.0, label="tcp y")
+        axes[3].plot(t, tcp_pos[:, 2] * 100.0, label="tcp z")
+        axes[3].set_title("TCP position")
+        axes[3].set_ylabel("cm")
         axes[3].grid(True, alpha=0.25)
         axes[3].legend(loc="upper right", ncol=3, fontsize=8)
+
+        axes[4].plot(t, _delta_cm(tcp_pos)[:, 0], label="tcp x")
+        axes[4].plot(t, _delta_cm(tcp_pos)[:, 1], label="tcp y")
+        axes[4].plot(t, _delta_cm(tcp_pos)[:, 2], label="tcp z")
+        axes[4].set_title("TCP position deltas from first sample")
+        axes[4].set_ylabel("delta cm")
+        axes[4].grid(True, alpha=0.25)
+        axes[4].legend(loc="upper right", ncol=3, fontsize=8)
 
     boundaries = _hold_boundaries(rows)
     for ax in axes:

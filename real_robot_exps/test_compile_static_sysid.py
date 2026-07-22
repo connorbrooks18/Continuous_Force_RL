@@ -71,7 +71,6 @@ class CompileStaticSysidTest(unittest.TestCase):
                         "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0,
                     })
             _write_with_metadata(tracking_path, tracking_rows, {
-                "fruiting_base_pos": [0.0, 0.0, 0.0],
                 "reference_tag_is_fruiting_base": True,
             })
 
@@ -95,14 +94,15 @@ class CompileStaticSysidTest(unittest.TestCase):
 
             starts = np.asarray(rows[-1]["woody_part_start_pos"]).reshape(3, 3)
             ends = np.asarray(rows[-1]["woody_part_end_pos"]).reshape(3, 3)
-            np.testing.assert_allclose(ends[0], starts[1])
-            np.testing.assert_allclose(ends[1], starts[2])
+            np.testing.assert_allclose(starts[0], starts[1])
+            np.testing.assert_allclose(ends[0], starts[2])
             self.assertEqual(rows[-1]["camera_frame_count"], 2)
 
             metadata = json.loads(
                 output.schema.metadata[b"dataset_metadata"].decode("utf-8")
             )
             self.assertEqual(metadata["topology"]["n_woody_parts"], 3)
+            self.assertEqual(metadata["topology"]["node_order"], ["Branch", "Spur", "Apple"])
             self.assertEqual(metadata["camera_aggregation"]["requested_frame_count"], 2)
             self.assertIn("source_files", metadata)
             self.assertIn("tau_J", output.schema.names)

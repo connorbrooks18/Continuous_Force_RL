@@ -1,18 +1,11 @@
-"""
-Controller Verification Script
+"""Quasi-static apple-pull system-ID collection.
 
-Moves the robot 5cm along each axis (X, Y, Z) using the same torque control
-pipeline as pro_real_robot_eval.py, then returns home. Verifies the controller
-converges by checking for 10 consecutive frames with position change < 0.1mm.
-
-Tracks orientation throughout — the robot should maintain its home orientation
-(from hand_init_orn config) during all moves. Reports per-axis RPY error in degrees.
-
-All gains are loaded from the real robot config (control_gains section).
-No WandB tag or training checkpoints required.
+Records robot state during fixed holds and optionally applies a matched
+unloaded dynamic wrench baseline. Camera detection is intentionally kept in a
+separate process; an existing tracking Parquet can be compiled afterward.
 
 Usage:
-    python -m real_robot_exps.controller_test --config real_robot_exps/config.yaml
+    python -m real_robot_exps.apple_pullto_static --mode collect
 """
 
 import argparse
@@ -55,6 +48,7 @@ CLOSE_PULL_ROLL_FORWARD_DEG = 20.0
 # Baseline mode records an unloaded wrench profile. When this is True, collect
 # mode subtracts the matching profile point-by-point within each static hold.
 USE_DYNAMIC_BASELINE_CORRECTION = True
+
 
 
 def load_gains_from_config(real_config: dict, device: str = "cpu") -> dict:
@@ -491,7 +485,7 @@ def hold_position(
     target_quat: torch.Tensor,
     default_dof_pos: torch.Tensor,
     duration_sec: float,
-    device: str = "cpu"
+    device: str = "cpu",
 ):
     """Actively hold a Cartesian pose while maintaining the 15Hz safety/timing loop."""
     targets = build_position_targets(gains, target_pos, target_quat, default_dof_pos, device)
@@ -518,13 +512,11 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     collection_start_timestamp = time.time()
     episode_id = str(uuid4())
     run_args = dict(args or {})
-    
+    base_label = f"pull_theta{theta:.2f}_phi{phi:.2f}"
+    label = f"{base_label}_{'baseline' if baseline else 'raw'}"
     time.sleep(2.0) # let it settle
     robot.reset_to_start_pose(pull_start_pose_4x4)
     snap = robot.get_state_snapshot()
-
-
-
     gc.send_request(True)
     time.sleep(2)
     
@@ -557,8 +549,8 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
 
     pull_data = []
     robot_rows = []
-    # This timestamp anchors camera samples for the frame-0/rest chord directions.
-    # It is captured after gripping and immediately before the first pull move.
+    # This timestamp can anchor separately recorded camera samples for the
+    # frame-0/rest chord directions. It uses the same host wall clock.
     rest_reference_timestamp = time.time()
 
     for i in range(steps):
@@ -571,7 +563,16 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         target[2] -= (dz/steps)
         apple_quat = snap.ee_quat.clone()
         #gains[""]
-        run_move(robot, gains, target, apple_quat, default_dof_pos, f"closer #{i}", prnt=debug, manage_control=False)
+        run_move(
+            robot,
+            gains,
+            target,
+            apple_quat,
+            default_dof_pos,
+            f"closer #{i}",
+            prnt=debug,
+            manage_control=False,
+        )
         
         if((i+1) % (steps/stops) == 0):
             s = 1
@@ -605,7 +606,15 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     if(debug):
         print("Relaxing tension before release...")
     snap = robot.get_state_snapshot()
-    hold_position(robot, gains, snap.ee_pos, snap.ee_quat, default_dof_pos, duration_sec=1.0, device=device)
+    hold_position(
+        robot,
+        gains,
+        snap.ee_pos,
+        snap.ee_quat,
+        default_dof_pos,
+        duration_sec=1.0,
+        device=device,
+    )
 
     gc.send_request(False)
     time.sleep(1) # wait for gripper to open
@@ -613,15 +622,12 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     # Safely drop out of torque mode
     robot.end_control()
 
+    # Restore the robot before Parquet writing or optional post-run compilation.
+    time.sleep(2)
+    robot.reset_to_start_pose(home_pose_4x4)
 
-    # 5. Wait a moment before the Cartesian reset
+    # Assemble and persist the completed static-hold episode.
     full_pull_data = np.concatenate(pull_data, axis=0)
-    base_label = f"pull_theta{theta:.2f}_phi{phi:.2f}"
-    label = base_label
-    if baseline:
-        label += "_baseline"
-    else:
-        label += "_raw"
     #plot_and_save_data(full_pull_data, label=label, plot=to_plot, metadata=run_args)
 
     robot_output = run_args.get("robot_output") or f"{label}_robot.parquet"
@@ -718,9 +724,8 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         }
     saved_robot_path = save_robot_hold_parquet(robot_rows, robot_output, robot_metadata)
     print(f"Wrote robot hold data to {saved_robot_path}")
-    
-    time.sleep(2)
-    robot.reset_to_start_pose(home_pose_4x4)
+
+    return {"episode_id": episode_id, "robot_path": saved_robot_path}
 
 
 
@@ -733,7 +738,7 @@ def main():
 
 
 
-    parser = argparse.ArgumentParser(description="Controller Verification Test")
+    parser = argparse.ArgumentParser(description="Integrated static apple-pull system-ID collection")
     parser.add_argument("--config", type=str, default="real_robot_exps/config.yaml", help="Real robot config path")
     parser.add_argument("--device", type=str, default="cpu", help="Torch device")
     parser.add_argument("--override", action="append", default=[], help="Override config values")
@@ -748,6 +753,10 @@ def main():
     parser.add_argument("--direction-index", type=int, default=0, help="Zero-based direction index for one-hot encoding")
     parser.add_argument("--num-directions", type=int, default=1, help="Width of the direction one-hot vector")
     parser.add_argument("--robot-output", default=None, help="Raw robot Parquet output path")
+    parser.add_argument("--tracking", default=None, help="Existing raw camera Parquet to compile after the robot run")
+    parser.add_argument("--camera-frames", type=int, default=5, help="Camera frames per hold when compiling")
+    parser.add_argument("--max-camera-delta", type=float, default=1.0, help="Maximum camera/robot timestamp difference when compiling")
+    parser.add_argument("--unified-output", default=None, help="Compiled unified Parquet output path")
     args = parser.parse_args()
 
     if args.num_directions < 1:
@@ -917,64 +926,75 @@ def main():
     # print(f"  Home Pos: [{home_actual[0].item():.5f}, {home_actual[1].item():.5f}, {home_actual[2].item():.5f}]")
     # print(f"  Home Orn (RPY deg): [{home_rpy_deg[0]:.2f}, {home_rpy_deg[1]:.2f}, {home_rpy_deg[2]:.2f}]")   
 
-    input(f"Press Enter to begin apple pull {mode} run...")
+    unified_result = None
+    try:
+        input(f"Press Enter to begin apple pull {mode} run...")
 
+        gains = update_gains(gains, [kp, kp, kp, 30, 30, 30], device)
+        angles = [(theta, phi)]
+        run_arguments = dict(vars(args))
+        run_arguments.update({
+            "use_close_pull_start_pose": bool(USE_CLOSE_PULL_START_POSE),
+            "pull_start_pose_name": pull_start_pose_name,
+            "close_pull_start_position_m": CLOSE_PULL_START_POSITION_M.tolist(),
+            "close_pull_roll_forward_deg": float(CLOSE_PULL_ROLL_FORWARD_DEG),
+            "apple_pose_4x4": apple_pose_4x4.tolist(),
+            "close_pose_4x4": close_pose_4x4.tolist(),
+            "camera_collection": "separate process; compile after robot collection",
+        })
+        for theta_value, phi_value in angles:
+            unified_result = pull_test(
+                theta_value,
+                phi_value,
+                robot,
+                pull_start_pose_4x4,
+                default_dof_pos,
+                gains,
+                home_pose_4x4,
+                gc,
+                device=device,
+                baseline=is_baseline,
+                to_plot=to_plot,
+                debug=(debug != "none"),
+                distance=distance,
+                stops=stops,
+                args=run_arguments,
+                config_snapshot=real_config,
+                ee_config=ee_config,
+                ft_calibration_enabled=bool(
+                    real_config.get("robot", {}).get("ft_calibration_duration_sec", 0)
+                ),
+            )
+    finally:
+        robot.shutdown()
+        gc.terminate()
 
-    #target = home_actual.clone()
-    #target[axis] += MOVE_DISTANCE
+    if unified_result is not None and args.tracking and not is_baseline:
+        try:
+            from real_robot_exps.compile_static_sysid import compile_static_episode
+            from real_robot_exps.viz_static_sysid import _load_plot_data, plot_static_sysid
+            import matplotlib.pyplot as plt
 
-    # Move to target (orientation goal = home_quat, should not change)
-
-    target = pull_start_pose_4x4
-    
-
-    #run_move(robot, gains, home_actual, home_quat, default_dof_pos, "Apple", device)
-    
-   
-
-    # snap = robot.get_state_snapshot()
-    # target = snap.ee_pos.clone()
-    # target[1] -= .04
-    # apple_quat = snap.ee_quat.clone()
-
-    # kp = 80 # 50 is default
-    gains = update_gains(gains, [kp, kp, kp, 30, 30, 30], device)
-    # print(gains["task_prop_gains"])
-    # print(gains["task_deriv_gains"])
-    
-    # run_move(robot, gains, target, apple_quat, default_dof_pos, "pull apple", device)
-    # time.sleep(1.5)
-
-    pi = math.pi
-    left = (pi/2, 0)
-    back_left = (pi/2, pi/4)
-    back = (pi/2, pi/2)
-    back_right = pi/2, 3*pi/4
-    right = (pi/2, pi)
-    up_back_left = (3*pi/4, pi/4)
-    up_back = (3*pi/4, pi/2)
-    up_back_right = (3*pi/4, 3*pi/4)
-    angles = [up_back_left, up_back, up_back_right, back_left, back, back_right]
-    angles = [up_back_left, up_back, up_back_right]
-    angles = [(theta, phi)]
-    run_arguments = dict(vars(args))
-    run_arguments.update({
-        "use_close_pull_start_pose": bool(USE_CLOSE_PULL_START_POSE),
-        "pull_start_pose_name": pull_start_pose_name,
-        "close_pull_start_position_m": CLOSE_PULL_START_POSITION_M.tolist(),
-        "close_pull_roll_forward_deg": float(CLOSE_PULL_ROLL_FORWARD_DEG),
-        "apple_pose_4x4": apple_pose_4x4.tolist(),
-        "close_pose_4x4": close_pose_4x4.tolist(),
-    })
-    for (theta, phi) in angles:
-        pull_test(theta, phi, robot, pull_start_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device=device, baseline=is_baseline, to_plot=to_plot, debug=(debug != "none"), distance=distance, stops=stops, args=run_arguments, config_snapshot=real_config, ee_config=ee_config, ft_calibration_enabled=bool(real_config.get("robot", {}).get("ft_calibration_duration_sec", 0)))
-
-     
-
-    # 9. Shutdown
-    robot.shutdown()
-    gc.terminate()
-   
+            unified_output = args.unified_output or f"pull_theta{theta:.2f}_phi{phi:.2f}_unified.parquet"
+            unified_path = compile_static_episode(
+                unified_result["robot_path"],
+                args.tracking,
+                unified_output,
+                camera_frame_count=args.camera_frames,
+                max_camera_delta_s=args.max_camera_delta,
+                command_argv=sys.argv,
+            )
+            print(f"Wrote unified system-ID data to {unified_path}")
+            viz_data = _load_plot_data(unified_path)
+            fig = plot_static_sysid(viz_data, title=f"Unified system-ID viewer: {unified_path.name}")
+            try:
+                plt.show()
+            except BaseException as exc:
+                fallback_png = unified_path.with_suffix(".png")
+                fig.savefig(fallback_png, dpi=200)
+                print(f"Matplotlib GUI unavailable ({exc}); saved visualization to {fallback_png}")
+        except BaseException as exc:
+            print(f"Could not compile/open unified parquet visualizer: {exc}")
 
 if __name__ == "__main__":
     main()

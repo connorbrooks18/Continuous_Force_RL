@@ -12,7 +12,8 @@ hold as `F_int = F_raw - F_baseline`.
 ## Prerequisites
 * Franka arm configured with `pylibfranka`.
 * Active ROS 2 environment with the `gripper_grab_client` service running from https://github.com/connorbrooks18/lfd_apples.
-* Required Python packages: `torch`, `numpy`, `pandas`, `matplotlib`, `pyyaml`.
+* Required Python packages: `torch`, `numpy`, `pandas`, `matplotlib`, `pyyaml`,
+  `pyarrow`, `scipy`, `opencv-python`, `pyrealsense2`, and `pupil-apriltags`.
 
 ## Full collection process
 
@@ -55,15 +56,13 @@ profile and is not itself baseline-corrected.
 
 ### 3. Record the matched loaded run and camera tracking
 
-Start the tracker before the robot run. The two programs run separately on the
-same computer and synchronize using Unix wall-clock timestamps.
+Run the robot collector and the standalone RealSense/AprilTag detector in
+separate terminals. Keep them on the same computer so both use the same
+`time.time()` clock, and start the detector before or during the pull. Tag IDs,
+offsets, pose math, metadata, and Parquet writing for the camera remain in the
+standalone tracking program.
 
 ```bash
-# Terminal 1
-cd at-tracking
-python Detecting.py --output tracking.parquet
-
-# Terminal 2: use exactly the baseline trajectory arguments
 python -m real_robot_exps.apple_pullto_static \
   --config real_robot_exps/config.yaml \
   --mode collect \
@@ -81,17 +80,24 @@ saves:
 - `ft_wrist_baseline`: interpolated unloaded wrench profile.
 - `ft_wrist`: interaction wrench, `ft_wrist_raw - ft_wrist_baseline`.
 
-The default loaded output is
-`pull_theta2.36_phi1.57_raw_robot.parquet`. Stop the camera with `q` after the
-robot run finishes. If an explicitly uncorrected collect run is needed, set
-`USE_DYNAMIC_BASELINE_CORRECTION = False` before running it.
+The default raw outputs are `pull_theta2.36_phi1.57_raw_robot.parquet` and
+`pull_theta2.36_phi1.57_raw_tracking.parquet`. If an explicitly uncorrected
+collect run is needed, set `USE_DYNAMIC_BASELINE_CORRECTION = False` before
+running it.
+
+Run `python at-tracking/Detecting.py` separately for the troubleshooting feed.
+It draws the reference frame and the full Branch, Spur, and Apple frames (X
+red, Y green, Z blue), plus their positions and orientations. Pressing `q` or
+Escape ends the detector without affecting the robot process.
 
 ### 4. Compile the synchronized episode
+
+After both raw files are saved, compile them with:
 
 ```bash
 python -m real_robot_exps.compile_static_sysid \
   --robot pull_theta2.36_phi1.57_raw_robot.parquet \
-  --tracking tracking.parquet \
+  --tracking pull_theta2.36_phi1.57_raw_tracking.parquet \
   --output pull_unified.parquet \
   --camera-frames 5
 ```
@@ -163,6 +169,10 @@ All arguments are passed as optional flags.
 * `--override` (str): Append config overrides in key=value format (e.g., --override robot.gripper_force_n=60).
 * `--direction-index` / `--num-directions`: Select the index and width of the direction one-hot vector stored in each row.
 * `--robot-output`: Override the raw robot Parquet filename. Dynamic baseline auto-discovery uses the default baseline filename, so custom baseline naming currently requires placing/copying it at the expected default path before `collect` mode.
+* `--tracking`: Existing raw camera Parquet to compile after the robot run.
+* `--camera-frames`: Number of camera frames per hold used by compilation.
+* `--max-camera-delta`: Maximum camera/robot timestamp difference in seconds.
+* `--unified-output`: Output filename when compiling with `--tracking`.
 
 ## Understanding Pull Angles (theta & phi)
 
@@ -219,24 +229,22 @@ python -m real_robot_exps.compute_interaction --theta 2.36 --phi 1.57 --plot
 
 ## Unified static system-ID Parquet
 
-The camera and robot collectors run as separate processes on the same computer
-and timestamp every sample with Unix wall-clock seconds from `time.time()`.
-Start the camera before the robot so it records frames at the robot's rest
-reference timestamp.
+The robot collector and AprilTag detector are separate programs. This keeps
+camera/OpenCV work out of the robot control process. Both programs timestamp
+samples with Unix wall-clock seconds from `time.time()` on the same host; run
+the standalone detector during the pull so the two files overlap in time.
 
 ```bash
-# Terminal 1: press q after the robot run finishes.
-cd at-tracking
-python Detecting.py --output tracking.parquet
-
-# Terminal 2: writes the corrected raw-robot Parquet.
-# First ensure the matching default-named baseline run already exists.
+# Terminal 1: writes the raw robot Parquet.
 python -m real_robot_exps.apple_pullto_static --config real_robot_exps/config.yaml --mode collect --theta 2.36 --phi 2.36 --distance 0.04 --stops 4
 
-# After both collection processes have stopped:
+# Terminal 2: run this during the pull.
+python at-tracking/Detecting.py --output pull_theta2.36_phi2.36_raw_tracking.parquet
+
+# Optional manual recompilation:
 python -m real_robot_exps.compile_static_sysid \
   --robot pull_theta2.36_phi2.36_raw_robot.parquet \
-  --tracking tracking.parquet \
+  --tracking pull_theta2.36_phi2.36_raw_tracking.parquet \
   --output pull_unified.parquet \
   --camera-frames 5
 ```
@@ -284,9 +292,8 @@ positions.
 
 The compiler keeps all robot-rate static-hold rows and attaches a median camera
 estimate made from a few complete `Branch`, `Spur`, and `Apple` frames. The
-three woody parts are ordered as `fruiting_base -> Branch`, `Branch -> Spur`,
-and `Spur -> Apple`. For now, the fruiting base is the reference AprilTag
-origin; `--fruiting-base-pos X Y Z` can override it after calibration.
+three schema slots are `Branch -> Spur`, `Branch -> Apple`, and `Spur -> Apple`;
+there is no synthetic `fruiting_base` point in the compiled geometry.
 
 The unified file stores the model fields as fixed-size Arrow lists and embeds
 collection, calibration, synchronization, topology, units, source-file hashes,
