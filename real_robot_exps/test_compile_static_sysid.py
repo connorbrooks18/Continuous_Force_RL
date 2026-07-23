@@ -40,6 +40,7 @@ class CompileStaticSysidTest(unittest.TestCase):
                         "action": np.zeros(6, dtype=np.float32),
                         "tcp_pos": np.ones(3, dtype=np.float32),
                         "tcp_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
+                        "target_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
                         "hold_number": np.eye(2, dtype=np.float32)[hold_idx],
                         "direction": np.ones(1, dtype=np.float32),
                         "phase": 1,
@@ -109,6 +110,7 @@ class CompileStaticSysidTest(unittest.TestCase):
             self.assertIn("tau_J_d", output.schema.names)
             self.assertIn("joint_pos", output.schema.names)
             self.assertIn("tcp_pose_4x4", output.schema.names)
+            self.assertIn("target_pose_4x4", output.schema.names)
             self.assertIn("sample_label", output.schema.names)
 
 

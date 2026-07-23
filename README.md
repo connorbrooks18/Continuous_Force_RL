@@ -21,6 +21,21 @@ The normal workflow uses one unloaded dry run as a dynamic baseline followed
 by one loaded run with exactly the same trajectory. Camera tracking is needed
 only for the loaded run that will be compiled into the unified dataset.
 
+The collector now records the whole episode continuously, not just the static
+holds. Each run includes:
+
+- an initial rest-geometry sample before the apple is grabbed,
+- a post-grab initial hold before motion starts,
+- the moving portion of each pull segment, and
+- the static hold at each stop.
+
+These stages are marked with `sample_label`. The raw robot rows also use
+special `hold_index` values for the setup frames:
+
+- `hold_index = -2`: initial rest geometry
+- `hold_index = -1`: post-grab initial hold
+- `hold_index >= 0`: actual pull segments / hold groups
+
 ### 1. Choose and verify the pull setup
 
 Near the top of `real_robot_exps/apple_pullto_static.py`, select the starting
@@ -73,14 +88,16 @@ python -m real_robot_exps.apple_pullto_static \
 
 The collect run locates the default baseline file, verifies compatible angles,
 distance, hold count, selected pose, and exact starting transform, and then
-interpolates the unloaded wrench over normalized time within each hold. It
-saves:
+interpolates the unloaded wrench over normalized time within each actual pull
+hold (`hold_index >= 0`). It saves:
 
 - `ft_wrist_raw`: loaded-run wrench before baseline correction.
 - `ft_wrist_baseline`: interpolated unloaded wrench profile.
 - `ft_wrist`: interaction wrench, `ft_wrist_raw - ft_wrist_baseline`.
 
-IMPORTANT: ft_wrist is in the end-effector frame NOT base frame
+IMPORTANT: `ft_wrist` force components are in the end-effector frame. The
+torque components, joint states, TCP pose/position, and all camera-derived
+geometry are in the Franka base frame.
 
 The default raw outputs are `pull_theta2.36_phi1.57_raw_robot.parquet` and
 `pull_theta2.36_phi1.57_raw_tracking.parquet`. If an explicitly uncorrected

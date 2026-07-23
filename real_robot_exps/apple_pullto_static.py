@@ -71,6 +71,13 @@ def _tcp_pose_4x4_from_snapshot(snap) -> np.ndarray:
     return pose
 
 
+def _pose_4x4_from_pos_quat(pos: torch.Tensor, quat: torch.Tensor) -> np.ndarray:
+    pose = np.eye(4, dtype=np.float64)
+    pose[:3, :3] = _quat_wxyz_to_rotmat(quat)
+    pose[:3, 3] = pos.detach().cpu().numpy().astype(np.float64, copy=False)
+    return pose
+
+
 def _flat_float32(value) -> np.ndarray:
     return np.asarray(value, dtype=np.float32).reshape(-1)
 
@@ -85,6 +92,7 @@ def _append_robot_sample(
     phase_name: str,
     sample_label: str,
     amplitude_m: float,
+    target_pose_4x4: np.ndarray,
     hold_one_hot: np.ndarray,
     direction_one_hot: np.ndarray,
     excitation_direction: np.ndarray,
@@ -104,6 +112,7 @@ def _append_robot_sample(
         "phase_name": str(phase_name),
         "sample_label": str(sample_label),
         "amplitude_m": float(amplitude_m),
+        "target_pose_4x4": _flat_float32(target_pose_4x4),
         "ft_wrist": _flat_float32(snap.force_torque.cpu().numpy()),
         "ft_wrist_raw": _flat_float32(snap.force_torque.cpu().numpy()),
         "tau_J_d": _flat_float32(snap.tau_J_d.cpu().numpy()),
@@ -270,7 +279,7 @@ def run_move(
         snap = robot.get_state_snapshot()
         timestamp = time.time()
         robot.check_safety(snap)
-
+        
         robot.set_control_targets(targets)
         _append_robot_sample(
             record_rows,
@@ -280,6 +289,7 @@ def run_move(
             phase=0,
             phase_name="move",
             amplitude_m=amplitude_m,
+            target_pose_4x4=_pose_4x4_from_pos_quat(target_pos, target_quat),
             hold_one_hot=hold_one_hot,
             direction_one_hot=direction_one_hot,
             excitation_direction=excitation_direction,
@@ -420,6 +430,7 @@ def hold_and_record(
             phase_name=phase_name,
             sample_label=sample_label,
             amplitude_m=amplitude_m,
+            target_pose_4x4=_pose_4x4_from_pos_quat(target_pos, target_quat),
             hold_one_hot=hold_one_hot,
             direction_one_hot=direction_one_hot,
             excitation_direction=excitation_direction,
@@ -608,6 +619,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     base_label = f"pull_theta{theta:.2f}_phi{phi:.2f}"
     label = f"{base_label}_{'baseline' if baseline else 'raw'}"
     time.sleep(2.0) # let it settle
+    
     robot.reset_to_start_pose(pull_start_pose_4x4)
     snap = robot.get_state_snapshot()
     robot.start_torque_mode()

@@ -320,6 +320,7 @@ def _unified_schema(n_holds: int, n_directions: int) -> pa.Schema:
         pa.field("phase_name", pa.string()),
         pa.field("sample_label", pa.string()),
         pa.field("amplitude_m", pa.float32()),
+        pa.field("target_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
         pa.field("excitation_direction", vector(3)),
         pa.field("camera_timestamp", pa.float64()),
         pa.field("robot_camera_timestamp_offset_s", pa.float64()),
@@ -353,7 +354,7 @@ def compile_static_episode(
         raise ValueError("Robot input contains no hold rows")
     required_robot_fields = {
         "timestamp", "hold_index", "ft_wrist", "tau_J_d", "joint_pos",
-        "tcp_velocity", "action", "tcp_pos", "tcp_pose_4x4",
+        "tcp_velocity", "action", "tcp_pos", "tcp_pose_4x4", "target_pose_4x4",
         "hold_number", "direction", "phase", "excitation_direction",
     }
     missing = required_robot_fields - set(robot_rows[0])
@@ -505,6 +506,7 @@ def compile_static_episode(
             "phase_name": str(robot_row.get("phase_name", "hold")),
             "sample_label": str(robot_row.get("sample_label", robot_row.get("phase_name", "hold"))),
             "amplitude_m": float(robot_row.get("amplitude_m", math.nan)),
+            "target_pose_4x4": _as_list(robot_row["target_pose_4x4"]),
             "excitation_direction": _as_list(robot_row["excitation_direction"]),
             "camera_timestamp": camera_timestamp,
             "robot_camera_timestamp_offset_s": timestamp - camera_timestamp,
@@ -588,6 +590,7 @@ def compile_static_episode(
             "action": {"dim": 6, "order": ["vx", "vy", "vz", "wx", "wy", "wz"]},
             "tcp_pos": {"dim": 3, "order": ["x", "y", "z"]},
             "tcp_pose_4x4": {"dim": 16, "reshape": [4, 4]},
+            "target_pose_4x4": {"dim": 16, "reshape": [4, 4]},
             "apple_pos": {"dim": 3, "order": ["x", "y", "z"]},
             "apple_pose_4x4": {"dim": 16, "reshape": [4, 4]},
             "woody_part_start_pos": {"dim": 9, "reshape": [3, 3]},
