@@ -123,8 +123,8 @@ python -m real_robot_exps.compile_static_sysid \
 
 The compiler retains every robot-rate hold row and attaches a robust median
 camera estimate from a few valid Branch, Spur, and Apple frames. Source hashes,
-source metadata, synchronization information, topology, units, and compiler
-details are stored in the Parquet footer.
+source metadata summaries, synchronization information, topology, units, and
+compiler details are stored in the Parquet footer.
 
 ### 5. Inspect and visualize the result
 
@@ -139,9 +139,9 @@ python -m real_robot_exps.viz_static_sysid \
 ```
 
 Check the episode ID, baseline source/hash, raw versus corrected wrench,
-force/torque magnitudes, joint-torque signals, camera validity, hold boundaries,
-absolute positions, position deltas, and woody bending angles before accepting
-the episode.
+force/torque magnitudes, joint-torque signals, camera validity, hold
+boundaries, absolute positions, position deltas, target pose, and woody
+bending angles before accepting the episode.
 
 ## Usage
 Run the script as a module from the root of your workspace:
