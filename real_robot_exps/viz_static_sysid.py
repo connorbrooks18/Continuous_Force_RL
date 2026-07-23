@@ -120,13 +120,6 @@ def _delta_cm(values: np.ndarray) -> np.ndarray:
     return (values - values[0]) * 100.0
 
 
-def _timestamp_spacing(timestamps: np.ndarray) -> np.ndarray:
-    if timestamps.size == 0:
-        return np.asarray([], dtype=np.float64)
-    spacing = np.diff(timestamps)
-    return np.concatenate(([0.0], spacing))
-
-
 def plot_static_sysid(
     data: PlotData,
     *,
@@ -137,15 +130,17 @@ def plot_static_sysid(
 
     ft = _vector_columns(rows, "ft_wrist")
     tcp_pos = _vector_columns(rows, "tcp_pos")
-    timestamp_spacing = _timestamp_spacing(t)
     has_camera = data.has_camera
+    if has_camera:
+        robot_camera_offset = np.asarray([row["robot_camera_timestamp_offset_s"] for row in rows], dtype=np.float64)
+    else:
+        robot_camera_offset = np.zeros(len(rows), dtype=np.float64)
     if has_camera:
         apple_pos = _vector_columns(rows, "apple_pos")
         start_pos = _vector_columns(rows, "woody_part_start_pos").reshape(len(rows), 3, 3)
         end_pos = _vector_columns(rows, "woody_part_end_pos").reshape(len(rows), 3, 3)
         bend = _vector_columns(rows, "woody_bending_angles")
         camera_valid = np.asarray([row["camera_data_valid"] for row in rows], dtype=bool)
-        apple_tcp_dist_cm = np.linalg.norm(apple_pos - tcp_pos, axis=1) * 100.0
     else:
         apple_pos = start_pos = end_pos = bend = None
     hold_index = np.asarray([row["hold_index"] for row in rows], dtype=int)
@@ -164,14 +159,24 @@ def plot_static_sysid(
     axes[1].grid(True, alpha=0.25)
     axes[1].legend(loc="upper right")
 
-    axes[2].plot(t, timestamp_spacing, color="tab:gray", linewidth=1.5, label="robot timestamp spacing")
+    axes[2].plot(t, robot_camera_offset, color="tab:gray", linewidth=1.5, label="robot-camera timestamp offset")
     axes[2].axhline(0.0, color="k", linewidth=1, alpha=0.2)
-    if timestamp_spacing.size:
-        gap_idx = int(np.argmax(timestamp_spacing))
-        axes[2].scatter([t[gap_idx]], [timestamp_spacing[gap_idx]], color="tab:red", s=35, zorder=3,
-                        label=f"max gap {timestamp_spacing[gap_idx]:.3f}s")
-    axes[2].set_title("Robot timestamp spacing")
+    if robot_camera_offset.size:
+        worst_idx = int(np.argmax(np.abs(robot_camera_offset)))
+        axes[2].scatter([t[worst_idx]], [robot_camera_offset[worst_idx]], color="tab:red", s=35, zorder=3,
+                        label=f"max |offset| {abs(robot_camera_offset[worst_idx]):.3f}s")
+    axes[2].set_title("Robot-camera timestamp offset")
     axes[2].set_ylabel("seconds")
+    if not has_camera:
+        axes[2].text(
+            0.02,
+            0.90,
+            "No camera timing fields in this file",
+            transform=axes[2].transAxes,
+            fontsize=9,
+            color="tab:red",
+            va="top",
+        )
     axes[2].grid(True, alpha=0.25)
     axes[2].legend(loc="upper right", fontsize=8)
 
@@ -182,6 +187,10 @@ def plot_static_sysid(
         end_pos_cm = end_pos * 100.0
         tcp_pos_delta_cm = _delta_cm(tcp_pos)
         apple_pos_delta_cm = _delta_cm(apple_pos)
+        apple_tcp_delta_cm = (apple_pos - tcp_pos) * 100.0
+        tcp_travel_cm = np.linalg.norm(tcp_pos - tcp_pos[0], axis=1) * 100.0
+        apple_travel_cm = np.linalg.norm(apple_pos - apple_pos[0], axis=1) * 100.0
+        apple_tcp_dist_cm = np.linalg.norm(apple_pos - tcp_pos, axis=1) * 100.0
         start_pos_delta_cm = _delta_cm(start_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
         end_pos_delta_cm = _delta_cm(end_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
 
@@ -207,11 +216,16 @@ def plot_static_sysid(
         axes[4].grid(True, alpha=0.25)
         axes[4].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[5].plot(t, apple_tcp_dist_cm, color="tab:purple", label="apple-tcp distance")
-        axes[5].set_title("Apple to TCP distance")
+        axes[5].plot(t, apple_tcp_delta_cm[:, 0], label="apple-tcp x")
+        axes[5].plot(t, apple_tcp_delta_cm[:, 1], label="apple-tcp y")
+        axes[5].plot(t, apple_tcp_delta_cm[:, 2], label="apple-tcp z")
+        axes[5].plot(t, apple_tcp_dist_cm, color="tab:purple", linewidth=1.8, label="apple-tcp distance")
+        axes[5].plot(t, apple_travel_cm, "--", color="tab:orange", linewidth=1.6, label="apple travel from first sample")
+        axes[5].plot(t, tcp_travel_cm, "--", color="tab:blue", linewidth=1.6, label="tcp travel from first sample")
+        axes[5].set_title("Distances and travel")
         axes[5].set_ylabel("cm")
         axes[5].grid(True, alpha=0.25)
-        axes[5].legend(loc="upper right", fontsize=8)
+        axes[5].legend(loc="upper right", ncol=2, fontsize=8)
 
         axes[6].plot(t, start_pos_cm[:, 0, 0], label="Branch start x")
         axes[6].plot(t, start_pos_cm[:, 0, 1], label="Branch start y")

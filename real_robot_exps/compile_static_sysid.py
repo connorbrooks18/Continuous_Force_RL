@@ -46,8 +46,8 @@ WOODY_PART_NAMES = ("Branch", "Spur", "Apple")
 # It is hardcoded here so the unified compiler stays explicit and easy to audit.
 REFERENCE_TAG_TO_BASE_4X4_DEFAULT = np.array([
     [1.0, 0.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 1.03525121],
-    [0.0, -1.0, 0.0, 0.66258599],
+    [0.0, 0.0, 1.0, 1.00],
+    [0.0, -1.0, 0.0, 0.70],
     [0.0, 0.0, 0.0, 1.0],
 ], dtype=np.float64)
 
@@ -161,6 +161,30 @@ def _select_frames(
             f"No complete camera frames within {max_delta_s:.3f}s of timestamp {center:.6f}"
         )
     return selected
+
+
+def _complete_timestamps_in_interval(
+    frames: pd.DataFrame,
+    interval: tuple[float, float],
+) -> np.ndarray:
+    start, end = interval
+    in_interval = frames[(frames["timestamp"] >= start) & (frames["timestamp"] <= end)]
+    if in_interval.empty:
+        return np.asarray([], dtype=np.float64)
+    complete_ts = [
+        float(timestamp)
+        for timestamp, group in in_interval.groupby("timestamp", sort=True)
+        if all(name in set(str(n) for n in group["name"].tolist()) for name in TRACKED_NAMES)
+    ]
+    return np.asarray(sorted(set(complete_ts)), dtype=np.float64)
+
+
+def _nearest_timestamp(target: float, candidates: np.ndarray) -> float:
+    candidates = np.asarray(candidates, dtype=np.float64).reshape(-1)
+    if candidates.size == 0:
+        return float("nan")
+    idx = int(np.argmin(np.abs(candidates - float(target))))
+    return float(candidates[idx])
 
 
 def _median_positions(frames: pd.DataFrame) -> dict[str, np.ndarray]:
@@ -279,13 +303,12 @@ def _unified_schema(n_holds: int, n_directions: int) -> pa.Schema:
         pa.field("ft_wrist", vector(6), metadata={b"frame": b"robot EE/body"}),
         pa.field("ft_wrist_raw", vector(6), metadata={b"frame": b"robot EE/body"}),
         pa.field("ft_wrist_baseline", vector(6), metadata={b"frame": b"robot EE/body"}),
-        pa.field("tau_J", vector(7), metadata={b"unit": b"N m", b"source": b"RobotState.tau_J"}),
-        pa.field("tau_ext_hat_filtered", vector(7), metadata={b"unit": b"N m", b"source": b"RobotState.tau_ext_hat_filtered"}),
         pa.field("tau_J_d", vector(7), metadata={b"unit": b"N m", b"source": b"RobotState.tau_J_d"}),
-        pa.field("gravity_torques", vector(7), metadata={b"unit": b"N m", b"source": b"Model.gravity(state)"}),
+        pa.field("joint_pos", vector(7), metadata={b"unit": b"rad", b"source": b"RobotState.q"}),
         pa.field("tcp_velocity", vector(6)),
         pa.field("action", vector(6), metadata={b"semantics": b"commanded EE twist"}),
         pa.field("tcp_pos", vector(3)),
+        pa.field("tcp_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
         pa.field("apple_pos", vector(3), metadata={b"frame": b"franka_base_o"}),
         pa.field("apple_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
         pa.field("woody_part_start_pos", vector(9), metadata={b"frame": b"franka_base_o"}),
@@ -295,6 +318,7 @@ def _unified_schema(n_holds: int, n_directions: int) -> pa.Schema:
         pa.field("direction", vector(n_directions), metadata={b"encoding": b"one_hot"}),
         pa.field("phase", pa.int8(), metadata={b"encoding": b"moving=0, hold=1"}),
         pa.field("phase_name", pa.string()),
+        pa.field("sample_label", pa.string()),
         pa.field("amplitude_m", pa.float32()),
         pa.field("excitation_direction", vector(3)),
         pa.field("camera_timestamp", pa.float64()),
@@ -328,9 +352,9 @@ def compile_static_episode(
     if not robot_rows:
         raise ValueError("Robot input contains no hold rows")
     required_robot_fields = {
-        "timestamp", "hold_index", "ft_wrist", "tau_J", "tau_ext_hat_filtered",
-        "tau_J_d", "gravity_torques", "tcp_velocity", "action",
-        "tcp_pos", "hold_number", "direction", "phase", "excitation_direction",
+        "timestamp", "hold_index", "ft_wrist", "tau_J_d", "joint_pos",
+        "tcp_velocity", "action", "tcp_pos", "tcp_pose_4x4",
+        "hold_number", "direction", "phase", "excitation_direction",
     }
     missing = required_robot_fields - set(robot_rows[0])
     if missing:
@@ -372,15 +396,18 @@ def compile_static_episode(
     )
     rest_starts, rest_ends, rest_chords = _endpoints(rest_positions)
 
-    hold_indices = sorted({int(row["hold_index"]) for row in robot_rows})
+    hold_indices = sorted({int(row["hold_index"]) for row in robot_rows if int(row["hold_index"]) >= 0})
     hold_geometry: dict[int, dict[str, Any]] = {}
     hold_camera_summaries: list[dict[str, Any]] = []
+    hold_complete_camera_timestamps: dict[int, np.ndarray] = {}
     for hold_idx in hold_indices:
         hold_rows = [row for row in robot_rows if int(row["hold_index"]) == hold_idx]
         timestamps = np.asarray([float(row["timestamp"]) for row in hold_rows])
         start = float(timestamps.min())
         end = float(timestamps.max())
         center = float((start + end) / 2.0)
+        hold_camera_timestamps = _complete_timestamps_in_interval(camera_frames, (start, end))
+        hold_complete_camera_timestamps[hold_idx] = hold_camera_timestamps
         selected = _select_frames(
             camera_frames,
             center=center,
@@ -420,6 +447,7 @@ def compile_static_episode(
             "robot_start_timestamp": start,
             "robot_end_timestamp": end,
             "robot_midpoint_timestamp": center,
+            "complete_camera_timestamps": hold_camera_timestamps.tolist(),
             "selected_camera_timestamps": selected_timestamps,
             "camera_median_timestamp": camera_center,
             "camera_frame_count": len(unique_selected_timestamps),
@@ -430,8 +458,27 @@ def compile_static_episode(
     output_rows: list[dict[str, Any]] = []
     for step_idx, robot_row in enumerate(robot_rows):
         hold_idx = int(robot_row["hold_index"])
-        geometry = hold_geometry[hold_idx]
         timestamp = float(robot_row["timestamp"])
+        selected = _select_frames(
+            camera_frames,
+            center=timestamp,
+            count=int(camera_frame_count),
+            max_delta_s=float(max_camera_delta_s),
+        )
+        positions_tag = _median_positions(selected)
+        poses_tag = {}
+        for name in TRACKED_NAMES:
+            pose_rows = selected[selected["name"] == name][["qx", "qy", "qz", "qw"]].to_numpy()
+            quat = np.median(pose_rows.astype(np.float64), axis=0)
+            poses_tag[name] = _make_transform(positions_tag[name], quat)
+        positions, poses = _transform_tracking_geometry(
+            positions_tag, poses_tag, reference_tag_to_base_4x4
+        )
+        starts, ends, chords = _endpoints(positions)
+        bending = _chord_deflections(chords, rest_chords)
+        selected_timestamps = selected["timestamp"].astype(float).tolist()
+        camera_timestamp = float(np.median(selected_timestamps))
+        unique_selected_timestamps = sorted(set(selected_timestamps))
         output_rows.append({
             "episode_id": episode_id,
             "timestamp": timestamp,
@@ -441,30 +488,30 @@ def compile_static_episode(
             "ft_wrist": _as_list(robot_row["ft_wrist"]),
             "ft_wrist_raw": _as_list(robot_row.get("ft_wrist_raw", robot_row["ft_wrist"])),
             "ft_wrist_baseline": _as_list(robot_row.get("ft_wrist_baseline", np.zeros(6))),
-            "tau_J": _as_list(robot_row["tau_J"]),
-            "tau_ext_hat_filtered": _as_list(robot_row["tau_ext_hat_filtered"]),
             "tau_J_d": _as_list(robot_row["tau_J_d"]),
-            "gravity_torques": _as_list(robot_row["gravity_torques"]),
+            "joint_pos": _as_list(robot_row["joint_pos"]),
             "tcp_velocity": _as_list(robot_row["tcp_velocity"]),
             "action": _as_list(robot_row["action"]),
             "tcp_pos": _as_list(robot_row["tcp_pos"]),
-            "apple_pos": _as_list(geometry["apple_pos"]),
-            "apple_pose_4x4": _as_list(geometry["apple_pose_4x4"]),
-            "woody_part_start_pos": _as_list(geometry["woody_part_start_pos"]),
-            "woody_part_end_pos": _as_list(geometry["woody_part_end_pos"]),
-            "woody_bending_angles": _as_list(geometry["woody_bending_angles"]),
+            "tcp_pose_4x4": _as_list(robot_row["tcp_pose_4x4"]),
+            "apple_pos": _as_list(positions["Apple"]),
+            "apple_pose_4x4": _as_list(poses["Apple"]),
+            "woody_part_start_pos": _as_list(starts.reshape(-1)),
+            "woody_part_end_pos": _as_list(ends.reshape(-1)),
+            "woody_bending_angles": _as_list(bending),
             "hold_number": _as_list(robot_row["hold_number"]),
             "direction": _as_list(robot_row["direction"]),
             "phase": int(robot_row["phase"]),
             "phase_name": str(robot_row.get("phase_name", "hold")),
+            "sample_label": str(robot_row.get("sample_label", robot_row.get("phase_name", "hold"))),
             "amplitude_m": float(robot_row.get("amplitude_m", math.nan)),
             "excitation_direction": _as_list(robot_row["excitation_direction"]),
-            "camera_timestamp": float(geometry["camera_timestamp"]),
-            "robot_camera_timestamp_offset_s": timestamp - float(geometry["camera_timestamp"]),
-            "camera_window_start_timestamp": float(geometry["camera_window_start_timestamp"]),
-            "camera_window_end_timestamp": float(geometry["camera_window_end_timestamp"]),
-            "camera_frame_count": int(geometry["camera_frame_count"]),
-            "camera_selected_timestamps": geometry["camera_selected_timestamps"],
+            "camera_timestamp": camera_timestamp,
+            "robot_camera_timestamp_offset_s": timestamp - camera_timestamp,
+            "camera_window_start_timestamp": min(unique_selected_timestamps),
+            "camera_window_end_timestamp": max(unique_selected_timestamps),
+            "camera_frame_count": len(unique_selected_timestamps),
+            "camera_selected_timestamps": selected_timestamps,
             "camera_data_valid": True,
         })
 
@@ -529,25 +576,18 @@ def compile_static_episode(
                 "dim": 6, "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
                 "description": "time-varying unloaded baseline subtracted from ft_wrist_raw",
             },
-            "tau_J": {
-                "dim": 7, "order": [f"joint_{i}" for i in range(1, 8)], "unit": "N m",
-                "description": "measured link-side joint torque sensor signals",
-            },
-            "tau_ext_hat_filtered": {
-                "dim": 7, "order": [f"joint_{i}" for i in range(1, 8)], "unit": "N m",
-                "description": "low-pass filtered external torque estimate; excludes configured EE/load and robot dynamics",
-            },
             "tau_J_d": {
                 "dim": 7, "order": [f"joint_{i}" for i in range(1, 8)], "unit": "N m",
-                "description": "desired link-side joint torque without gravity",
+                "description": "commanded/desired link-side joint torque without gravity",
             },
-            "gravity_torques": {
-                "dim": 7, "order": [f"joint_{i}" for i in range(1, 8)], "unit": "N m",
-                "description": "gravity torque from pylibfranka Model.gravity(state)",
+            "joint_pos": {
+                "dim": 7, "order": [f"joint_{i}" for i in range(1, 8)], "unit": "rad",
+                "description": "measured joint positions",
             },
             "tcp_velocity": {"dim": 6, "order": ["vx", "vy", "vz", "wx", "wy", "wz"]},
             "action": {"dim": 6, "order": ["vx", "vy", "vz", "wx", "wy", "wz"]},
             "tcp_pos": {"dim": 3, "order": ["x", "y", "z"]},
+            "tcp_pose_4x4": {"dim": 16, "reshape": [4, 4]},
             "apple_pos": {"dim": 3, "order": ["x", "y", "z"]},
             "apple_pose_4x4": {"dim": 16, "reshape": [4, 4]},
             "woody_part_start_pos": {"dim": 9, "reshape": [3, 3]},
@@ -564,9 +604,13 @@ def compile_static_episode(
             "robot": _source_info(robot_path),
             "tracking": _source_info(tracking_path),
         },
-        "source_metadata": {
-            "robot": robot_metadata,
-            "tracking": tracking_metadata,
+        "source_metadata_summary": {
+            "robot_episode_id": robot_metadata.get("episode_id"),
+            "robot_collection_mode": robot_metadata.get("collection_mode"),
+            "robot_rest_reference_timestamp": robot_metadata.get("rest_reference_timestamp"),
+            "robot_sample_labels": robot_metadata.get("sample_labels", []),
+            "tracking_reference_tag_is_fruiting_base": tracking_metadata.get("reference_tag_is_fruiting_base"),
+            "tracking_reference_tag_to_base_note": tracking_metadata.get("reference_tag_to_base_note"),
         },
         "compiler": {
             "module": "real_robot_exps.compile_static_sysid",

@@ -80,6 +80,8 @@ saves:
 - `ft_wrist_baseline`: interpolated unloaded wrench profile.
 - `ft_wrist`: interaction wrench, `ft_wrist_raw - ft_wrist_baseline`.
 
+IMPORTANT: ft_wrist is in the end-effector frame NOT base frame
+
 The default raw outputs are `pull_theta2.36_phi1.57_raw_robot.parquet` and
 `pull_theta2.36_phi1.57_raw_tracking.parquet`. If an explicitly uncorrected
 collect run is needed, set `USE_DYNAMIC_BASELINE_CORRECTION = False` before

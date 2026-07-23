@@ -50,6 +50,74 @@ CLOSE_PULL_ROLL_FORWARD_DEG = 20.0
 USE_DYNAMIC_BASELINE_CORRECTION = True
 
 
+def _quat_wxyz_to_rotmat(quat: torch.Tensor) -> np.ndarray:
+    """Convert a wxyz quaternion tensor to a 3x3 rotation matrix."""
+    q = np.asarray(quat.detach().cpu().numpy(), dtype=np.float64).reshape(4)
+    norm = float(np.linalg.norm(q))
+    if norm < 1e-12:
+        return np.eye(3, dtype=np.float64)
+    w, x, y, z = q / norm
+    return np.array([
+        [1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - w * z), 2.0 * (x * z + w * y)],
+        [2.0 * (x * y + w * z), 1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - w * x)],
+        [2.0 * (x * z - w * y), 2.0 * (y * z + w * x), 1.0 - 2.0 * (x * x + y * y)],
+    ], dtype=np.float64)
+
+
+def _tcp_pose_4x4_from_snapshot(snap) -> np.ndarray:
+    pose = np.eye(4, dtype=np.float64)
+    pose[:3, :3] = _quat_wxyz_to_rotmat(snap.ee_quat)
+    pose[:3, 3] = snap.ee_pos.detach().cpu().numpy().astype(np.float64, copy=False)
+    return pose
+
+
+def _flat_float32(value) -> np.ndarray:
+    return np.asarray(value, dtype=np.float32).reshape(-1)
+
+
+def _append_robot_sample(
+    record_rows,
+    *,
+    timestamp: float,
+    hold_step_idx: int,
+    hold_index: int,
+    phase: int,
+    phase_name: str,
+    sample_label: str,
+    amplitude_m: float,
+    hold_one_hot: np.ndarray,
+    direction_one_hot: np.ndarray,
+    excitation_direction: np.ndarray,
+    snap,
+    action: np.ndarray | None = None,
+):
+    if record_rows is None:
+        return
+    record_rows.append({
+        "timestamp": float(timestamp),
+        "hold_step_idx": int(hold_step_idx),
+        "hold_index": int(hold_index),
+        "hold_number": _flat_float32(hold_one_hot.copy()),
+        "direction_index": int(np.argmax(direction_one_hot)) if direction_one_hot.size else 0,
+        "direction": _flat_float32(direction_one_hot.copy()),
+        "phase": int(phase),
+        "phase_name": str(phase_name),
+        "sample_label": str(sample_label),
+        "amplitude_m": float(amplitude_m),
+        "ft_wrist": _flat_float32(snap.force_torque.cpu().numpy()),
+        "ft_wrist_raw": _flat_float32(snap.force_torque.cpu().numpy()),
+        "tau_J_d": _flat_float32(snap.tau_J_d.cpu().numpy()),
+        "joint_pos": _flat_float32(snap.joint_pos.cpu().numpy()),
+        "tcp_velocity": _flat_float32(np.concatenate([
+            snap.ee_linvel.cpu().numpy(),
+            snap.ee_angvel.cpu().numpy(),
+        ])),
+        "action": _flat_float32(np.zeros(6, dtype=np.float32) if action is None else np.asarray(action, dtype=np.float32).reshape(6)),
+        "tcp_pos": _flat_float32(snap.ee_pos.cpu().numpy()),
+        "tcp_pose_4x4": _flat_float32(_tcp_pose_4x4_from_snapshot(snap)),
+        "excitation_direction": _flat_float32(excitation_direction.copy()),
+    })
+
 
 def load_gains_from_config(real_config: dict, device: str = "cpu") -> dict:
     """Load controller gains from real robot config control_gains section.
@@ -161,12 +229,32 @@ def run_move(
     device: str = "cpu",
     prnt: bool = True,
     manage_control: bool = True,
+    *,
+    record_rows=None,
+    hold_index: int = -1,
+    hold_number: int = -1,
+    n_holds: int = 1,
+    direction_idx: int = 0,
+    n_directions: int = 1,
+    excitation_direction=None,
+    amplitude_m: float = 0.0,
+    sample_label: str = "move",
 ) -> dict:
     """Run torque control until robot converges to target_pos.
 
     Returns dict with position/orientation start, target, achieved, errors, and steps.
     """
     targets = build_position_targets(gains, target_pos, target_quat, default_dof_pos, device)
+    excitation_direction = np.asarray(
+        excitation_direction if excitation_direction is not None else np.zeros(3),
+        dtype=np.float32,
+    ).reshape(3)
+    hold_one_hot = np.zeros(int(n_holds), dtype=np.float32)
+    if 0 <= int(hold_number) < int(n_holds):
+        hold_one_hot[int(hold_number)] = 1.0
+    direction_one_hot = np.zeros(int(n_directions), dtype=np.float32)
+    if 0 <= int(direction_idx) < int(n_directions):
+        direction_one_hot[int(direction_idx)] = 1.0
 
     if manage_control:
         robot.start_torque_mode()
@@ -180,9 +268,24 @@ def run_move(
     for step in range(MAX_STEPS):
         robot.wait_for_policy_step()
         snap = robot.get_state_snapshot()
+        timestamp = time.time()
         robot.check_safety(snap)
 
         robot.set_control_targets(targets)
+        _append_robot_sample(
+            record_rows,
+            timestamp=timestamp,
+            hold_step_idx=step,
+            hold_index=hold_index,
+            phase=0,
+            phase_name="move",
+            amplitude_m=amplitude_m,
+            hold_one_hot=hold_one_hot,
+            direction_one_hot=direction_one_hot,
+            excitation_direction=excitation_direction,
+            snap=snap,
+            sample_label=sample_label,
+        )
 
         # Debug: replicate wrench computation from compute process for visibility
         if step == 0 or step % 50 == 0 or converge_count == CONVERGE_FRAMES - 1:
@@ -271,12 +374,16 @@ def hold_and_record(
     device="cpu",
     *,
     record_rows=None,
+    hold_index=-1,
     hold_number=-1,
     n_holds=1,
     direction_idx=0,
     n_directions=1,
     excitation_direction=None,
     amplitude_m=0.0,
+    phase: int = 1,
+    phase_name: str = "hold",
+    sample_label: str = "hold",
 ):
     """Hold a pose and optionally append complete system-ID robot rows.
 
@@ -302,38 +409,22 @@ def hold_and_record(
         timestamp = time.time()
         robot.check_safety(snap)
         robot.set_control_targets(targets)
-        
-        # Grab the raw body-frame force and subtract the torque-mode tare
-        
         ft = snap.force_torque.cpu().numpy()
-
         ft_history.append(ft)
-        if record_rows is not None:
-            record_rows.append({
-                "timestamp": float(timestamp),
-                "hold_step_idx": int(hold_step_idx),
-                "hold_index": int(hold_number),
-                "hold_number": hold_one_hot.copy(),
-                "direction_index": int(direction_idx),
-                "direction": direction_one_hot.copy(),
-                "phase": 1,
-                "phase_name": "hold",
-                "amplitude_m": float(amplitude_m),
-                "ft_wrist": ft.astype(np.float32, copy=True),
-                "ft_wrist_raw": ft.astype(np.float32, copy=True),
-                "tau_J": snap.tau_J.cpu().numpy().astype(np.float32, copy=True),
-                "tau_ext_hat_filtered": snap.tau_ext_hat_filtered.cpu().numpy().astype(np.float32, copy=True),
-                "tau_J_d": snap.tau_J_d.cpu().numpy().astype(np.float32, copy=True),
-                "gravity_torques": snap.gravity_torques.cpu().numpy().astype(np.float32, copy=True),
-                "tcp_velocity": np.concatenate([
-                    snap.ee_linvel.cpu().numpy(),
-                    snap.ee_angvel.cpu().numpy(),
-                ]).astype(np.float32),
-                # Static-hold samples have no instantaneous EE velocity command.
-                "action": np.zeros(6, dtype=np.float32),
-                "tcp_pos": snap.ee_pos.cpu().numpy().astype(np.float32, copy=True),
-                "excitation_direction": excitation_direction.copy(),
-            })
+        _append_robot_sample(
+            record_rows,
+            timestamp=timestamp,
+            hold_step_idx=hold_step_idx,
+            hold_index=hold_index,
+            phase=phase,
+            phase_name=phase_name,
+            sample_label=sample_label,
+            amplitude_m=amplitude_m,
+            hold_one_hot=hold_one_hot,
+            direction_one_hot=direction_one_hot,
+            excitation_direction=excitation_direction,
+            snap=snap,
+        )
     
     # print(ft_history)
 
@@ -413,8 +504,10 @@ def apply_dynamic_baseline(robot_rows: list[dict], baseline_path: Path) -> dict:
 
     baseline_by_hold = {}
     for row in baseline_rows:
-        baseline_by_hold.setdefault(int(row["hold_index"]), []).append(row)
-    current_hold_indices = sorted({int(row["hold_index"]) for row in robot_rows})
+        hold_index = int(row["hold_index"])
+        if hold_index >= 0:
+            baseline_by_hold.setdefault(hold_index, []).append(row)
+    current_hold_indices = sorted({int(row["hold_index"]) for row in robot_rows if int(row["hold_index"]) >= 0})
     if current_hold_indices != sorted(baseline_by_hold):
         raise ValueError(
             f"Baseline hold indices {sorted(baseline_by_hold)} do not match "
@@ -517,8 +610,56 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     time.sleep(2.0) # let it settle
     robot.reset_to_start_pose(pull_start_pose_4x4)
     snap = robot.get_state_snapshot()
+    robot.start_torque_mode()
+    robot_rows = []
+    rest_reference_timestamp = time.time()
+    # Short initial rest geometry sample: the apple is untouched and the arm is
+    # at the pull start pose. This is the frame-0 / datapoint-0 geometry anchor.
+    hold_and_record(
+        robot,
+        gains,
+        snap.ee_pos.clone(),
+        snap.ee_quat.clone(),
+        default_dof_pos,
+        duration_sec=0.5,
+        device=device,
+        record_rows=robot_rows,
+        hold_index=-2,
+        hold_number=0,
+        n_holds=stops,
+        direction_idx=int(run_args.get("direction_index", 0)),
+        n_directions=int(run_args.get("num_directions", 1)),
+        excitation_direction=np.zeros(3, dtype=np.float32),
+        amplitude_m=0.0,
+        phase=0,
+        phase_name="rest_geometry",
+        sample_label="rest_geometry",
+    )
     gc.send_request(True)
-    time.sleep(2)
+    time.sleep(3.0)
+    # Post-grab initial hold: the apple is grasped but the arm has not started
+    # the pull yet. This should be the first “held” sample of the episode.
+    snap = robot.get_state_snapshot()
+    hold_and_record(
+        robot,
+        gains,
+        snap.ee_pos.clone(),
+        snap.ee_quat.clone(),
+        default_dof_pos,
+        duration_sec=1.0,
+        device=device,
+        record_rows=robot_rows,
+        hold_index=-1,
+        hold_number=0,
+        n_holds=stops,
+        direction_idx=int(run_args.get("direction_index", 0)),
+        n_directions=int(run_args.get("num_directions", 1)),
+        excitation_direction=np.zeros(3, dtype=np.float32),
+        amplitude_m=0.0,
+        phase=1,
+        phase_name="post_grab_hold",
+        sample_label="post_grab_hold",
+    )
     
     # distance = .05
     # stops = 5
@@ -527,7 +668,6 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         steps *= 2
     print(f"steps is... {steps}")
 
-    robot.start_torque_mode()
     
     # if debug:
     #     print("Settling torque controller...")
@@ -548,16 +688,12 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     excitation_direction = (displacement / displacement_norm).astype(np.float32)
 
     pull_data = []
-    robot_rows = []
-    # This timestamp can anchor separately recorded camera samples for the
-    # frame-0/rest chord directions. It uses the same host wall clock.
-    rest_reference_timestamp = time.time()
 
     for i in range(steps):
         if(debug):
             print(f"Starting {i+1} of {steps}...")
         
-        
+        segment_idx = len(pull_data)
         target[0] -= (dx/steps)
         target[1] -= (dy/steps)
         target[2] -= (dz/steps)
@@ -572,6 +708,15 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
             f"closer #{i}",
             prnt=debug,
             manage_control=False,
+            record_rows=robot_rows,
+            hold_index=segment_idx,
+            hold_number=segment_idx,
+            n_holds=stops,
+            direction_idx=int(run_args.get("direction_index", 0)),
+            n_directions=int(run_args.get("num_directions", 1)),
+            excitation_direction=excitation_direction,
+            amplitude_m=distance * float(segment_idx + 1) / float(stops),
+            sample_label="moving",
         )
         
         if((i+1) % (steps/stops) == 0):
@@ -588,12 +733,16 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
                 duration_sec=s,
                 device=device,
                 record_rows=robot_rows,
+                hold_index=hold_idx,
                 hold_number=hold_idx,
                 n_holds=stops,
                 direction_idx=int(run_args.get("direction_index", 0)),
                 n_directions=int(run_args.get("num_directions", 1)),
                 excitation_direction=excitation_direction,
                 amplitude_m=distance * float(hold_idx + 1) / float(stops),
+                phase=1,
+                phase_name="hold",
+                sample_label="hold",
             )
             pull_data.append(data)
             #hold_position(robot, gains, target, apple_quat, default_dof_pos, duration_sec=s, device=device)
@@ -660,19 +809,27 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         "hold_ranges": hold_ranges,
         "direction_index": int(run_args.get("direction_index", 0)),
         "num_directions": int(run_args.get("num_directions", 1)),
-        "action_semantics": "commanded EE twist [linear xyz, angular xyz]; zero during recorded static holds",
+        "action_semantics": "legacy 6D control placeholder; row phase indicates move vs hold",
+        "sample_labels": [
+            "rest_geometry",
+            "post_grab_hold",
+            "moving",
+            "hold",
+        ],
         "phase_encoding": {"moving": 0, "hold": 1},
-        "ft_wrist_frame": "robot EE/body frame",
+        "ft_wrist_frame": "force only in EE frame; torque and all other robot-side kinematics in Franka base frame",
         "ft_wrist_order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
         "ft_wrist_sign": "environment-on-robot; pro_robot_interface rotates base to body and negates",
         "joint_torque_fields": {
             "order": [f"joint_{i}" for i in range(1, 8)],
             "order_direction": "base-to-end-effector",
             "unit": "N*m",
-            "tau_J": "measured link-side joint torque sensor signals",
-            "tau_ext_hat_filtered": "low-pass filtered external torque estimate; excludes configured EE/load and robot dynamics",
-            "tau_J_d": "desired link-side joint torques without gravity",
-            "gravity_torques": "gravity torque from pylibfranka Model.gravity(state)",
+            "tau_J_d": "commanded/desired link-side joint torques without gravity",
+        },
+        "joint_position_fields": {
+            "order": [f"joint_{i}" for i in range(1, 8)],
+            "order_direction": "base-to-end-effector",
+            "unit": "rad",
         },
         "ft_calibration": {
             "enabled": bool(ft_calibration_enabled),
@@ -680,6 +837,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         },
         "ee_config": ee_config,
         "tcp_velocity_order": ["vx", "vy", "vz", "wx", "wy", "wz"],
+        "tcp_pose_order": ["x", "y", "z", "qx", "qy", "qz", "qw"],
         "position_unit": "m",
         "linear_velocity_unit": "m/s",
         "angular_velocity_unit": "rad/s",
@@ -692,8 +850,20 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
             key: value.detach().cpu().tolist() if torch.is_tensor(value) else value
             for key, value in gains.items()
         },
-        "command_arguments": run_args,
-        "config_snapshot": config_snapshot,
+        "config_source": {
+            "path": run_args.get("config_path", "real_robot_exps/config.yaml"),
+            "sha256": hashlib.sha256(json.dumps(config_snapshot, sort_keys=True, default=str).encode("utf-8")).hexdigest() if config_snapshot is not None else None,
+        },
+        "run_arguments": {
+            "mode": run_args.get("mode"),
+            "theta": run_args.get("theta"),
+            "phi": run_args.get("phi"),
+            "distance": run_args.get("distance"),
+            "stops": run_args.get("stops"),
+            "direction_index": run_args.get("direction_index"),
+            "num_directions": run_args.get("num_directions"),
+            "pull_start_pose_name": run_args.get("pull_start_pose_name"),
+        },
         "raw_robot_row_count": len(robot_rows),
     }
     if baseline:

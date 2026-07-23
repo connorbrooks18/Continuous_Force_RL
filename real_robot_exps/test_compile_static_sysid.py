@@ -34,17 +34,17 @@ class CompileStaticSysidTest(unittest.TestCase):
                         "hold_step_idx": hold_step_idx,
                         "hold_index": hold_idx,
                         "ft_wrist": np.arange(6, dtype=np.float32),
-                        "tau_J": np.arange(7, dtype=np.float32),
-                        "tau_ext_hat_filtered": np.arange(7, dtype=np.float32) + 10,
                         "tau_J_d": np.arange(7, dtype=np.float32) + 20,
-                        "gravity_torques": np.arange(7, dtype=np.float32) + 30,
+                        "joint_pos": np.arange(7, dtype=np.float32) + 40,
                         "tcp_velocity": np.zeros(6, dtype=np.float32),
                         "action": np.zeros(6, dtype=np.float32),
                         "tcp_pos": np.ones(3, dtype=np.float32),
+                        "tcp_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
                         "hold_number": np.eye(2, dtype=np.float32)[hold_idx],
                         "direction": np.ones(1, dtype=np.float32),
                         "phase": 1,
                         "phase_name": "hold",
+                        "sample_label": "hold",
                         "amplitude_m": 0.01 * (hold_idx + 1),
                         "excitation_direction": np.array([0, 1, 0], dtype=np.float32),
                     })
@@ -105,10 +105,11 @@ class CompileStaticSysidTest(unittest.TestCase):
             self.assertEqual(metadata["topology"]["node_order"], ["Branch", "Spur", "Apple"])
             self.assertEqual(metadata["camera_aggregation"]["requested_frame_count"], 2)
             self.assertIn("source_files", metadata)
-            self.assertIn("tau_J", output.schema.names)
-            self.assertIn("tau_ext_hat_filtered", output.schema.names)
+            self.assertIn("source_metadata_summary", metadata)
             self.assertIn("tau_J_d", output.schema.names)
-            self.assertIn("gravity_torques", output.schema.names)
+            self.assertIn("joint_pos", output.schema.names)
+            self.assertIn("tcp_pose_4x4", output.schema.names)
+            self.assertIn("sample_label", output.schema.names)
 
 
 if __name__ == "__main__":
