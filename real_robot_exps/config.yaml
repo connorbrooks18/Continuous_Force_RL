@@ -7,8 +7,6 @@ robot:
   use_mock: false              # Set false for real robot
   control_rate_hz: 15.0       # Must match training policy_hz
   reset_duration_sec: 5  # Duration for Cartesian reset motion
-  retract_height_m: 0.04      # Retract upward before reset to clear hole (meters)
-  gripper_force_n: 62.0       # Grasp force in Newtons (max 70N continuous limit)
 
   # Per-episode FT calibration: hold position and average O_F_ext_hat_K
   # for this many seconds before each episode. Replaces static ft_bias.
@@ -38,7 +36,7 @@ robot:
 
   # F/T EMA low-pass filter coefficient (applied at 1kHz inside read_state)
   # alpha=0.2 at 1kHz ~ 32Hz cutoff frequency (-3dB)
-  ft_ema_alpha: .2 #0.02 # .08
+  ft_ema_alpha: .1
 
   # Constant F/T bias subtracted from O_F_ext_hat_K BEFORE negation/rotation.
   # Measured in free space with check_ft_bias.py — compensates for unmodeled
@@ -52,56 +50,6 @@ robot:
   # ft_bias: [-0.8578, -1.4123, 0.9413, 0.7662, -0.4923, 0.1242]
   
     
-task:
-  # Fixed asset origin position (hole base in world frame, meters)
-  # The observation frame (sim's fixed_pos_obs_frame) is computed as:
-  #   obs_frame = fixed_asset_position + [0, 0, hole_height + fixed_asset_base_height]
-  # which gives the HOLE TIP (entrance) position matching the sim exactly.
-  #fixed_asset_position: [0.6270, -0.0177, 0.1525]
-  fixed_asset_orientation_quat: [1.0, 0.0, 0.0, 0.0]  # [w, x, y, z]
-  fixed_asset_yaw: 0.0                # Yaw of fixed asset in world frame (radians)
-  fixed_asset_base_height: 0.0        # Height of base plate below hole channel (meters)
-
-  # Target peg base position (where peg base should be when fully inserted)
-  # This is "target_held_base_pos" in sim - used for SUCCESS/ENGAGEMENT DETECTION
-  # May differ from fixed_asset_position depending on geometry
-  fixed_asset_position:   [0.0676, 0.7072, 0.1146]
-  target_peg_base_position:  [0.0676, 0.7072, 0.1146]
-
-  # Offset from EE (fingertip midpoint) to peg base (grasped object root)
-  # Needed to compute peg_base_pos = ee_pos + this offset for detection
-  # Must be measured for your specific peg + gripper setup
-  ee_to_peg_base_offset: [0.0, 0.0, -0.0324] #-0.0412]  # Example: peg extends 50mm below EE
-
-  # Detection thresholds (matching IsaacLab factory env logic exactly)
-  # Success: xy_dist < xy_centering_threshold AND z_disp < hole_height * success_threshold
-  # Engagement: xy_dist < xy_centering_threshold AND z_disp < hole_height * engage_threshold
-  xy_centering_threshold: 0.0025   # 2.5mm - HARDCODED in IsaacLab _get_curr_successes()
-  # Joint angles for sim comparison (copy from first_real_robot_test.py phase 1 output)
-  joint_angles: [1.8416, 0.3115, -0.4215, -2.4370, -0.2172, 3.6133, -0.7987]
-
-
-  hole_height: 0.025               # 25mm - asset-specific, used to scale Z thresholds
-  success_threshold: 0.2          # Multiplied by hole_height -> 1mm Z threshold
-  engage_threshold: 0.9            # Multiplied by hole_height -> 22.5mm Z threshold
-
-  # Break detection (matches FragileObjectWrapper)
-  break_force_threshold: 20.0      # N - L2 norm of force (Fx,Fy,Fz) >= this triggers break
-
-  # Safety: force control is blocked when peg tip is more than this height
-  # above the hole top. Prevents force control in free space where there's
-  # nothing to push against. Set to a large value to effectively disable.
-  force_select_max_height_mm: 3000.0
-
-  # Safety: force control is blocked when peg tip XY distance from goal XY
-  # exceeds this threshold. Prevents force control when not aligned with hole.
-  # Set to a large value to effectively disable.
-  force_select_max_xy_dist_mm: 1200.5
-
-  # Episode parameters
-  episode_timeout_steps: 150       # Max steps per episode
-  terminate_on_success: true       # True for real robot (no point continuing), False in sim
-
 control_gains:
   # When true, use gain values below instead of WandB training config.
   # When false, load gains from WandB training config (matching sim exactly).
@@ -180,12 +128,6 @@ control_gains:
   # Prevents position dynamics from suppressing orientation control.
   partial_inertia_decoupling: false 
   sep_ori: true
-
-policy:
-  # Multiplier on the learned std dev for action sampling.
-  # 0.0 = deterministic (mean only, current default behavior).
-  # 1.0 = full training std dev. 0.1 = 10% of training std dev.
-  std_scale: 0.05
 
 noise:
   # When true, use noise values defined below instead of WandB training config.
