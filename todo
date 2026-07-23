@@ -1,0 +1,1 @@
+error handling in process (if it's a fail like cartesian_motion_generator... during a reset_to..._pose), just do that run again after a few seconds.

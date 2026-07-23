@@ -1,0 +1,110 @@
+{
+  "directions": [
+    {
+      "name": "",
+      "phi": 1.57,
+      "theta": 1.57
+    }
+  ],
+  "directions_source": "real_robot_exps/directions.json",
+  "pre_grasp_geometry": {
+    "apple": {
+      "connection_rpy_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "connection_source": "catalog_or_lengthened_state_placeholder",
+      "length_m": 0.08,
+      "mass_kg": 0.18,
+      "radius_m": 0.035,
+      "shape": "sphere"
+    },
+    "primary": {
+      "connection_rpy_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "connection_source": "catalog",
+      "length_m": 0.05,
+      "mass_kg": 0.01,
+      "radius_m": 0.005,
+      "shape": "cylinder"
+    },
+    "spur": {
+      "connection_rpy_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "connection_source": "catalog_or_lengthened_state_placeholder",
+      "length_m": 0.03,
+      "mass_kg": 0.006,
+      "radius_m": 0.004,
+      "shape": "cylinder"
+    },
+    "stem": {
+      "connection_rpy_deg": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "connection_source": "catalog_or_lengthened_state_placeholder",
+      "length_m": 0.015,
+      "mass_kg": 0.001,
+      "radius_m": 0.002,
+      "shape": "cylinder"
+    }
+  },
+  "runs": [
+    {
+      "direction": {
+        "name": "",
+        "phi": 1.57,
+        "theta": 1.57
+      },
+      "direction_index": 0,
+      "duration_sec": 39.51835560798645,
+      "robot_parquet": "s00-d00_robot.parquet",
+      "run_id": "s00-d00",
+      "structure_index": 0,
+      "structure_name": "default_template",
+      "tracking_parquet": "s00-d00_tracking.parquet",
+      "unified_parquet": null
+    }
+  ],
+  "structure": {
+    "angles_source": "lengthened_state_check",
+    "geometry_source": "catalog_entry_selected_by_structure_index",
+    "name": "default_template",
+    "notes": "Edit this catalog to match the orchard structure you are collecting.",
+    "parts": {
+      "apple": {
+        "length_m": 0.08,
+        "mass_kg": 0.18,
+        "radius_m": 0.035,
+        "shape": "sphere"
+      },
+      "primary": {
+        "length_m": 0.05,
+        "mass_kg": 0.01,
+        "radius_m": 0.005,
+        "shape": "cylinder"
+      },
+      "spur": {
+        "length_m": 0.03,
+        "mass_kg": 0.006,
+        "radius_m": 0.004,
+        "shape": "cylinder"
+      },
+      "stem": {
+        "length_m": 0.015,
+        "mass_kg": 0.001,
+        "radius_m": 0.002,
+        "shape": "cylinder"
+      }
+    }
+  },
+  "structure_index": 0
+}

@@ -349,7 +349,8 @@ def compile_static_episode(
         raise ValueError("camera_frame_count must be >= 1")
 
     robot_table = pq.read_table(robot_path)
-    robot_rows = robot_table.to_pylist()
+    robot_rows_all = robot_table.to_pylist()
+    robot_rows = [row for row in robot_rows_all if str(row.get("row_kind", "data")) != "metadata"]
     if not robot_rows:
         raise ValueError("Robot input contains no hold rows")
     required_robot_fields = {
@@ -362,6 +363,13 @@ def compile_static_episode(
         raise ValueError(f"Robot input is missing required fields: {sorted(missing)}")
 
     robot_metadata = _read_dataset_metadata(robot_path)
+    if robot_rows_all and str(robot_rows_all[0].get("row_kind", "")) == "metadata":
+        embedded = robot_rows_all[0].get("metadata_json")
+        if embedded:
+            try:
+                robot_metadata = json.loads(embedded)
+            except json.JSONDecodeError:
+                pass
     tracking_metadata = _read_dataset_metadata(tracking_path)
     camera_frames = _load_tracking_frames(tracking_path)
 
@@ -523,6 +531,22 @@ def compile_static_episode(
         output_rows,
         schema=_unified_schema(n_holds, n_directions),
     )
+    post_grasp_geometry = {}
+    if output_rows:
+        first_row = output_rows[0]
+        post_grasp_geometry = {
+            "timestamp": first_row["timestamp"],
+            "hold_index": first_row["hold_index"],
+            "hold_step_idx": first_row["hold_step_idx"],
+            "tcp_pos": first_row["tcp_pos"],
+            "tcp_pose_4x4": first_row["tcp_pose_4x4"],
+            "target_pose_4x4": first_row["target_pose_4x4"],
+            "apple_pos": first_row["apple_pos"],
+            "apple_pose_4x4": first_row["apple_pose_4x4"],
+            "woody_part_start_pos": first_row["woody_part_start_pos"],
+            "woody_part_end_pos": first_row["woody_part_end_pos"],
+            "woody_bending_angles": first_row["woody_bending_angles"],
+        }
     compilation_metadata = {
         "schema_name": SCHEMA_NAME,
         "schema_version": SCHEMA_VERSION,
@@ -601,6 +625,10 @@ def compile_static_episode(
             "phase": {"dim": 1, "encoding": {"moving": 0, "hold": 1}},
             "excitation_direction": {"dim": 3, "description": "unit pull direction"},
         },
+        "dump": robot_metadata.get("dump", {}),
+        "robot_info": robot_metadata.get("robot_info", {}),
+        "pre_grasp_geometry": robot_metadata.get("pre_grasp_geometry", {}),
+        "post_grasp_geometry": post_grasp_geometry,
         "row_count": len(output_rows),
         "hold_count": len(hold_indices),
         "source_files": {
@@ -608,10 +636,10 @@ def compile_static_episode(
             "tracking": _source_info(tracking_path),
         },
         "source_metadata_summary": {
-            "robot_episode_id": robot_metadata.get("episode_id"),
-            "robot_collection_mode": robot_metadata.get("collection_mode"),
-            "robot_rest_reference_timestamp": robot_metadata.get("rest_reference_timestamp"),
-            "robot_sample_labels": robot_metadata.get("sample_labels", []),
+            "robot_dump": robot_metadata.get("dump", {}),
+            "robot_info": robot_metadata.get("robot_info", {}),
+            "pre_grasp_geometry": robot_metadata.get("pre_grasp_geometry", {}),
+            "post_grasp_geometry": robot_metadata.get("post_grasp_geometry", {}),
             "tracking_reference_tag_is_fruiting_base": tracking_metadata.get("reference_tag_is_fruiting_base"),
             "tracking_reference_tag_to_base_note": tracking_metadata.get("reference_tag_to_base_note"),
         },

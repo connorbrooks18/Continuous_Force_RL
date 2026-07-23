@@ -12,6 +12,7 @@ __pycache__/
 
 #vim
 *#
+*.sw
 
 # wandb + logging
 logs/

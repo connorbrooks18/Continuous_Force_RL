@@ -78,6 +78,24 @@ def _pose_4x4_from_pos_quat(pos: torch.Tensor, quat: torch.Tensor) -> np.ndarray
     return pose
 
 
+def _snapshot_geometry(snap, *, target_pose_4x4: np.ndarray | None = None) -> dict:
+    geometry = {
+        "tcp_pos": _flat_float32(snap.ee_pos.cpu().numpy()).tolist(),
+        "tcp_pose_4x4": _flat_float32(_tcp_pose_4x4_from_snapshot(snap)).tolist(),
+    }
+    if target_pose_4x4 is not None:
+        geometry["target_pose_4x4"] = _flat_float32(target_pose_4x4).tolist()
+    return geometry
+
+
+def _metadata_entry(metadata: dict) -> dict:
+    row = {
+        "row_kind": "metadata",
+        "metadata_json": json.dumps(metadata, sort_keys=True, default=str),
+    }
+    return row
+
+
 def _flat_float32(value) -> np.ndarray:
     return np.asarray(value, dtype=np.float32).reshape(-1)
 
@@ -445,7 +463,24 @@ def hold_and_record(
 
 def save_robot_hold_parquet(rows, filename, metadata):
     """Save raw robot-side hold rows and rich collection metadata."""
-    table = pa.Table.from_pylist(rows)
+    data_rows = list(rows)
+    if data_rows:
+        data_table = pa.Table.from_pylist(data_rows)
+        schema = pa.schema([
+            pa.field("row_kind", pa.string()),
+            pa.field("metadata_json", pa.string()),
+            *data_table.schema,
+        ])
+        combined_rows = [_metadata_entry(metadata)] + [
+            {"row_kind": None, "metadata_json": None, **row} for row in data_rows
+        ]
+    else:
+        schema = pa.schema([
+            pa.field("row_kind", pa.string()),
+            pa.field("metadata_json", pa.string()),
+        ])
+        combined_rows = [_metadata_entry(metadata)]
+    table = pa.Table.from_pylist(combined_rows, schema=schema)
     file_metadata = dict(metadata)
     file_metadata.setdefault("schema_name", "real_static_sysid_robot_raw")
     file_metadata.setdefault("schema_version", "1.0.0")
@@ -509,12 +544,18 @@ def _validate_baseline_compatibility(current: dict, baseline: dict, baseline_pat
 def apply_dynamic_baseline(robot_rows: list[dict], baseline_path: Path) -> dict:
     """Subtract an unloaded baseline profile within each corresponding hold."""
     baseline_table = pq.read_table(baseline_path)
-    baseline_rows = baseline_table.to_pylist()
+    baseline_rows_all = baseline_table.to_pylist()
+    baseline_rows = [
+        row for row in baseline_rows_all
+        if str(row.get("row_kind", "data")) != "metadata"
+    ]
     if not baseline_rows:
         raise ValueError(f"Baseline file has no rows: {baseline_path}")
 
     baseline_by_hold = {}
     for row in baseline_rows:
+        if "hold_index" not in row:
+            continue
         hold_index = int(row["hold_index"])
         if hold_index >= 0:
             baseline_by_hold.setdefault(hold_index, []).append(row)
@@ -612,7 +653,7 @@ def update_gains(gains, new_prop_gains, device):
     gains["task_deriv_gains"] = torch.tensor(derivs, device=device, dtype=torch.float32)
     return gains
 
-def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5, args=None, config_snapshot=None, ee_config=None, ft_calibration_enabled: bool = False):
+def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5, args=None, config_snapshot=None, ee_config=None, ft_calibration_enabled: bool = False, pre_grasp_geometry=None, robot_info=None, kp_value=None, metadata_overrides=None):
     collection_start_timestamp = time.time()
     episode_id = str(uuid4())
     run_args = dict(args or {})
@@ -625,54 +666,10 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     robot.start_torque_mode()
     robot_rows = []
     rest_reference_timestamp = time.time()
-    # Short initial rest geometry sample: the apple is untouched and the arm is
-    # at the pull start pose. This is the frame-0 / datapoint-0 geometry anchor.
-    hold_and_record(
-        robot,
-        gains,
-        snap.ee_pos.clone(),
-        snap.ee_quat.clone(),
-        default_dof_pos,
-        duration_sec=0.5,
-        device=device,
-        record_rows=robot_rows,
-        hold_index=-2,
-        hold_number=0,
-        n_holds=stops,
-        direction_idx=int(run_args.get("direction_index", 0)),
-        n_directions=int(run_args.get("num_directions", 1)),
-        excitation_direction=np.zeros(3, dtype=np.float32),
-        amplitude_m=0.0,
-        phase=0,
-        phase_name="rest_geometry",
-        sample_label="rest_geometry",
-    )
     gc.send_request(True)
     time.sleep(3.0)
-    # Post-grab initial hold: the apple is grasped but the arm has not started
-    # the pull yet. This should be the first “held” sample of the episode.
     snap = robot.get_state_snapshot()
-    hold_and_record(
-        robot,
-        gains,
-        snap.ee_pos.clone(),
-        snap.ee_quat.clone(),
-        default_dof_pos,
-        duration_sec=1.0,
-        device=device,
-        record_rows=robot_rows,
-        hold_index=-1,
-        hold_number=0,
-        n_holds=stops,
-        direction_idx=int(run_args.get("direction_index", 0)),
-        n_directions=int(run_args.get("num_directions", 1)),
-        excitation_direction=np.zeros(3, dtype=np.float32),
-        amplitude_m=0.0,
-        phase=1,
-        phase_name="post_grab_hold",
-        sample_label="post_grab_hold",
-    )
-    
+
     # distance = .05
     # stops = 5
     steps = stops
@@ -804,7 +801,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
                 "end_timestamp": max(hold_timestamps),
                 "n_robot_frames": len(hold_timestamps),
             })
-    robot_metadata = {
+    dump_blob = {
         "episode_id": episode_id,
         "collection_start_timestamp": collection_start_timestamp,
         "collection_end_timestamp": time.time(),
@@ -823,8 +820,6 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         "num_directions": int(run_args.get("num_directions", 1)),
         "action_semantics": "legacy 6D control placeholder; row phase indicates move vs hold",
         "sample_labels": [
-            "rest_geometry",
-            "post_grab_hold",
             "moving",
             "hold",
         ],
@@ -878,6 +873,25 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         },
         "raw_robot_row_count": len(robot_rows),
     }
+    robot_metadata = {
+        "dump": dump_blob,
+        "robot_info": {
+        "kp": float(kp_value) if kp_value is not None else float(np.asarray(gains["task_prop_gains"]).reshape(-1)[0].item()),
+        },
+        "pre_grasp_geometry": pre_grasp_geometry or {},
+        "post_grasp_geometry": _snapshot_geometry(
+            snap,
+            target_pose_4x4=_pose_4x4_from_pos_quat(target, apple_quat) if "target" in locals() and "apple_quat" in locals() else None,
+        ),
+        "theta_rad": float(theta),
+        "phi_rad": float(phi),
+        "distance_m": float(distance),
+        "n_holds": int(stops),
+        "pull_start_pose_name": str(run_args.get("pull_start_pose_name", "unspecified")),
+        "robot_start_pose_4x4": np.asarray(pull_start_pose_4x4).tolist(),
+    }
+    if metadata_overrides:
+        robot_metadata["dump"].setdefault("runner_metadata", metadata_overrides)
     if baseline:
         robot_metadata["dynamic_baseline"] = {
             "role": "unloaded_baseline_source",
@@ -886,7 +900,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
             "note": "Use this file with a matching collect run; no correction is applied to baseline rows.",
         }
     elif USE_DYNAMIC_BASELINE_CORRECTION:
-        baseline_path = Path(f"{base_label}_baseline_robot.parquet")
+        baseline_path = Path(run_args.get("baseline_path")) if run_args.get("baseline_path") else Path(f"{base_label}_baseline_robot.parquet")
         if not baseline_path.exists():
             raise FileNotFoundError(
                 f"Dynamic baseline correction is enabled, but {baseline_path} does not exist. "
@@ -927,7 +941,7 @@ def main():
     parser.add_argument("--mode", type=str, default="collect", choices=["collect", "baseline"], help="collect/baseline")
     parser.add_argument("--plot", default=None, action="store_true", help="True/False[default]")
     parser.add_argument("--debug", default="none", help="none/all/...")
-    parser.add_argument("--kp", type=int, default=80, help="kp from 20-120 (kd is auto calculated)")
+    parser.add_argument("--kp", type=float, default=100, help="kp from 20-120 (kd is auto calculated)")
     parser.add_argument("--distance", type=float, default=0.05, help="pull distance in meters (0.01 to 0.075)")
     parser.add_argument("--stops", type=int, default=5, help="number of stops to record data during pull")
     parser.add_argument("--theta", type=float, default=2.36, help="angle determining height of pull (z-direction) in radians")
@@ -938,7 +952,9 @@ def main():
     parser.add_argument("--tracking", default=None, help="Existing raw camera Parquet to compile after the robot run")
     parser.add_argument("--camera-frames", type=int, default=5, help="Camera frames per hold when compiling")
     parser.add_argument("--max-camera-delta", type=float, default=1.0, help="Maximum camera/robot timestamp difference when compiling")
+    parser.add_argument("--baseline-path", default=None, help="Explicit dynamic baseline Parquet path to use in collect mode")
     parser.add_argument("--unified-output", default=None, help="Compiled unified Parquet output path")
+    parser.add_argument("--run-metadata-file", default=None, help="Optional JSON file containing structure/direction metadata to embed in the run output")
     args = parser.parse_args()
 
     if args.num_directions < 1:
@@ -960,6 +976,11 @@ def main():
     if (mode != "collect") and (mode != "baseline"):
         print("Invalid mode command. Should be 'collect' or 'baseline'")
         sys.exit()
+
+    run_metadata = {}
+    if args.run_metadata_file:
+        with open(args.run_metadata_file, "r", encoding="utf-8") as f:
+            run_metadata = json.load(f)
 
     if(debug != "none"):
         print("=" * 80)
@@ -1028,14 +1049,6 @@ def main():
 
     diag_state = diag_robot.read_once()
 
-    T = np.array(diag_state.O_T_EE)
-    R = np.array([
-        [T[0], T[4], T[8]],
-        [T[1], T[5], T[9]],
-        [T[2], T[6], T[10]],
-    ])
-    pos = T[12:15]
-
    
     ee_config = {
         "F_T_EE": np.asarray(diag_state.F_T_EE, dtype=np.float64).tolist(),
@@ -1057,10 +1070,6 @@ def main():
     if(debug != "none"):
         print("\nInitializing robot interface...")
     robot = FrankaInterface(real_config, device=device)
-
- 
-
-    home_pose_4x4 = make_ee_target_pose_from_matrix(pos, R)
 
     # arbitrarily chosen 'home'
     home_rot = np.array([[-1, 0, 0.0], [0.0, 0.0, 1.0], [0, 1, 0]])
@@ -1146,6 +1155,10 @@ def main():
                 ft_calibration_enabled=bool(
                     real_config.get("robot", {}).get("ft_calibration_duration_sec", 0)
                 ),
+                pre_grasp_geometry=run_metadata.get("pre_grasp_geometry"),
+                robot_info=run_metadata.get("robot_info"),
+                kp_value=kp,
+                metadata_overrides=run_metadata,
             )
     finally:
         robot.shutdown()

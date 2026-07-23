@@ -116,6 +116,36 @@ def _hold_boundaries(rows: list[dict[str, Any]]) -> list[float]:
     return boundaries
 
 
+def _phase_spans(rows: list[dict[str, Any]]) -> list[tuple[float, float, int]]:
+    if not rows:
+        return []
+    spans: list[tuple[float, float, int]] = []
+    start = float(rows[0]["timestamp"])
+    last_phase = int(rows[0].get("phase", 0))
+    prev_t = start
+    for row in rows[1:]:
+        t = float(row["timestamp"])
+        phase = int(row.get("phase", 0))
+        if phase != last_phase:
+            spans.append((start, prev_t, last_phase))
+            start = t
+            last_phase = phase
+        prev_t = t
+    spans.append((start, float(rows[-1]["timestamp"]), last_phase))
+    return spans
+
+
+def _shade_phase_background(ax, rows: list[dict[str, Any]]) -> None:
+    for start, end, phase in _phase_spans(rows):
+        if end <= start:
+            end = start + 1e-9
+        if phase == 0:
+            color = "#f2f2f2"  # light gray for moving
+        else:
+            color = "#fce4ec"  # light pink for holding
+        ax.axvspan(start, end, color=color, alpha=0.35, zorder=0)
+
+
 def _delta_cm(values: np.ndarray) -> np.ndarray:
     return (values - values[0]) * 100.0
 
@@ -148,6 +178,8 @@ def plot_static_sysid(
 
     n_panels = 8 if has_camera else 5
     fig, axes = plt.subplots(n_panels, 1, figsize=(16, 4 * n_panels), sharex=True, constrained_layout=True)
+    for ax in axes:
+        _shade_phase_background(ax, rows)
 
     _plot_vector_panel(axes[0], t, ft, ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"], "Wrist wrench")
     force_magnitude = np.linalg.norm(ft[:, :3], axis=1)

@@ -1,0 +1,36 @@
+{
+  "structures": [
+    {
+      "name": "default_template",
+      "notes": "Edit this catalog to match the orchard structure you are collecting.",
+      "angles_source": "lengthened_state_check",
+      "geometry_source": "catalog_entry_selected_by_structure_index",
+      "parts": {
+        "primary": {
+          "shape": "cylinder",
+          "length_m": 0.050,
+          "radius_m": 0.005,
+          "mass_kg": 0.010
+        },
+        "spur": {
+          "shape": "cylinder",
+          "length_m": 0.030,
+          "radius_m": 0.004,
+          "mass_kg": 0.006
+        },
+        "stem": {
+          "shape": "cylinder",
+          "length_m": 0.015,
+          "radius_m": 0.002,
+          "mass_kg": 0.001
+        },
+        "apple": {
+          "shape": "sphere",
+          "length_m": 0.080,
+          "radius_m": 0.035,
+          "mass_kg": 0.180
+        }
+      }
+    }
+  ]
+}

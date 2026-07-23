@@ -3,10 +3,8 @@ import unittest
 from pathlib import Path
 
 import numpy as np
-import pyarrow as pa
-import pyarrow.parquet as pq
 
-from real_robot_exps.apple_pullto_static import apply_dynamic_baseline
+from real_robot_exps.apple_pullto_static import apply_dynamic_baseline, save_robot_hold_parquet
 
 
 class DynamicBaselineTest(unittest.TestCase):
@@ -17,7 +15,7 @@ class DynamicBaselineTest(unittest.TestCase):
                 {"hold_index": 0, "hold_step_idx": 0, "ft_wrist": np.zeros(6, dtype=np.float32)},
                 {"hold_index": 0, "hold_step_idx": 1, "ft_wrist": np.full(6, 2.0, dtype=np.float32)},
             ]
-            pq.write_table(pa.Table.from_pylist(baseline_rows), baseline_path)
+            save_robot_hold_parquet(baseline_rows, baseline_path, {"episode_id": "baseline"})
             collect_rows = [
                 {"hold_index": 0, "hold_step_idx": idx, "ft_wrist": np.full(6, 5.0, dtype=np.float32)}
                 for idx in range(3)
