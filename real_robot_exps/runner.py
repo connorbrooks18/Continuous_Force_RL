@@ -280,6 +280,8 @@ def _run_one(
                     str(tracking_path),
                     "--output",
                     str(unified_path),
+                    "--camera-ema-alpha",
+                    str(args.camera_ema_alpha),
                 ]
                 print(" ".join(compile_cmd))
                 subprocess.run(compile_cmd, check=True)
@@ -315,6 +317,7 @@ def main() -> None:
     parser.add_argument("--start-detector", action="store_true", help="Launch at-tracking/Detecting.py before each robot run")
     parser.add_argument("--detector-script", type=Path, default=Path("at-tracking/Detecting.py"))
     parser.add_argument("--detector-extra-args", nargs=argparse.REMAINDER, default=[])
+    parser.add_argument("--camera-ema-alpha", type=float, default=1.0, help="EMA alpha for camera smoothing during compile; 1.0 disables smoothing")
     args = parser.parse_args()
 
     structures_payload = _load_json(args.structures)
