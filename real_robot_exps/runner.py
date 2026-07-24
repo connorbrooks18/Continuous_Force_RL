@@ -40,6 +40,24 @@ def _write_json(path: Path, payload: Any) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
+def _unique_path(path: Path) -> Path:
+    """Return a non-colliding path by appending -01, -02, ... before suffix."""
+    if not path.exists():
+        return path
+    suffix = path.suffix
+    stem = path.stem
+    parent = path.parent
+    idx = 1
+    while True:
+        candidate = parent / f"{stem}-{idx:02d}{suffix}"
+        if not candidate.exists():
+            return candidate
+        idx += 1
+
+
+def _run_output_path(path: Path) -> Path:
+    return _unique_path(path)
+
 
 
 def _normalize_direction(entry: Any) -> dict[str, float | str]:
@@ -120,17 +138,12 @@ def _run_one(
     run_id = f"s{structure_index:02d}-d{direction_index:02d}"
     base_label = f"pull_theta{direction['theta']:.2f}_phi{direction['phi']:.2f}"
     expected_baseline = args.output_dir / f"{base_label}_baseline_robot.parquet"
-    robot_path = args.output_dir / f"{run_id}_robot.parquet"
-    tracking_path = args.output_dir / f"{run_id}_tracking.parquet"
-    unified_path = args.output_dir / f"{run_id}.parquet"
-    metadata_path = args.output_dir / f"{run_id}_metadata.tmp.json"
+    robot_path = _run_output_path(args.output_dir / f"{run_id}_robot.parquet")
+    tracking_path = _run_output_path(args.output_dir / f"{run_id}_tracking.parquet")
+    unified_path = _run_output_path(args.output_dir / f"{run_id}.parquet")
+    metadata_path = _run_output_path(args.output_dir / f"{run_id}_metadata.tmp.json")
     detector_proc = None
-
-    for stale_path in (tracking_path, unified_path):
-        if stale_path.exists():
-            stale_path.unlink()
-    if metadata_path.exists():
-        metadata_path.unlink()
+    baseline_path_for_collect = expected_baseline
 
     run_metadata = _build_run_metadata(
         structure_index=structure_index,
@@ -141,6 +154,10 @@ def _run_one(
         kp=float(args.kp),
     )
     _write_json(metadata_path, run_metadata)
+    baseline_cmd = None
+    detector_cmd = None
+    robot_cmd = None
+    compile_cmd = None
 
     if args.mode == "collect" and not expected_baseline.exists():
         print(
@@ -148,6 +165,7 @@ def _run_one(
             "Remove the apple/contact load now, then press Enter to run the baseline pass."
         )
         input("Press Enter to start the baseline run...")
+        baseline_robot_path = _run_output_path(expected_baseline)
         baseline_cmd = [
             sys.executable,
             "-m",
@@ -171,13 +189,14 @@ def _run_one(
             "--num-directions",
             str(num_directions),
             "--robot-output",
-            str(expected_baseline),
+            str(baseline_robot_path),
             "--run-metadata-file",
             str(metadata_path),
         ]
         print("\n=== Running baseline ===")
         print(" ".join(baseline_cmd))
         subprocess.run(baseline_cmd, check=True)
+        baseline_path_for_collect = baseline_robot_path
 
     input(
         "Pull the apple so that the spur and stem are lengthened all the way, "
@@ -197,7 +216,7 @@ def _run_one(
         print(" ".join(detector_cmd))
         detector_proc = subprocess.Popen(detector_cmd)
 
-    cmd = [
+    robot_cmd = [
         sys.executable,
         "-m",
         "real_robot_exps.apple_pullto_static",
@@ -222,16 +241,16 @@ def _run_one(
         "--robot-output",
         str(robot_path),
         "--baseline-path",
-        str(expected_baseline),
+        str(baseline_path_for_collect),
         "--run-metadata-file",
         str(metadata_path),
     ]
 
     print(f"\n=== Running {run_id} ===")
-    print(" ".join(cmd))
+    print(" ".join(robot_cmd))
     start = time.time()
     try:
-        subprocess.run(cmd, check=True)
+        subprocess.run(robot_cmd, check=True)
     finally:
         if detector_proc is not None:
             detector_proc.send_signal(signal.SIGINT)
@@ -289,14 +308,19 @@ def _run_one(
                 print(f"[WARN] Expected tracking file not found within timeout: {tracking_path}")
     run_record = {
         "run_id": run_id,
-        "structure_index": structure_index,
-        "structure_name": structure.get("name", f"structure_{structure_index:02d}"),
         "direction_index": direction_index,
-        "direction": direction,
-        "robot_parquet": str(robot_path),
-        "tracking_parquet": str(tracking_path) if tracking_path.exists() else None,
-        "unified_parquet": str(unified_path) if unified_path.exists() else None,
-        "duration_sec": duration,
+        "commands": {
+            "baseline": baseline_cmd,
+            "detector": detector_cmd,
+            "robot": robot_cmd,
+            "compile": compile_cmd,
+        },
+        "files": {
+            "baseline": str(baseline_path_for_collect) if baseline_path_for_collect.exists() else None,
+            "robot": str(robot_path),
+            "tracking": str(tracking_path) if tracking_path.exists() else None,
+            "unified": str(unified_path) if unified_path.exists() else None,
+        },
     }
     manifest_runs.append(run_record)
 
@@ -382,14 +406,14 @@ def main() -> None:
 
     manifest = {
         "structure_index": structure_index,
-        "structure": structure,
+        "structure_name": structure.get("name", f"structure_{structure_index:02d}"),
+        "structures_source": str(args.structures),
         "directions_source": str(args.directions),
-        "directions": directions,
-        "pre_grasp_geometry": pre_grasp_geometry,
         "runs": manifest_runs,
     }
-    _write_json(args.manifest, manifest)
-    print(f"\nWrote manifest to {args.manifest}")
+    manifest_path = _run_output_path(args.manifest)
+    _write_json(manifest_path, manifest)
+    print(f"\nWrote manifest to {manifest_path}")
 
 
 if __name__ == "__main__":
