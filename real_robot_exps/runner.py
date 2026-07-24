@@ -280,6 +280,8 @@ def _run_one(
                     str(tracking_path),
                     "--output",
                     str(unified_path),
+                    "--camera-ema-alpha",
+                    str(args.camera_ema_alpha),
                 ]
                 print(" ".join(compile_cmd))
                 subprocess.run(compile_cmd, check=True)
@@ -311,10 +313,21 @@ def main() -> None:
     parser.add_argument("--kp", type=float, default=80.0)
     parser.add_argument("--distance", type=float, default=0.04)
     parser.add_argument("--stops", type=int, default=4)
-    parser.add_argument("--expect-tracking", action="store_true", help="Assume a tracking parquet will appear for each run")
-    parser.add_argument("--start-detector", action="store_true", help="Launch at-tracking/Detecting.py before each robot run")
+    parser.add_argument(
+        "--expect-tracking",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Compile unified output when tracking is available (default: true)",
+    )
+    parser.add_argument(
+        "--start-detector",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Launch at-tracking/Detecting.py before each robot run (default: true)",
+    )
     parser.add_argument("--detector-script", type=Path, default=Path("at-tracking/Detecting.py"))
     parser.add_argument("--detector-extra-args", nargs=argparse.REMAINDER, default=[])
+    parser.add_argument("--camera-ema-alpha", type=float, default=1.0, help="EMA alpha for camera smoothing during compile; 1.0 disables smoothing")
     args = parser.parse_args()
 
     structures_payload = _load_json(args.structures)

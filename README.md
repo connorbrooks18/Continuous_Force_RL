@@ -4,11 +4,37 @@ This repository collects quasi-static apple-pull data from a Franka arm,
 optionally records AprilTag camera tracking, compiles the two into a unified
 Parquet episode, and provides a viewer for inspection.
 
+The primary way to run the apple-pull collection pipeline is `real_robot_exps.runner`. It selects a structure index, launches the robot pull, optionally starts AprilTag tracking, compiles the unified Parquet, and writes a manifest for each run.
+
+Example:
+
+```bash
+python -m real_robot_exps.runner \
+  --structure-index 0 \
+  --structures real_robot_exps/structures.json \
+  --directions real_robot_exps/directions.json \
+  --expect-tracking \
+  --start-detector
+```
+
+Useful flags:
+
+- `--camera-ema-alpha 1.0` disables camera smoothing during compile.
+- `--camera-ema-alpha 0.3` applies light smoothing to camera geometry.
+- `--start-detector` launches the standalone AprilTag tracker.
+- `--expect-tracking` compiles the unified Parquet when tracking is available.
+
+Lower-level scripts still exist for manual debugging:
+
+- `real_robot_exps.apple_pullto_static` for a single robot run
+- `real_robot_exps.compile_static_sysid` for manual compile steps
+- `at-tracking/Detecting.py` for standalone tracking
+
 The normal workflow is:
 
 1. run a baseline pass with no apple/contact load,
 2. run the matching collect pass,
-3. optionally compile in camera tracking,
+3. compile in camera tracking,
 4. inspect the resulting Parquet file.
 
 ## Quick start
@@ -94,4 +120,3 @@ angles, and phase shading.
 
 The implementation details, metadata layout, hard-coded poses, field ordering,
 and collection notes live in [REFERENCE.md](REFERENCE.md).
-

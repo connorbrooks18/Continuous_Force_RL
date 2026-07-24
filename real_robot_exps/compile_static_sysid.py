@@ -291,6 +291,22 @@ def _as_list(value: Any, *, dtype=np.float32) -> list[float]:
     return np.asarray(value, dtype=dtype).reshape(-1).tolist()
 
 
+def _ema(values: np.ndarray, alpha: float) -> np.ndarray:
+    values = np.asarray(values, dtype=np.float64)
+    if values.shape[0] == 0:
+        return values
+    out = values.copy()
+    for idx in range(1, out.shape[0]):
+        out[idx] = alpha * out[idx] + (1.0 - alpha) * out[idx - 1]
+    return out
+
+
+def _update_pose_translation(flat_pose: list[float], pos_xyz: np.ndarray) -> list[float]:
+    pose = np.asarray(flat_pose, dtype=np.float64).reshape(4, 4).copy()
+    pose[:3, 3] = np.asarray(pos_xyz, dtype=np.float64).reshape(3)
+    return pose.reshape(-1).tolist()
+
+
 def _unified_schema(n_holds: int, n_directions: int) -> pa.Schema:
     """Arrow schema with enforced dimensions for every model-facing vector."""
     vector = lambda size: pa.list_(pa.float32(), int(size))
@@ -339,6 +355,7 @@ def compile_static_episode(
     *,
     camera_frame_count: int = 5,
     max_camera_delta_s: float = 1.0,
+    camera_ema_alpha: float = 1.0,
     reference_tag_to_base_4x4: np.ndarray | None = None,
     command_argv: list[str] | None = None,
 ) -> Path:
@@ -347,6 +364,8 @@ def compile_static_episode(
     output_path = Path(output_path)
     if int(camera_frame_count) < 1:
         raise ValueError("camera_frame_count must be >= 1")
+    if not (0.0 < float(camera_ema_alpha) <= 1.0):
+        raise ValueError("camera_ema_alpha must be in (0, 1].")
 
     robot_table = pq.read_table(robot_path)
     robot_rows_all = robot_table.to_pylist()
@@ -527,6 +546,24 @@ def compile_static_episode(
 
     n_holds = len(output_rows[0]["hold_number"])
     n_directions = len(output_rows[0]["direction"])
+
+    if float(camera_ema_alpha) < 1.0:
+        apple_positions = np.asarray([row["apple_pos"] for row in output_rows], dtype=np.float64)
+        start_positions = np.asarray([row["woody_part_start_pos"] for row in output_rows], dtype=np.float64).reshape(len(output_rows), 3, 3)
+        end_positions = np.asarray([row["woody_part_end_pos"] for row in output_rows], dtype=np.float64).reshape(len(output_rows), 3, 3)
+        smoothed_apple = _ema(apple_positions, float(camera_ema_alpha))
+        smoothed_starts = _ema(start_positions.reshape(len(output_rows), -1), float(camera_ema_alpha)).reshape(len(output_rows), 3, 3)
+        smoothed_ends = _ema(end_positions.reshape(len(output_rows), -1), float(camera_ema_alpha)).reshape(len(output_rows), 3, 3)
+        smoothed_rest_chords = smoothed_ends[0] - smoothed_starts[0]
+        for idx, row in enumerate(output_rows):
+            row["apple_pos"] = _as_list(smoothed_apple[idx])
+            row["apple_pose_4x4"] = _update_pose_translation(row["apple_pose_4x4"], smoothed_apple[idx])
+            row["woody_part_start_pos"] = _as_list(smoothed_starts[idx].reshape(-1))
+            row["woody_part_end_pos"] = _as_list(smoothed_ends[idx].reshape(-1))
+            row["woody_bending_angles"] = _as_list(
+                _chord_deflections(smoothed_ends[idx] - smoothed_starts[idx], smoothed_rest_chords)
+            )
+
     table = pa.Table.from_pylist(
         output_rows,
         schema=_unified_schema(n_holds, n_directions),
@@ -665,6 +702,7 @@ def compile_static_episode(
             "method": "coordinate-wise median of nearest complete valid frames",
             "requested_frame_count": int(camera_frame_count),
             "max_camera_delta_s": float(max_camera_delta_s),
+            "ema_alpha": float(camera_ema_alpha),
             "missing_pose_sentinel": [0.0, 0.0, 0.0],
             "required_tracker_names": list(TRACKED_NAMES),
             "rest_selection": "nearest frames at or before rest_reference_timestamp",
@@ -696,6 +734,12 @@ def main() -> None:
         help="Maximum allowed camera-to-reference time difference in seconds",
     )
     parser.add_argument(
+        "--camera-ema-alpha",
+        type=float,
+        default=1.0,
+        help="EMA alpha for smoothing camera geometry; 1.0 disables smoothing",
+    )
+    parser.add_argument(
         "--reference-tag-to-base-pos",
         type=float,
         nargs=3,
@@ -714,6 +758,7 @@ def main() -> None:
         args.output,
         camera_frame_count=args.camera_frames,
         max_camera_delta_s=args.max_camera_delta,
+        camera_ema_alpha=args.camera_ema_alpha,
         reference_tag_to_base_4x4=reference_tag_to_base_4x4,
         command_argv=sys.argv,
     )
