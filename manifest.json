@@ -8,54 +8,62 @@
   ],
   "directions_source": "real_robot_exps/directions.json",
   "pre_grasp_geometry": {
-    "apple": {
-      "connection_rpy_deg": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "connection_source": "catalog_or_lengthened_state_placeholder",
-      "length_m": 0.08,
-      "mass_kg": 0.18,
-      "radius_m": 0.035,
-      "shape": "sphere"
+    "angles_source": "lengthened_state_check",
+    "geometry_source": "catalog_entry_selected_by_structure_index",
+    "note": "Manual structure catalog plus the lengthened-state check snapshot.",
+    "parts": {
+      "apple": {
+        "connection_rpy_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "connection_source": "catalog_or_lengthened_state_placeholder",
+        "density_kg_m3": 650,
+        "length_m": 0.08,
+        "radius_m": 0.04,
+        "shape": "sphere"
+      },
+      "primary": {
+        "connection_rpy_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "connection_source": "catalog",
+        "density_kg_m3": 660,
+        "length_m": 0.827,
+        "radius_m": 0.0125,
+        "shape": "cylinder"
+      },
+      "spur": {
+        "connection_rpy_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "connection_source": "catalog_or_lengthened_state_placeholder",
+        "density_kg_m3": 1200,
+        "length_m": 0.1,
+        "radius_m": 0.0025,
+        "shape": "cylinder"
+      },
+      "stem": {
+        "connection_rpy_deg": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "connection_source": "catalog_or_lengthened_state_placeholder",
+        "density_kg_m3": 1000,
+        "length_m": 0.025,
+        "radius_m": 0.0005,
+        "shape": "cylinder"
+      }
     },
-    "primary": {
-      "connection_rpy_deg": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "connection_source": "catalog",
-      "length_m": 0.05,
-      "mass_kg": 0.01,
-      "radius_m": 0.005,
-      "shape": "cylinder"
-    },
-    "spur": {
-      "connection_rpy_deg": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "connection_source": "catalog_or_lengthened_state_placeholder",
-      "length_m": 0.03,
-      "mass_kg": 0.006,
-      "radius_m": 0.004,
-      "shape": "cylinder"
-    },
-    "stem": {
-      "connection_rpy_deg": [
-        0.0,
-        0.0,
-        0.0
-      ],
-      "connection_source": "catalog_or_lengthened_state_placeholder",
-      "length_m": 0.015,
-      "mass_kg": 0.001,
-      "radius_m": 0.002,
-      "shape": "cylinder"
-    }
+    "snapshot": {},
+    "structure_index": 0,
+    "structure_name": "default_template"
   },
   "runs": [
     {
@@ -65,7 +73,7 @@
         "theta": 1.57
       },
       "direction_index": 0,
-      "duration_sec": 41.43777251243591,
+      "duration_sec": 44.46921372413635,
       "robot_parquet": "s00-d00_robot.parquet",
       "run_id": "s00-d00",
       "structure_index": 0,
@@ -81,27 +89,27 @@
     "notes": "Edit this catalog to match the orchard structure you are collecting.",
     "parts": {
       "apple": {
+        "density_kg_m3": 650,
         "length_m": 0.08,
-        "mass_kg": 0.18,
-        "radius_m": 0.035,
+        "radius_m": 0.04,
         "shape": "sphere"
       },
       "primary": {
-        "length_m": 0.05,
-        "mass_kg": 0.01,
-        "radius_m": 0.005,
+        "density_kg_m3": 660,
+        "length_m": 0.827,
+        "radius_m": 0.0125,
         "shape": "cylinder"
       },
       "spur": {
-        "length_m": 0.03,
-        "mass_kg": 0.006,
-        "radius_m": 0.004,
+        "density_kg_m3": 1200,
+        "length_m": 0.1,
+        "radius_m": 0.0025,
         "shape": "cylinder"
       },
       "stem": {
-        "length_m": 0.015,
-        "mass_kg": 0.001,
-        "radius_m": 0.002,
+        "density_kg_m3": 1000,
+        "length_m": 0.025,
+        "radius_m": 0.0005,
         "shape": "cylinder"
       }
     }

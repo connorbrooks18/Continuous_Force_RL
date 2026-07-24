@@ -400,7 +400,7 @@ def compile_static_episode(
         pose_rows = rest_frames[rest_frames["name"] == name][["qx", "qy", "qz", "qw"]].to_numpy()
         quat = np.median(pose_rows.astype(np.float64), axis=0)
         rest_poses_tag[name] = _make_transform(rest_positions_tag[name], quat)
-    rest_positions, _ = _transform_tracking_geometry(
+    rest_positions, rest_poses = _transform_tracking_geometry(
         rest_positions_tag, rest_poses_tag, reference_tag_to_base_4x4
     )
     rest_starts, rest_ends, rest_chords = _endpoints(rest_positions)
@@ -547,6 +547,19 @@ def compile_static_episode(
             "woody_part_end_pos": first_row["woody_part_end_pos"],
             "woody_bending_angles": first_row["woody_bending_angles"],
         }
+    pre_grasp_snapshot = {
+        "timestamp": rest_timestamp,
+        "tcp_pos": robot_rows[0]["tcp_pos"],
+        "tcp_pose_4x4": robot_rows[0]["tcp_pose_4x4"],
+        "target_pose_4x4": robot_rows[0]["target_pose_4x4"],
+        "apple_pos": rest_positions["Apple"],
+        "apple_pose_4x4": rest_poses["Apple"].reshape(-1).tolist(),
+        "woody_part_start_pos": rest_starts.reshape(-1).tolist(),
+        "woody_part_end_pos": rest_ends.reshape(-1).tolist(),
+        "woody_bending_angles": [0.0 for _ in WOODY_PART_NAMES],
+        "camera_selected_timestamps": rest_frames["timestamp"].astype(float).tolist(),
+        "camera_frame_count": len(rest_frames),
+    }
     metadata_dump = {
         **robot_metadata,
         "source_files": {
@@ -593,7 +606,10 @@ def compile_static_episode(
             "phase": {"dim": 1, "encoding": {"moving": 0, "hold": 1}},
             "excitation_direction": {"dim": 3, "description": "unit pull direction"},
         },
-        "pre_grasp_geometry": robot_metadata.get("pre_grasp_geometry", {}),
+        "pre_grasp_geometry": {
+            **robot_metadata.get("pre_grasp_geometry", {}),
+            "snapshot": pre_grasp_snapshot,
+        },
         "post_grasp_geometry": post_grasp_geometry,
         "row_count": len(output_rows),
         "hold_count": len(hold_indices),

@@ -56,7 +56,7 @@ def _normalize_direction(entry: Any) -> dict[str, float | str]:
     raise ValueError(f"Unsupported direction entry: {entry!r}")
 
 
-def _normalized_pre_grasp_geometry(structure: dict[str, Any]) -> dict[str, Any]:
+def _normalized_pre_grasp_geometry(structure_index: int, structure: dict[str, Any]) -> dict[str, Any]:
     parts = structure.get("parts", {})
     out: dict[str, Any] = {}
     for idx, part_name in enumerate(PART_ORDER):
@@ -68,7 +68,15 @@ def _normalized_pre_grasp_geometry(structure: dict[str, Any]) -> dict[str, Any]:
             part["density_kg_m3"] = part.pop("mass_kg")
         part["connection_source"] = "catalog" if idx == 0 else "catalog_or_lengthened_state_placeholder"
         out[part_name] = part
-    return out
+    return {
+        "structure_index": int(structure_index),
+        "structure_name": structure.get("name", f"structure_{int(structure_index):02d}"),
+        "angles_source": structure.get("angles_source", ""),
+        "geometry_source": structure.get("geometry_source", ""),
+        "note": "Manual structure catalog plus the lengthened-state check snapshot.",
+        "parts": out,
+        "snapshot": {},
+    }
 
 
 def _build_run_metadata(
@@ -341,7 +349,7 @@ def main() -> None:
         raise SystemExit(f"--structure-index must be in [0, {len(structures)})")
 
     structure = structures[structure_index]
-    pre_grasp_geometry = _normalized_pre_grasp_geometry(structure)
+    pre_grasp_geometry = _normalized_pre_grasp_geometry(structure_index, structure)
 
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
