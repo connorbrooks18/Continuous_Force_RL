@@ -158,6 +158,7 @@ def _run_one(
     detector_cmd = None
     robot_cmd = None
     compile_cmd = None
+    viz_cmd = None
 
     if args.mode == "collect" and not expected_baseline.exists():
         print(
@@ -304,6 +305,19 @@ def _run_one(
                 ]
                 print(" ".join(compile_cmd))
                 subprocess.run(compile_cmd, check=True)
+                viz_png = unified_path.with_suffix(".png")
+                viz_cmd = [
+                    sys.executable,
+                    "-m",
+                    "real_robot_exps.viz_static_sysid",
+                    "--input",
+                    str(unified_path),
+                    "--save",
+                    str(viz_png),
+                    "--no-show"
+                ]
+                print(" ".join(viz_cmd))
+                subprocess.run(viz_cmd, check=True)
             else:
                 print(f"[WARN] Expected tracking file not found within timeout: {tracking_path}")
     run_record = {
@@ -314,6 +328,7 @@ def _run_one(
             "detector": detector_cmd,
             "robot": robot_cmd,
             "compile": compile_cmd,
+            "viz": viz_cmd,
         },
         "files": {
             "baseline": str(baseline_path_for_collect) if baseline_path_for_collect.exists() else None,
