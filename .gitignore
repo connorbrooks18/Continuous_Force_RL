@@ -12,7 +12,7 @@ __pycache__/
 
 #vim
 *#
-*.sw
+*.swp
 
 # wandb + logging
 logs/
@@ -35,13 +35,10 @@ __pycache__/
 pull_unified_viz.png
 *.png
 a
-.a.swp
+
 s00-d00_metadata.tmp.json
+*.tmp.json
 amanifest.json
 bmanifest.json
-manifest.json
-manifest.json
-manifest.json
-manifest-01.json
-.gitignore
-manifest.json
+
+manifest*.json
