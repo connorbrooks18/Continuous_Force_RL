@@ -64,6 +64,8 @@ def _normalized_pre_grasp_geometry(structure: dict[str, Any]) -> dict[str, Any]:
         part["connection_rpy_deg"] = [0.0, 0.0, 0.0] if idx == 0 else [
             float(x) for x in part.get("connection_rpy_deg", [0.0, 0.0, 0.0])
         ]
+        if "mass_kg" in part and "density_kg_m3" not in part:
+            part["density_kg_m3"] = part.pop("mass_kg")
         part["connection_source"] = "catalog" if idx == 0 else "catalog_or_lengthened_state_placeholder"
         out[part_name] = part
     return out

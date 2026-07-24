@@ -8,27 +8,27 @@
       "parts": {
         "primary": {
           "shape": "cylinder",
-          "length_m": 0.050,
-          "radius_m": 0.005,
-          "mass_kg": 0.010
+          "length_m": 0.827,
+          "radius_m": 0.0125,
+          "density_kg_m3": 660
         },
         "spur": {
           "shape": "cylinder",
-          "length_m": 0.030,
-          "radius_m": 0.004,
-          "mass_kg": 0.006
+          "length_m": 0.10,
+          "radius_m": 0.0025,
+          "density_kg_m3": 1200
         },
         "stem": {
           "shape": "cylinder",
-          "length_m": 0.015,
-          "radius_m": 0.002,
-          "mass_kg": 0.001
+          "length_m": 0.025,
+          "radius_m": 0.0005,
+          "density_kg_m3": 1000
         },
         "apple": {
           "shape": "sphere",
           "length_m": 0.080,
-          "radius_m": 0.035,
-          "mass_kg": 0.180
+          "radius_m": 0.040,
+          "density_kg_m3": 650
         }
       }
     }

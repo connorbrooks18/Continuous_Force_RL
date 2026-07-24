@@ -29,7 +29,6 @@ samples. The footer also stores a JSON blob under `dataset_metadata`.
 The top-level collection metadata is grouped into:
 
 - `dump`
-- `robot_info`
 - `pre_grasp_geometry`
 - `post_grasp_geometry`
 
@@ -109,3 +108,13 @@ Baseline and collect are compared using:
 
 If these do not match, the collect run will refuse to subtract the baseline.
 
+## Geometry fields
+
+The structure catalog uses:
+
+- `length_m`
+- `radius_m`
+- `density_kg_m3`
+
+instead of mass. The runner keeps those values in `pre_grasp_geometry` and the
+rest of the metadata under `dump`.

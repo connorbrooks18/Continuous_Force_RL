@@ -874,9 +874,11 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         "raw_robot_row_count": len(robot_rows),
     }
     robot_metadata = {
-        "dump": dump_blob,
-        "robot_info": {
-        "kp": float(kp_value) if kp_value is not None else float(np.asarray(gains["task_prop_gains"]).reshape(-1)[0].item()),
+        "dump": {
+            **dump_blob,
+            "robot_info": {
+                "kp": float(kp_value) if kp_value is not None else float(np.asarray(gains["task_prop_gains"]).reshape(-1)[0].item()),
+            },
         },
         "pre_grasp_geometry": pre_grasp_geometry or {},
         "post_grasp_geometry": _snapshot_geometry(
