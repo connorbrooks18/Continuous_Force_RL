@@ -65,13 +65,13 @@
         "theta": 1.57
       },
       "direction_index": 0,
-      "duration_sec": 39.51835560798645,
+      "duration_sec": 41.43777251243591,
       "robot_parquet": "s00-d00_robot.parquet",
       "run_id": "s00-d00",
       "structure_index": 0,
       "structure_name": "default_template",
       "tracking_parquet": "s00-d00_tracking.parquet",
-      "unified_parquet": null
+      "unified_parquet": "s00-d00.parquet"
     }
   ],
   "structure": {

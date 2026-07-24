@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import signal
 import subprocess
 import sys
 import time
@@ -223,9 +224,9 @@ def _run_one(
         subprocess.run(cmd, check=True)
     finally:
         if detector_proc is not None:
-            detector_proc.terminate()
+            detector_proc.send_signal(signal.SIGINT)
             try:
-                detector_proc.wait(timeout=10.0)
+                detector_proc.wait(timeout=30.0)
             except subprocess.TimeoutExpired:
                 detector_proc.kill()
                 detector_proc.wait(timeout=10.0)
