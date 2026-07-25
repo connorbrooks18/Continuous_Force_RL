@@ -3,6 +3,22 @@
 This file is for someone to collect more pre-grasp and
 post-grasp geometry for simulation reconstruction.
 
+## Setup
+
+POWER: Arm, Laptop, Gripper
+
+AIR: make sure air valve is connected to air source and the gripper
+
+CONNECTION: Ethernet between Arm and Laptop; Usb from camera to laptop
+
+ARM LOCATION: White tape at 90degrees should more or less be the front left wheel. 
+
+FRANKA UI: Unlock joints; Set mode to "Exec"; Activate FCI (in menu where shutdown is); End Effector Selected is "Dual Mode gripper (connor)" if not already
+
+STRUCTURES: Add whatever other structure setups you'd like to test.
+
+DIRECTIONS: Not really relevant to the metadata collection. The post_grasp is always in same orientation.
+
 ## Goal
 
 Use the runner in `--only-metadata` mode to capture:
@@ -53,6 +69,7 @@ attach camera geometry to a real robot timestamp without running the pull.
 - raw robot: `s00-d00_robot.parquet`
 - tracking: `s00-d00_tracking.parquet`
 - unified: `s00-d00.parquet` (this is the only one that matters)
+
 NOTE: if s00-d00.parquet (or whatever other structure and direction) file already exists, a new one will be created with -01 appended to the name.
 
 Inspect the metadata with:
@@ -73,8 +90,8 @@ python -m real_robot_exps.preview_geometry s00-d00.parquet
 
 - To test the gripper 
 ```bash
-python -m real_robot_exps.gripper_test # to open the gripper
-python -m real_robot_exps.gripper_test o # to  close the gripper
+python -m real_robot_exps.gripper_test # to reset the gripper
+python -m real_robot_exps.gripper_test o # to close the gripper
 ```
 
 If this doesn't do anything. End the ros2 program. Restart the gripper (remove and add power cable). Start the ros2 program again.
