@@ -25,6 +25,8 @@ from typing import Any
 
 import pyarrow.parquet as pq
 
+from real_robot_exps.camera_snapshot import update_pre_grasp_geometry_with_snapshots
+
 
 PART_ORDER = ("primary", "spur", "stem", "apple")
 
@@ -91,10 +93,18 @@ def _normalized_pre_grasp_geometry(structure_index: int, structure: dict[str, An
         "structure_name": structure.get("name", f"structure_{int(structure_index):02d}"),
         "angles_source": structure.get("angles_source", ""),
         "geometry_source": structure.get("geometry_source", ""),
-        "note": "Manual structure catalog plus the lengthened-state check snapshot.",
+        "note": "Manual structure catalog plus settled/lengthened camera snapshots.",
         "parts": out,
         "snapshot": {},
+        "settled_snapshot": {},
+        "lengthened_snapshot": {},
     }
+
+
+def _baseline_path_for_direction(args, structure_index: int, direction: dict[str, Any]) -> Path:
+    return args.output_dir / (
+        f"s{structure_index:02d}_pull_theta{direction['theta']:.2f}_phi{direction['phi']:.2f}_kp{args.kp:.0f}_baseline_robot.parquet"
+    )
 
 
 def _build_run_metadata(
@@ -124,6 +134,26 @@ def _build_run_metadata(
     }
 
 
+def _capture_snapshot_via_subprocess() -> dict[str, Any]:
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(prefix="camera_snapshot_", suffix=".json", delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+    cmd = [
+        sys.executable,
+        "-m",
+        "real_robot_exps.camera_snapshot",
+        "--output",
+        str(tmp_path),
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+        return _load_json(tmp_path)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+
+
 def _run_one(
     *,
     structure_index: int,
@@ -136,8 +166,7 @@ def _run_one(
     manifest_runs: list[dict[str, Any]],
 ) -> None:
     run_id = f"s{structure_index:02d}-d{direction_index:02d}"
-    base_label = f"pull_theta{direction['theta']:.2f}_phi{direction['phi']:.2f}"
-    expected_baseline = args.output_dir / f"{base_label}_baseline_robot.parquet"
+    expected_baseline = _baseline_path_for_direction(args, structure_index, direction)
     robot_path = _run_output_path(args.output_dir / f"{run_id}_robot.parquet")
     tracking_path = _run_output_path(args.output_dir / f"{run_id}_tracking.parquet")
     unified_path = _run_output_path(args.output_dir / f"{run_id}.parquet")
@@ -159,50 +188,6 @@ def _run_one(
     robot_cmd = None
     compile_cmd = None
     viz_cmd = None
-
-    if args.mode == "collect" and not expected_baseline.exists():
-        print(
-            f"[WARN] Baseline file not found: {expected_baseline}\n"
-            "Remove the apple/contact load now, then press Enter to run the baseline pass."
-        )
-        input("Press Enter to start the baseline run...")
-        baseline_robot_path = _run_output_path(expected_baseline)
-        baseline_cmd = [
-            sys.executable,
-            "-m",
-            "real_robot_exps.apple_pullto_static",
-            "--config",
-            str(args.config),
-            "--mode",
-            "baseline",
-            "--kp",
-            str(args.kp),
-            "--distance",
-            str(args.distance),
-            "--stops",
-            str(args.stops),
-            "--theta",
-            str(direction["theta"]),
-            "--phi",
-            str(direction["phi"]),
-            "--direction-index",
-            str(direction_index),
-            "--num-directions",
-            str(num_directions),
-            "--robot-output",
-            str(baseline_robot_path),
-            "--run-metadata-file",
-            str(metadata_path),
-        ]
-        print("\n=== Running baseline ===")
-        print(" ".join(baseline_cmd))
-        subprocess.run(baseline_cmd, check=True)
-        baseline_path_for_collect = baseline_robot_path
-
-    input(
-        "Pull the apple so that the spur and stem are lengthened all the way, "
-        "then press Enter to start the run..."
-    )
 
     if args.start_detector:
         detector_cmd = [
@@ -246,6 +231,8 @@ def _run_one(
         "--run-metadata-file",
         str(metadata_path),
     ]
+    if args.only_metadata:
+        robot_cmd.append("--only-metadata")
 
     print(f"\n=== Running {run_id} ===")
     print(" ".join(robot_cmd))
@@ -274,8 +261,12 @@ def _run_one(
             if robot_times and tracking_times:
                 robot_min, robot_max = min(robot_times), max(robot_times)
                 tracking_min, tracking_max = min(tracking_times), max(tracking_times)
-                overlap = max(0.0, min(robot_max, tracking_max) - max(robot_min, tracking_min))
-                if overlap <= 0.0:
+                latest_start = max(robot_min, tracking_min)
+                earliest_end = min(robot_max, tracking_max)
+                # Inclusive overlap is the right rule here. Metadata-only runs
+                # can have exactly one robot timestamp that still lies inside
+                # the camera interval even though the overlap length is zero.
+                if latest_start > earliest_end:
                     print(
                         "[WARN] Robot and tracking timestamps do not overlap:\n"
                         f"       robot   {robot_min:.3f} -> {robot_max:.3f}\n"
@@ -317,7 +308,10 @@ def _run_one(
                     "--no-show"
                 ]
                 print(" ".join(viz_cmd))
-                subprocess.run(viz_cmd, check=True)
+                try:
+                    subprocess.run(viz_cmd, check=True)
+                except subprocess.CalledProcessError as exc:
+                    print(f"[WARN] Visualization failed for {unified_path}: {exc}")
             else:
                 print(f"[WARN] Expected tracking file not found within timeout: {tracking_path}")
     run_record = {
@@ -340,6 +334,77 @@ def _run_one(
     manifest_runs.append(run_record)
 
 
+def _run_missing_baselines(
+    *,
+    structure_index: int,
+    structure: dict[str, Any],
+    directions: list[dict[str, Any]],
+    args,
+    pre_grasp_geometry: dict[str, Any],
+) -> None:
+    missing = []
+    for direction_index, direction in enumerate(directions):
+        baseline_path = _baseline_path_for_direction(args, structure_index, direction)
+        if not baseline_path.exists():
+            missing.append((direction_index, direction, baseline_path))
+    if not missing:
+        return
+
+    print("Missing baseline files:")
+    for _, direction, baseline_path in missing:
+        print(f"  {baseline_path}")
+
+    input(
+        "Remove the apple/contact load once, then press Enter to run all missing baselines..."
+    )
+
+    for direction_index, direction, baseline_path in missing:
+        metadata_path = _run_output_path(
+            args.output_dir / f"s{structure_index:02d}-d{direction_index:02d}_metadata.tmp.json"
+        )
+        run_metadata = _build_run_metadata(
+            structure_index=structure_index,
+            structure=structure,
+            direction_index=direction_index,
+            direction=direction,
+            pre_grasp_geometry=pre_grasp_geometry,
+            kp=float(args.kp),
+        )
+        _write_json(metadata_path, run_metadata)
+        baseline_cmd = [
+            sys.executable,
+            "-m",
+            "real_robot_exps.apple_pullto_static",
+            "--config",
+            str(args.config),
+            "--mode",
+            "baseline",
+            "--kp",
+            str(args.kp),
+            "--distance",
+            str(args.distance),
+            "--stops",
+            str(args.stops),
+            "--theta",
+            str(direction["theta"]),
+            "--phi",
+            str(direction["phi"]),
+            "--direction-index",
+            str(direction_index),
+            "--num-directions",
+            str(len(directions)),
+            "--robot-output",
+            str(baseline_path),
+            "--run-metadata-file",
+            str(metadata_path),
+        ]
+        print("\n=== Running baseline ===")
+        print(" ".join(baseline_cmd))
+        subprocess.run(baseline_cmd, check=True)
+        if metadata_path.exists():
+            metadata_path.unlink()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Indexed runner for apple-pull system-ID collection")
     parser.add_argument("--structures", type=Path, default=Path("real_robot_exps/structures.json"))
@@ -349,7 +414,7 @@ def main() -> None:
     parser.add_argument("--manifest", type=Path, default=Path("manifest.json"))
     parser.add_argument("--config", type=Path, default=Path("real_robot_exps/config.yaml"))
     parser.add_argument("--mode", choices=["collect", "baseline"], default="collect")
-    parser.add_argument("--kp", type=float, default=80.0)
+    parser.add_argument("--kp", type=float, default=100.0)
     parser.add_argument("--distance", type=float, default=0.04)
     parser.add_argument("--stops", type=int, default=4)
     parser.add_argument(
@@ -367,6 +432,12 @@ def main() -> None:
     parser.add_argument("--detector-script", type=Path, default=Path("at-tracking/Detecting.py"))
     parser.add_argument("--detector-extra-args", nargs=argparse.REMAINDER, default=[])
     parser.add_argument("--camera-ema-alpha", type=float, default=1.0, help="EMA alpha for camera smoothing during compile; 1.0 disables smoothing")
+    parser.add_argument(
+        "--only-metadata",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Collect reconstruction metadata only; skip baseline generation and pull trajectory",
+    )
     args = parser.parse_args()
 
     structures_payload = _load_json(args.structures)
@@ -390,10 +461,11 @@ def main() -> None:
         print("\nAvailable structures:")
         for idx, structure in enumerate(structures):
             print(f"  {idx}: {structure.get('name', f'structure_{idx:02d}')}")
-        selected = input("Structure index: ").strip()
+        selected = input("Structure index [0]: ").strip()
         if not selected:
-            raise SystemExit("A structure index is required.")
-        structure_index = int(selected)
+            structure_index = 0
+        else:
+            structure_index = int(selected)
     else:
         structure_index = int(args.structure_index)
 
@@ -403,8 +475,26 @@ def main() -> None:
     structure = structures[structure_index]
     pre_grasp_geometry = _normalized_pre_grasp_geometry(structure_index, structure)
 
+    if args.mode == "collect":
+        input("Let the apple settle naturally in its starting state, then press Enter to capture the settled snapshot...")
+        settled_snapshot = _capture_snapshot_via_subprocess()
+        pre_grasp_geometry = update_pre_grasp_geometry_with_snapshots(
+            pre_grasp_geometry,
+            settled_snapshot=settled_snapshot,
+            lengthened_snapshot={},
+        )
+
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.mode == "collect" and not args.only_metadata:
+        _run_missing_baselines(
+            structure_index=structure_index,
+            structure=structure,
+            directions=directions,
+            args=args,
+            pre_grasp_geometry=pre_grasp_geometry,
+        )
 
     manifest_runs: list[dict[str, Any]] = []
     for direction_index, direction in enumerate(directions):

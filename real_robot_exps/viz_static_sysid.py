@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
 import pyarrow.parquet as pq
@@ -339,6 +340,9 @@ def main() -> None:
     )
     parser.add_argument("--title", default=None, help="Custom plot title")
     args = parser.parse_args()
+
+    if not args.show:
+        matplotlib.use("Agg")
 
     data = _load_plot_data(args.input)
     fig = plot_static_sysid(data, title=args.title)

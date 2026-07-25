@@ -30,26 +30,13 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from real_robot_exps.static_constants import REFERENCE_TAG_TO_BASE_4X4_DEFAULT
+
 
 SCHEMA_NAME = "real_static_sysid_episode"
 SCHEMA_VERSION = "1.0.0"
 TRACKED_NAMES = ("Branch", "Spur", "Apple")
 WOODY_PART_NAMES = ("Branch", "Spur", "Apple")
-
-# Edit this block when the tag-to-base calibration changes.
-# Current convention:
-#   base x = tag x
-#   base y = tag z
-#   base z = -tag y
-#
-# The translation below is the reference tag origin in the Franka base O frame.
-# It is hardcoded here so the unified compiler stays explicit and easy to audit.
-REFERENCE_TAG_TO_BASE_4X4_DEFAULT = np.array([
-    [1.0, 0.0, 0.0, 0.0],
-    [0.0, 0.0, 1.0, 1.00],
-    [0.0, -1.0, 0.0, 0.70],
-    [0.0, 0.0, 0.0, 1.0],
-], dtype=np.float64)
 
 
 def _read_dataset_metadata(path: Path) -> dict[str, Any]:
@@ -584,7 +571,7 @@ def compile_static_episode(
             "woody_part_end_pos": first_row["woody_part_end_pos"],
             "woody_bending_angles": first_row["woody_bending_angles"],
         }
-    pre_grasp_snapshot = {
+    rest_snapshot_during_run = {
         "timestamp": rest_timestamp,
         "tcp_pos": robot_rows[0]["tcp_pos"],
         "tcp_pose_4x4": robot_rows[0]["tcp_pose_4x4"],
@@ -597,6 +584,10 @@ def compile_static_episode(
         "camera_selected_timestamps": rest_frames["timestamp"].astype(float).tolist(),
         "camera_frame_count": len(rest_frames),
     }
+    pre_grasp_geometry = dict(robot_metadata.get("pre_grasp_geometry", {}) or {})
+    if not pre_grasp_geometry.get("snapshot"):
+        pre_grasp_geometry["snapshot"] = pre_grasp_geometry.get("settled_snapshot", rest_snapshot_during_run)
+    pre_grasp_geometry["rest_snapshot_during_run"] = rest_snapshot_during_run
     metadata_dump = {
         **robot_metadata,
         "source_files": {
@@ -644,8 +635,7 @@ def compile_static_episode(
             "excitation_direction": {"dim": 3, "description": "unit pull direction"},
         },
         "pre_grasp_geometry": {
-            **robot_metadata.get("pre_grasp_geometry", {}),
-            "snapshot": pre_grasp_snapshot,
+            **pre_grasp_geometry,
         },
         "post_grasp_geometry": post_grasp_geometry,
         "row_count": len(output_rows),

@@ -9,11 +9,11 @@
           "-m",
           "real_robot_exps.compile_static_sysid",
           "--robot",
-          "s00-d00_robot.parquet",
+          "s00-d00_robot-01.parquet",
           "--tracking",
-          "s00-d00_tracking.parquet",
+          "s00-d00_tracking-02.parquet",
           "--output",
-          "s00-d00.parquet",
+          "s00-d00-01.parquet",
           "--camera-ema-alpha",
           "1.0"
         ],
@@ -21,7 +21,7 @@
           "/home/skand/anaconda3/bin/python",
           "at-tracking/Detecting.py",
           "--output",
-          "s00-d00_tracking.parquet",
+          "s00-d00_tracking-02.parquet",
           "--headless"
         ],
         "robot": [
@@ -33,7 +33,7 @@
           "--mode",
           "collect",
           "--kp",
-          "80.0",
+          "100.0",
           "--distance",
           "0.04",
           "--stops",
@@ -47,19 +47,29 @@
           "--num-directions",
           "1",
           "--robot-output",
-          "s00-d00_robot.parquet",
+          "s00-d00_robot-01.parquet",
           "--baseline-path",
-          "pull_theta1.57_phi1.57_baseline_robot.parquet",
+          "s00_pull_theta1.57_phi1.57_kp100_baseline_robot.parquet",
           "--run-metadata-file",
-          "s00-d00_metadata.tmp.json"
+          "s00-d00_metadata.tmp-01.json"
+        ],
+        "viz": [
+          "/home/skand/anaconda3/bin/python",
+          "-m",
+          "real_robot_exps.viz_static_sysid",
+          "--input",
+          "s00-d00-01.parquet",
+          "--save",
+          "s00-d00-01.png",
+          "--no-show"
         ]
       },
       "direction_index": 0,
       "files": {
-        "baseline": "pull_theta1.57_phi1.57_baseline_robot.parquet",
-        "robot": "s00-d00_robot.parquet",
-        "tracking": "s00-d00_tracking.parquet",
-        "unified": "s00-d00.parquet"
+        "baseline": "s00_pull_theta1.57_phi1.57_kp100_baseline_robot.parquet",
+        "robot": "s00-d00_robot-01.parquet",
+        "tracking": "s00-d00_tracking-02.parquet",
+        "unified": "s00-d00-01.parquet"
       },
       "run_id": "s00-d00"
     }

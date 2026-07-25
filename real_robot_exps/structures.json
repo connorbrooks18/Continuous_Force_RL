@@ -14,20 +14,20 @@
         },
         "spur": {
           "shape": "cylinder",
-          "length_m": 0.10,
+          "length_m": 0.12,
           "radius_m": 0.0025,
           "density_kg_m3": 1200
         },
         "stem": {
           "shape": "cylinder",
-          "length_m": 0.025,
+          "length_m": 0.005,
           "radius_m": 0.0005,
           "density_kg_m3": 1000
         },
         "apple": {
           "shape": "sphere",
-          "length_m": 0.080,
-          "radius_m": 0.040,
+          "length_m": 0.07,
+          "radius_m": 0.035,
           "density_kg_m3": 650
         }
       }

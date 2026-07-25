@@ -8,9 +8,13 @@ README.
 - `baseline`: records an unloaded dynamic baseline for the same trajectory.
 - `collect`: records the loaded trial and subtracts the matching baseline when
   dynamic correction is enabled.
+- `collect --only-metadata`: captures settled pre-grasp geometry and a
+  post-grasp reconstruction snapshot without running the pull trajectory or
+  applying a baseline.
 
-The runner (`real_robot_exps.runner`) will auto-run the baseline pass if the
-expected baseline file is missing, then continue with the collect pass.
+The runner (`real_robot_exps.runner`) now captures the settled apple snapshot
+before checking for missing baselines. That settled snapshot is reused by both
+the baseline pass and the collect pass so they target the same structure state.
 
 ## File naming
 
@@ -20,6 +24,10 @@ Runner runs are saved as:
 - `s00-d00_tracking.parquet`
 - `s00-d00.parquet`
 - `manifest.json`
+
+Baseline files are structure-specific:
+
+- `s00_pull_theta1.57_phi1.57_kp100_baseline_robot.parquet`
 
 ## Metadata layout
 
@@ -104,7 +112,9 @@ Baseline and collect are compared using:
 - distance,
 - number of holds,
 - pull-start pose name,
-- exact `robot_start_pose_4x4`.
+- start-pose rotation,
+- start-pose translation within a small tolerance,
+- structure identity when present in `pre_grasp_geometry`.
 
 If these do not match, the collect run will refuse to subtract the baseline.
 

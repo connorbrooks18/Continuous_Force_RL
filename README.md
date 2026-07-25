@@ -1,122 +1,86 @@
 # Apple Pull System Identification
 
-This repository collects quasi-static apple-pull data from a Franka arm,
-optionally records AprilTag camera tracking, compiles the two into a unified
-Parquet episode, and provides a viewer for inspection.
+This repository collects apple-pull data from a Franka arm, optional AprilTag
+tracking, and unified Parquet files for reconstruction and analysis.
 
-The primary way to run the apple-pull collection pipeline is `real_robot_exps.runner`. It selects a structure index, launches the robot pull, optionally starts AprilTag tracking, compiles the unified Parquet, and writes a manifest for each run.
+The main entry point is [`real_robot_exps.runner`](/home/skand/connor/Continuous_Force_RL/real_robot_exps/runner.py).
+It now assumes the apple is present first, captures a settled pre-grasp camera
+snapshot, uses that snapshot to build the dynamic apple start pose, and only
+then decides whether a structure-specific baseline must be collected.
 
-Example:
+## Main workflows
+
+Normal collection:
 
 ```bash
-python -m real_robot_exps.runner \
-  --structure-index 0 \
-  --structures real_robot_exps/structures.json \
-  --directions real_robot_exps/directions.json \
-  --expect-tracking \
-  --start-detector
+python -m real_robot_exps.runner
+```
+
+Metadata-only reconstruction capture:
+
+```bash
+python -m real_robot_exps.runner --only-metadata
 ```
 
 Useful flags:
 
-- `--camera-ema-alpha 1.0` disables camera smoothing during compile.
-- `--camera-ema-alpha 0.3` applies light smoothing to camera geometry.
-- `--start-detector` launches the standalone AprilTag tracker.
-- `--expect-tracking` compiles the unified Parquet when tracking is available.
+- `--structure-index 0` selects a structure without an interactive prompt.
+- `--camera-ema-alpha 0.3` enables light camera smoothing during unified compile.
+- `--no-start-detector` disables the AprilTag tracking subprocess.
+- `--no-expect-tracking` skips unified compile and PNG generation.
+- `--only-metadata` skips baseline generation and the pull trajectory, but still captures settled geometry and post-grasp reconstruction data.
 
-Lower-level scripts still exist for manual debugging:
+## Current runner behavior
 
-- `real_robot_exps.apple_pullto_static` for a single robot run
-- `real_robot_exps.compile_static_sysid` for manual compile steps
-- `at-tracking/Detecting.py` for standalone tracking
+For a normal `collect` run, the runner does this:
 
-The normal workflow is:
+1. prompts for the structure,
+2. asks for the apple in its settled starting state,
+3. captures the settled snapshot,
+4. uses that snapshot to define the dynamic apple pose,
+5. checks for missing baseline files for that structure and direction,
+6. if needed, asks you to remove the apple and runs those baselines,
+7. runs the actual tracked collection,
+8. compiles the unified Parquet and saves a PNG.
 
-1. run a baseline pass with no apple/contact load,
-2. run the matching collect pass,
-3. compile in camera tracking,
-4. inspect the resulting Parquet file.
+Baseline files are structure-specific, for example:
 
-## Quick start
-
-Baseline:
-
-```bash
-python -m real_robot_exps.apple_pullto_static \
-  --mode baseline \
-  --theta 2.36 --phi 1.57 \
-  --distance 0.04 --stops 4
-```
-
-Collect:
-
-```bash
-python -m real_robot_exps.apple_pullto_static \
-  --mode collect \
-  --theta 2.36 --phi 1.57 \
-  --distance 0.04 --stops 4
-```
-
-If camera tracking is recorded separately, compile afterward:
-
-```bash
-python -m real_robot_exps.compile_static_sysid \
-  --robot pull_theta2.36_phi1.57_raw_robot.parquet \
-  --tracking pull_theta2.36_phi1.57_raw_tracking.parquet \
-  --output pull_unified.parquet
-```
-
-For batches, use:
-
-```bash
-python -m real_robot_exps.runner \
-  --structure-index 0 \
-  --structures real_robot_exps/structures.json \
-  --directions real_robot_exps/directions.json \
-  --expect-tracking \
-  --start-detector
+```text
+s00_pull_theta1.57_phi1.57_kp100_baseline_robot.parquet
 ```
 
 ## What gets saved
 
-Raw robot Parquet files include:
+Raw robot Parquet files contain:
 
-- robot timestamps and controller state,
-- wrench, joint torque, joint position, TCP pose, and TCP velocity data,
-- a metadata row at the top of the file,
-- a `dataset_metadata` footer blob with the full run metadata.
+- a metadata row first,
+- robot-side samples after that,
+- a `dataset_metadata` JSON blob in the Parquet footer.
 
-Unified Parquet files add:
+Unified Parquet files contain:
 
-- camera-derived apple and woody geometry,
-- camera/robot timestamp alignment fields,
-- compiled episode metadata in the Parquet footer.
+- robot-side data,
+- camera-derived apple and woody geometry in the Franka base frame,
+- timestamp alignment fields,
+- `pre_grasp_geometry`,
+- `post_grasp_geometry`.
 
 Important convention: `ft_wrist` force components are in the end-effector
-frame, while torque components, joint state, TCP pose, and camera-derived
-geometry are in the Franka base frame.
+frame, while torque components, TCP pose, and camera-derived geometry are in
+the Franka base frame.
 
 ## Visualization
 
-Inspect a unified file with:
+To render a unified file manually:
 
 ```bash
-python -m real_robot_exps.viz_static_sysid \
-  --input pull_unified.parquet \
-  --save pull_unified_viz.png
+python -m real_robot_exps.viz_static_sysid --input s00-d00.parquet --save s00-d00.png --no-show
 ```
 
-The viewer shows wrench, magnitudes, timestamps, TCP/fruit geometry, bending
-angles, and phase shading.
+The visualizer now uses a non-interactive backend for `--no-show`, so headless
+PNG generation works inside the runner.
 
-## Helpful scripts
+## Extra references
 
-- `at-tracking/Detecting.py` — standalone AprilTag tracking.
-- `at-tracking/Replay.py` — replay unified data back onto the camera feed.
-- `real_robot_exps/dump_parquet_preview.py` — print schema, metadata, and the
-  first rows of a Parquet file.
-
-## Detailed reference
-
-The implementation details, metadata layout, hard-coded poses, field ordering,
-and collection notes live in [REFERENCE.md](REFERENCE.md).
+- Dense implementation notes: [REFERENCE.md](/home/skand/connor/Continuous_Force_RL/REFERENCE.md)
+- Geometry-data collection instructions: [GEOMETRY_COLLECTION.md](/home/skand/connor/Continuous_Force_RL/GEOMETRY_COLLECTION.md)
