@@ -1,6 +1,6 @@
 # Geometry Collection Instructions
 
-This file is for someone whose main job is to collect more pre-grasp and
+This file is for someone to collect more pre-grasp and
 post-grasp geometry for simulation reconstruction.
 
 ## Goal
@@ -52,7 +52,8 @@ attach camera geometry to a real robot timestamp without running the pull.
 
 - raw robot: `s00-d00_robot.parquet`
 - tracking: `s00-d00_tracking.parquet`
-- unified: `s00-d00.parquet`
+- unified: `s00-d00.parquet` (this is the only one that matters)
+NOTE: if s00-d00.parquet (or whatever other structure and direction) file already exists, a new one will be created with -01 appended to the name.
 
 Inspect the metadata with:
 
@@ -65,3 +66,23 @@ or focus on geometry with:
 ```bash
 python -m real_robot_exps.preview_geometry s00-d00.parquet
 ```
+
+## Troubleshooting
+
+### Gripper 
+
+- To test the gripper 
+```bash
+python -m real_robot_exps.gripper_test # to open the gripper
+python -m real_robot_exps.gripper_test o # to  close the gripper
+```
+
+If this doesn't do anything. End the ros2 program. Restart the gripper (remove and add power cable). Start the ros2 program again.
+
+### Arm Reset Pose
+
+Sometimes, the arm hits an acceleration or velocity discontinuity while doing reset_to_start_pose (the slow movement to the apple_pose or home_pose). If the robot has been running a while and you start to get these errors, just reboot the robot.
+
+## Doing Full Runs
+
+If you want to not just collect metadata, it should all be working without the tag. If it's a new structure or direction, it'll force you to remove the apple at some point (so that it can do the baseline run), and you need to put the apple back before the actual run.
