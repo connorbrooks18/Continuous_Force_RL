@@ -48,7 +48,7 @@ python -m real_robot_exps.runner --only-metadata
 
 ## What this mode saves
 
-- `pre_grasp_geometry.settled_snapshot`
+- `pre_grasp_geometry`
 - `post_grasp_geometry`
 - a small raw robot Parquet with one post-grasp sample
 - a unified Parquet if tracking is enabled and overlaps correctly
