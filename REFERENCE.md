@@ -16,8 +16,13 @@ The runner (`real_robot_exps.runner`) now captures the settled apple snapshot
 before checking for missing baselines. That settled snapshot is reused by both
 the baseline pass and the collect pass so they target the same structure state.
 The dynamic pre-grasp target uses the apple center in the Franka base frame
-plus one apple radius along base +Y, which keeps the start pose definition
-simple.
+minus one apple radius along base Y, which keeps the start pose definition
+simple. The camera/base calibration helper
+[`real_robot_exps.remake_translation_matrix`](/home/skand/connor/Continuous_Force_RL/real_robot_exps/remake_translation_matrix.py)
+recomputes the reference-tag-to-base translation from live detections and the
+current TCP reading. It assumes the TCP sits `4 cm` negative `Y` of the apple
+center in base frame unless you override `--apple-to-tcp-distance-m`, and it
+prints the solved translation plus the full `4x4` matrix to the terminal.
 
 ## File naming
 
@@ -106,6 +111,9 @@ USE_CLOSE_PULL_START_POSE = False
 - `Replay.py` reprojects compiled unified data back onto the live feed.
 - The camera pipeline stores tag-frame information and the compiler converts it
   into the Franka base frame before saving the unified Parquet.
+- `remake_translation_matrix.py` is a live calibration helper, not a motion
+  script; it reads camera detections and the robot TCP once, then prints the
+  solved reference-tag-to-base transform for debugging calibration.
 
 ## Baseline safety checks
 

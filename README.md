@@ -81,6 +81,31 @@ python -m real_robot_exps.viz_static_sysid --input s00-d00.parquet --save s00-d0
 The visualizer now uses a non-interactive backend for `--no-show`, so headless
 PNG generation works inside the runner.
 
+## Camera/Base Calibration Helper
+
+Use `real_robot_exps.remake_translation_matrix` when you want to recompute the
+reference-tag-to-base translation from live detections and the current robot
+TCP reading. The script:
+
+- reads the apple center from the live camera in reference-tag coordinates,
+- reads the TCP position from the robot in base coordinates,
+- assumes the TCP is `4 cm` negative `Y` from the apple center in base frame
+  by default,
+- prints the solved translation and full `4x4` matrix to the terminal,
+- does not move the arm and does not write JSON.
+
+Example:
+
+```bash
+python -m real_robot_exps.remake_translation_matrix
+```
+
+If needed, you can change the assumed apple-to-TCP distance with:
+
+```bash
+python -m real_robot_exps.remake_translation_matrix --apple-to-tcp-distance-m 0.05
+```
+
 ## Extra references
 
 - Dense implementation notes: [REFERENCE.md](/home/skand/connor/Continuous_Force_RL/REFERENCE.md)
