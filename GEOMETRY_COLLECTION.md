@@ -39,7 +39,7 @@ python -m real_robot_exps.runner --only-metadata
 
 ## What to do
 
-1. Mount the structure and choose the correct structure index.
+1. Mount the structure and choose the correct structure index. (as prompted)
 2. Leave the apple attached and let it settle naturally.
 3. When prompted, press Enter to capture the settled snapshot.
 4. Let the robot move to the dynamic apple start pose and perform the grasp.
@@ -52,17 +52,10 @@ python -m real_robot_exps.runner --only-metadata
 - `post_grasp_geometry`
 - a small raw robot Parquet with one post-grasp sample
 - a unified Parquet if tracking is enabled and overlaps correctly
-
-The single robot row is intentional. It exists so the unified compiler can
-attach camera geometry to a real robot timestamp without running the pull.
-
+  
 ## Important notes
 
 - Keep the apple present during the settled snapshot capture.
-- If you only care about metadata and reconstruction, do not remove the apple.
-- If the AprilTag snapshot fails, stop and fix visibility before collecting.
-- If the run writes the unified Parquet but the PNG fails, the geometry data is
-  still usable.
 
 ## Files to check after a run
 
