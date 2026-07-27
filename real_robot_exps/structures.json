@@ -34,7 +34,7 @@
     },
     {
       "name": "apple 1 spur 5 pointed down",
-      "notes": "Edit this catalog to match the orchard structure you are collecting.",
+      "notes": "like default but shorter spur",
       "angles_source": "lengthened_state_check",
       "geometry_source": "catalog_entry_selected_by_structure_index",
       "parts": {
@@ -46,7 +46,7 @@
         },
         "spur": {
           "shape": "cylinder",
-          "length_m": 0.12,
+          "length_m": 0.085,
           "radius_m": 0.0025,
           "density_kg_m3": 1200
         },

@@ -45,10 +45,10 @@ USE_CLOSE_PULL_START_POSE = False
 CLOSE_PULL_START_POSITION_M = np.array([0.0, 0.7, 0.35], dtype=np.float64)
 CLOSE_PULL_ROLL_FORWARD_DEG = 20.0
 
-# When a settled apple pose is available from camera tracking, place the TCP one
-# apple radius forward along the apple's local +X axis before grasping.
-# TODO: revisit this axis if the apple tag mounting convention changes.
-PRE_GRASP_APPLE_APPROACH_AXIS_LOCAL = np.array([1.0, 0.0, 0.0], dtype=np.float64)
+# When a settled apple pose is available from camera tracking, offset the TCP
+# from the apple center by one apple radius in the Franka base-frame +Y axis.
+# This keeps the pre-grasp target simple and independent of apple orientation.
+DYNAMIC_APPLE_BASE_Y_SIGN = -1.0
 
 # Baseline mode records an unloaded wrench profile. When this is True, collect
 # mode subtracts the matching profile point-by-point within each static hold.
@@ -93,27 +93,26 @@ def _snapshot_geometry(snap, *, target_pose_4x4: np.ndarray | None = None) -> di
     return geometry
 
 
-def _load_dynamic_pull_start_pose(run_metadata: dict, fallback_pose_4x4: np.ndarray) -> tuple[np.ndarray, str]:
+def _load_dynamic_pull_start_pose(run_metadata: dict, fallback_pose_4x4: np.ndarray) -> tuple[np.ndarray, str, float | None]:
     pre = dict(run_metadata.get("pre_grasp_geometry", {}) or {})
     settled = dict(pre.get("settled_snapshot", {}) or pre.get("snapshot", {}) or {})
     if not settled:
-        return np.asarray(fallback_pose_4x4, dtype=np.float64), "apple_pose_4x4"
+        return np.asarray(fallback_pose_4x4, dtype=np.float64), "apple_pose_4x4", None
 
-    apple_pose_flat = settled.get("apple_pose_4x4")
+    apple_pos_flat = settled.get("apple_pos")
+    if apple_pos_flat is None:
+        return np.asarray(fallback_pose_4x4, dtype=np.float64), "apple_pose_4x4", None
+
     parts = dict(pre.get("parts", {}) or {})
-    apple_radius = float(parts.get("apple", {}).get("radius_m", 0.04))
-    approach_distance = max(0.0, apple_radius)
-    if apple_pose_flat is None:
-        return np.asarray(fallback_pose_4x4, dtype=np.float64), "apple_pose_4x4"
+    apple_radius_m = parts.get("apple", {}).get("radius_m")
+    if apple_radius_m is None:
+        return np.asarray(fallback_pose_4x4, dtype=np.float64), "apple_pose_4x4", None
+    apple_radius_m = float(apple_radius_m)
 
-    apple_pose = np.asarray(apple_pose_flat, dtype=np.float64).reshape(4, 4)
-    approach_world = fallback_pose_4x4[:3, :3] @ PRE_GRASP_APPLE_APPROACH_AXIS_LOCAL
-    norm = float(np.linalg.norm(approach_world))
-    if norm < 1e-12:
-        return np.asarray(fallback_pose_4x4, dtype=np.float64), "apple_pose_4x4"
     pose = np.asarray(fallback_pose_4x4, dtype=np.float64).copy()
-    pose[:3, 3] = apple_pose[:3, 3] + (approach_world / norm) * approach_distance
-    return pose, "settled_snapshot_apple_pose_plus_radius"
+    apple_center = np.asarray(apple_pos_flat, dtype=np.float64).reshape(3)
+    pose[:3, 3] = apple_center + np.array([0.0, DYNAMIC_APPLE_BASE_Y_SIGN * apple_radius_m, 0.0], dtype=np.float64)
+    return pose, "settled_snapshot_apple_center_plus_apple_radius_base_y_offset", apple_radius_m
 
 
 def _metadata_entry(metadata: dict) -> dict:
@@ -1174,7 +1173,7 @@ def main():
     # print(R)
     # print(apple_rot)
     apple_pose_4x4 = make_ee_target_pose_from_matrix(np.array([0, .9262, .41]), apple_rot)
-    dynamic_pull_pose_4x4, dynamic_pull_pose_name = _load_dynamic_pull_start_pose(
+    dynamic_pull_pose_4x4, dynamic_pull_pose_name, dynamic_pull_apple_radius_m = _load_dynamic_pull_start_pose(
         run_metadata,
         apple_pose_4x4,
     )
@@ -1195,10 +1194,17 @@ def main():
         close_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_pose_4x4
     )
     pull_start_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_pose_name
+    if pull_start_pose_name == "apple_pose_4x4":
+        print(
+            "WARNING: dynamic apple snapshot/radius was unavailable, so the "
+            "old hardcoded apple pose fallback is being used."
+        )
     print(
         f"Pull start selection: {pull_start_pose_name} at "
         f"{pull_start_pose_4x4[:3, 3].tolist()} m"
     )
+    if dynamic_pull_apple_radius_m is not None:
+        print(f"Dynamic apple radius from structure metadata: {dynamic_pull_apple_radius_m:.5f} m")
 
     # 6. Move to home and wait for user
     print("\nMoving to home position...")
@@ -1223,6 +1229,7 @@ def main():
             "pull_start_pose_name": pull_start_pose_name,
             "close_pull_start_position_m": CLOSE_PULL_START_POSITION_M.tolist(),
             "close_pull_roll_forward_deg": float(CLOSE_PULL_ROLL_FORWARD_DEG),
+            "dynamic_apple_radius_m": None if dynamic_pull_apple_radius_m is None else float(dynamic_pull_apple_radius_m),
             "apple_pose_4x4": apple_pose_4x4.tolist(),
             "dynamic_pull_pose_4x4": dynamic_pull_pose_4x4.tolist(),
             "close_pose_4x4": close_pose_4x4.tolist(),

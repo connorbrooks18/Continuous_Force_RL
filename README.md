@@ -5,8 +5,9 @@ tracking, and unified Parquet files for reconstruction and analysis.
 
 The main entry point is [`real_robot_exps.runner`](/home/skand/connor/Continuous_Force_RL/real_robot_exps/runner.py).
 It now assumes the apple is present first, captures a settled pre-grasp camera
-snapshot, uses that snapshot to build the dynamic apple start pose, and only
-then decides whether a structure-specific baseline must be collected.
+snapshot, uses that snapshot to build the dynamic apple start pose from the
+apple center plus one apple radius along base-frame Y, and only then decides whether a
+structure-specific baseline must be collected.
 
 ## Main workflows
 

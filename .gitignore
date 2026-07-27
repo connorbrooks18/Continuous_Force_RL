@@ -44,3 +44,4 @@ bmanifest.json
 manifest*.json
 s00-d00_metadata.tmp-02.json
 .gitignore
+s00-d00_metadata.tmp-01.json

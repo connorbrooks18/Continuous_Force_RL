@@ -15,6 +15,9 @@ README.
 The runner (`real_robot_exps.runner`) now captures the settled apple snapshot
 before checking for missing baselines. That settled snapshot is reused by both
 the baseline pass and the collect pass so they target the same structure state.
+The dynamic pre-grasp target uses the apple center in the Franka base frame
+plus one apple radius along base +Y, which keeps the start pose definition
+simple.
 
 ## File naming
 
