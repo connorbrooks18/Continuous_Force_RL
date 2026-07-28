@@ -69,11 +69,11 @@ def _capture_live_apple_center_ref(
 ) -> np.ndarray:
     import cv2
     import pyrealsense2 as rs
-    from pupil_apriltags import Detector
+    from pupil_apriltags import Detector # type: ignore
 
     if str(AT_TRACKING_ROOT) not in sys.path:
         sys.path.insert(0, str(AT_TRACKING_ROOT))
-    import Tracker  # noqa: E402
+    import Tracker  # type: ignore
 
     def _init_camera(camera_fps_: int, width_: int, height_: int, exposure_: int):
         pipeline = rs.pipeline()
