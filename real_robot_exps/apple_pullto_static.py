@@ -44,6 +44,7 @@ MOVE_DISTANCE = 0.02     # 5cm
 USE_CLOSE_PULL_START_POSE = False
 CLOSE_PULL_START_POSITION_M = np.array([0.0, 0.7, 0.35], dtype=np.float64)
 CLOSE_PULL_ROLL_FORWARD_DEG = 20.0
+MANUAL_SETUP_START_POSE_NAME = "manual_setup_current_tcp_pose"
 
 # When a settled apple pose is available from camera tracking, offset the TCP
 # from the apple center by one apple radius in the Franka base-frame +Y axis.
@@ -709,15 +710,20 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     label = f"{base_label}_{'baseline' if baseline else 'raw'}"
     post_grasp_geometry = {}
     only_metadata = bool(run_args.get("only_metadata", False))
+    manual_setup_enabled = bool(run_args.get("manual_setup", False))
     excitation_direction = np.zeros(3, dtype=np.float32)
     time.sleep(2.0) # let it settle
     
-    robot.reset_to_start_pose(pull_start_pose_4x4)
+    if not manual_setup_enabled:
+        robot.reset_to_start_pose(pull_start_pose_4x4)
     snap = robot.get_state_snapshot()
     pre_grasp_snapshot = _snapshot_geometry(
         snap,
         target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
     )
+    pre_grasp_snapshot["setup_mode"] = "manual" if manual_setup_enabled else "dynamic"
+    pre_grasp_snapshot["manual_setup_enabled"] = manual_setup_enabled
+    pre_grasp_snapshot["pull_start_pose_name"] = str(run_args.get("pull_start_pose_name", "unspecified"))
     robot_rows = []
     rest_reference_timestamp = time.time()
     gc.send_request(True)
@@ -727,6 +733,9 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         snap,
         target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
     )
+    post_grasp_geometry["setup_mode"] = "manual" if manual_setup_enabled else "dynamic"
+    post_grasp_geometry["manual_setup_enabled"] = manual_setup_enabled
+    post_grasp_geometry["pull_start_pose_name"] = str(run_args.get("pull_start_pose_name", "unspecified"))
     if only_metadata:
         direction_idx = int(run_args.get("direction_index", 0))
         n_directions = int(run_args.get("num_directions", 1))
@@ -1044,6 +1053,7 @@ def main():
     parser.add_argument("--unified-output", default=None, help="Compiled unified Parquet output path")
     parser.add_argument("--run-metadata-file", default=None, help="Optional JSON file containing structure/direction metadata to embed in the run output")
     parser.add_argument("--only-metadata", action=argparse.BooleanOptionalAction, default=False, help="Capture pre/post-grasp reconstruction metadata only; skip baseline correction and pull trajectory")
+    parser.add_argument("--manual-setup", action=argparse.BooleanOptionalAction, default=False, help="Pause without torque mode so the arm can be manually positioned on the apple surface before the pull")
     args = parser.parse_args()
 
     if args.num_directions < 1:
@@ -1173,10 +1183,9 @@ def main():
     # print(R)
     # print(apple_rot)
     apple_pose_4x4 = make_ee_target_pose_from_matrix(np.array([0, .9262, .41]), apple_rot)
-    dynamic_pull_pose_4x4, dynamic_pull_pose_name, dynamic_pull_apple_radius_m = _load_dynamic_pull_start_pose(
-        run_metadata,
-        apple_pose_4x4,
-    )
+    dynamic_pull_apple_radius_m = None
+    dynamic_pull_pose_4x4 = apple_pose_4x4
+    dynamic_pull_pose_name = "apple_pose_4x4"
     close_roll_rad = math.radians(CLOSE_PULL_ROLL_FORWARD_DEG)
     close_roll_local_x = np.array([
         [1.0, 0.0, 0.0],
@@ -1190,30 +1199,73 @@ def main():
         CLOSE_PULL_START_POSITION_M,
         close_rot,
     )
-    pull_start_pose_4x4 = (
-        close_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_pose_4x4
-    )
+    manual_setup_snapshot = None
+    pull_start_pose_4x4 = close_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_pose_4x4
     pull_start_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_pose_name
-    if pull_start_pose_name == "apple_pose_4x4":
-        print(
-            "WARNING: dynamic apple snapshot/radius was unavailable, so the "
-            "old hardcoded apple pose fallback is being used."
+    if args.manual_setup:
+        print("\nManual setup mode selected.")
+        print("The robot will stay idle with torque mode off.")
+        print("Moving to home first so the robot state stream is initialized.")
+        robot.reset_to_start_pose(home_pose_4x4)
+        print("Move the arm to the desired apple surface contact point, then press Enter.")
+        input("Press Enter once the arm is positioned on the apple: ")
+        manual_snap = robot.get_state_snapshot()
+        pull_start_pose_4x4 = _tcp_pose_4x4_from_snapshot(manual_snap)
+        dynamic_pull_pose_4x4 = pull_start_pose_4x4
+        pull_start_pose_name = MANUAL_SETUP_START_POSE_NAME
+        dynamic_pull_apple_radius_m = None
+        manual_setup_snapshot = _snapshot_geometry(
+            manual_snap,
+            target_pose_4x4=pull_start_pose_4x4,
         )
-    print(
-        f"Pull start selection: {pull_start_pose_name} at "
-        f"{pull_start_pose_4x4[:3, 3].tolist()} m"
-    )
-    if dynamic_pull_apple_radius_m is not None:
-        print(f"Dynamic apple radius from structure metadata: {dynamic_pull_apple_radius_m:.5f} m")
+        manual_setup_snapshot["setup_mode"] = "manual"
+        manual_setup_snapshot["manual_setup_enabled"] = True
+        manual_setup_snapshot["pull_start_pose_name"] = pull_start_pose_name
+        run_metadata.setdefault("pre_grasp_geometry", {})
+        run_metadata["pre_grasp_geometry"]["manual_setup_snapshot"] = manual_setup_snapshot
+        run_metadata["pre_grasp_geometry"]["manual_setup_enabled"] = True
+        run_metadata["pre_grasp_geometry"]["setup_mode"] = "manual"
+        default_dof_pos = manual_snap.joint_pos.clone()
+        print(
+            f"Manual pull start selection: {pull_start_pose_name} at "
+            f"{pull_start_pose_4x4[:3, 3].tolist()} m"
+        )
+    else:
+        dynamic_pull_pose_4x4, dynamic_pull_pose_name, dynamic_pull_apple_radius_m = _load_dynamic_pull_start_pose(
+            run_metadata,
+            apple_pose_4x4,
+        )
+        pull_start_pose_4x4 = (
+            close_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_pose_4x4
+        )
+        pull_start_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_pose_name
+        if pull_start_pose_name == "apple_pose_4x4":
+            print(
+                "WARNING: dynamic apple snapshot/radius was unavailable, so the "
+                "old hardcoded apple pose fallback is being used."
+            )
+        print(
+            f"Pull start selection: {pull_start_pose_name} at "
+            f"{pull_start_pose_4x4[:3, 3].tolist()} m"
+        )
+        if dynamic_pull_apple_radius_m is not None:
+            print(f"Dynamic apple radius from structure metadata: {dynamic_pull_apple_radius_m:.5f} m")
 
     # 6. Move to home and wait for user
-    print("\nMoving to home position...")
-    robot.reset_to_start_pose(home_pose_4x4)
-    snap = robot.get_state_snapshot()
-    home_actual = snap.ee_pos.clone()
-    home_quat = snap.ee_quat.clone()
-    default_dof_pos = snap.joint_pos.clone()
-    home_rpy_deg = _quat_to_rpy_deg(home_quat)
+    if not args.manual_setup:
+        print("\nMoving to home position...")
+        robot.reset_to_start_pose(home_pose_4x4)
+        snap = robot.get_state_snapshot()
+        home_actual = snap.ee_pos.clone()
+        home_quat = snap.ee_quat.clone()
+        default_dof_pos = snap.joint_pos.clone()
+        home_rpy_deg = _quat_to_rpy_deg(home_quat)
+    else:
+        print("\nManual setup will use the current robot pose directly; skipping home move.")
+        snap = robot.get_state_snapshot()
+        home_actual = snap.ee_pos.clone()
+        home_quat = snap.ee_quat.clone()
+        home_rpy_deg = _quat_to_rpy_deg(home_quat)
     # print(f"  Home Pos: [{home_actual[0].item():.5f}, {home_actual[1].item():.5f}, {home_actual[2].item():.5f}]")
     # print(f"  Home Orn (RPY deg): [{home_rpy_deg[0]:.2f}, {home_rpy_deg[1]:.2f}, {home_rpy_deg[2]:.2f}]")   
 
@@ -1226,6 +1278,7 @@ def main():
         run_arguments = dict(vars(args))
         run_arguments.update({
             "use_close_pull_start_pose": bool(USE_CLOSE_PULL_START_POSE),
+            "manual_setup": bool(args.manual_setup),
             "pull_start_pose_name": pull_start_pose_name,
             "close_pull_start_position_m": CLOSE_PULL_START_POSITION_M.tolist(),
             "close_pull_roll_forward_deg": float(CLOSE_PULL_ROLL_FORWARD_DEG),
@@ -1233,6 +1286,7 @@ def main():
             "apple_pose_4x4": apple_pose_4x4.tolist(),
             "dynamic_pull_pose_4x4": dynamic_pull_pose_4x4.tolist(),
             "close_pose_4x4": close_pose_4x4.tolist(),
+            "manual_setup_snapshot": manual_setup_snapshot,
             "camera_collection": "separate process; compile after robot collection",
         })
         for theta_value, phi_value in angles:

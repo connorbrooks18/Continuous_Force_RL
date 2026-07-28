@@ -14,7 +14,7 @@
         },
         "spur": {
           "shape": "cylinder",
-          "length_m": 0.12,
+          "length_m": 0.13,
           "radius_m": 0.0025,
           "density_kg_m3": 1200
         },

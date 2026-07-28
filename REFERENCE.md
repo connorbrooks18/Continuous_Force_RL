@@ -23,6 +23,9 @@ recomputes the reference-tag-to-base translation from live detections and the
 current TCP reading. It assumes the TCP sits `4 cm` negative `Y` of the apple
 center in base frame unless you override `--apple-to-tcp-distance-m`, and it
 prints the solved translation plus the full `4x4` matrix to the terminal.
+`apple_pullto_static.py --manual-setup` is the manual alternative: it keeps
+torque mode off while you move the arm onto the apple surface, then records the
+current TCP pose as the run's start pose and metadata.
 
 ## File naming
 

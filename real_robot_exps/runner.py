@@ -115,6 +115,7 @@ def _build_run_metadata(
     direction: dict[str, Any],
     pre_grasp_geometry: dict[str, Any],
     kp: float,
+    manual_setup: bool,
 ) -> dict[str, Any]:
     return {
         "structure_index": structure_index,
@@ -126,6 +127,7 @@ def _build_run_metadata(
         "robot_info": {"kp": float(kp)},
         "pre_grasp_geometry": pre_grasp_geometry,
         "post_grasp_geometry": {},
+        "manual_setup": bool(manual_setup),
         "dump": {
             "structure_catalog_entry": structure,
             "direction_entry": direction,
@@ -181,6 +183,7 @@ def _run_one(
         direction=direction,
         pre_grasp_geometry=pre_grasp_geometry,
         kp=float(args.kp),
+        manual_setup=bool(args.manual_setup),
     )
     _write_json(metadata_path, run_metadata)
     baseline_cmd = None
@@ -233,6 +236,8 @@ def _run_one(
     ]
     if args.only_metadata:
         robot_cmd.append("--only-metadata")
+    if args.manual_setup:
+        robot_cmd.append("--manual-setup")
 
     print(f"\n=== Running {run_id} ===")
     print(" ".join(robot_cmd))
@@ -437,6 +442,12 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Collect reconstruction metadata only; skip baseline generation and pull trajectory",
+    )
+    parser.add_argument(
+        "--manual-setup",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Forward manual pull-start setup to apple_pullto_static so the arm can be positioned by hand",
     )
     args = parser.parse_args()
 

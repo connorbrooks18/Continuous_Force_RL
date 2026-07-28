@@ -30,6 +30,7 @@ Useful flags:
 - `--no-start-detector` disables the AprilTag tracking subprocess.
 - `--no-expect-tracking` skips unified compile and PNG generation.
 - `--only-metadata` skips baseline generation and the pull trajectory, but still captures settled geometry and post-grasp reconstruction data.
+- `--manual-setup` pauses with torque mode off so you can physically place the arm on the apple surface before the pull starts.
 
 ## Current runner behavior
 
