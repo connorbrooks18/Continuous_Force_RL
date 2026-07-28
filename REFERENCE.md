@@ -26,6 +26,10 @@ prints the solved translation plus the full `4x4` matrix to the terminal.
 `apple_pullto_static.py --manual-setup` is the manual alternative: it keeps
 torque mode off while you move the arm onto the apple surface, then records the
 current TCP pose as the run's start pose and metadata.
+For camera/base calibration, `real_robot_exps.calibrate_reference_tag_to_base`
+prompts for the camera pose in the robot base frame, captures the reference
+tag in the live image, composes base->camera with camera->reference, and
+prints the inverted `REFERENCE_TAG_TO_BASE_4X4_DEFAULT` candidate.
 
 ## File naming
 

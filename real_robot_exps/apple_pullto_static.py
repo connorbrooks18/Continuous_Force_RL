@@ -1173,7 +1173,7 @@ def main():
 
     # arbitrarily chosen 'home'
     home_rot = np.array([[-1, 0, 0.0], [0.0, 0.0, 1.0], [0, 1, 0]])
-    home_pos = np.array([0.0, 0.85, 0.42])
+    home_pos = np.array([0.0, 0.80, 0.41])
     home_pose_4x4 = make_ee_target_pose_from_matrix(home_pos, home_rot)
 
     apple_rot = np.array([
@@ -1183,7 +1183,7 @@ def main():
                  ])
     # print(R)
     # print(apple_rot)
-    apple_pose_4x4 = make_ee_target_pose_from_matrix(np.array([0, .9262, .41]), apple_rot)
+    apple_pose_4x4 = make_ee_target_pose_from_matrix(np.array([0, .87, .41]), apple_rot)
     dynamic_pull_apple_radius_m = None
     dynamic_pull_pose_4x4 = apple_pose_4x4
     dynamic_pull_pose_name = "apple_pose_4x4"
@@ -1210,6 +1210,7 @@ def main():
         robot.reset_to_start_pose(home_pose_4x4)
         print("Move the arm to the desired apple surface contact point, then press Enter.")
         input("Press Enter once the arm is positioned on the apple: ")
+        robot.refresh_state_snapshot()
         manual_snap = robot.get_state_snapshot()
         pull_start_pose_4x4 = _tcp_pose_4x4_from_snapshot(manual_snap)
         dynamic_pull_pose_4x4 = pull_start_pose_4x4

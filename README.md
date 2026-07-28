@@ -107,6 +107,12 @@ If needed, you can change the assumed apple-to-TCP distance with:
 python -m real_robot_exps.remake_translation_matrix --apple-to-tcp-distance-m 0.05
 ```
 
+For the camera-to-base calibration path, use
+`real_robot_exps.calibrate_reference_tag_to_base`. It prompts for the camera
+pose in the robot base frame, captures the reference AprilTag pose in the live
+camera, and prints a ready-to-paste `REFERENCE_TAG_TO_BASE_4X4_DEFAULT`
+matrix.
+
 ## Extra references
 
 - Dense implementation notes: [REFERENCE.md](/home/skand/connor/Continuous_Force_RL/REFERENCE.md)

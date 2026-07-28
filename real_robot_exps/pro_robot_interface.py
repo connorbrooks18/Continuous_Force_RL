@@ -541,6 +541,31 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                     time.sleep(0.5)
                     response_queue.put(("error", str(e)))
 
+            elif cmd[0] == "sample_state":
+                try:
+                    ctrl = robot.start_cartesian_pose_control(ControllerMode.JointImpedance)
+                    state, _ = ctrl.readOnce()
+
+                    jac_flat = model.zero_jacobian(state)
+                    mass_flat = model.mass(state)
+                    gravity = model.gravity(state)
+                    _pack_state(state, [0.0] * 6, jac_flat, mass_flat, gravity)
+                    state_ready.set()
+
+                    robot.stop()
+                    time.sleep(0.25)
+                    response_queue.put(("sample_state_done", None))
+                except Exception as e:
+                    sys.stdout.write(f"[COMM PROCESS] State sample failed: {e}\r\n")
+                    sys.stdout.flush()
+                    try:
+                        ctrl = None
+                        robot.stop()
+                    except Exception:
+                        pass
+                    time.sleep(0.25)
+                    response_queue.put(("error", str(e)))
+
             elif cmd[0] == "move_joints":
                 target_q = np.array(cmd[1], dtype=np.float64)
                 duration_sec = cmd[2]
@@ -942,6 +967,18 @@ class FrankaInterface:
         resp = self._response_queue.get(timeout=30.0)
         if resp[0] != "reset_done":
             raise RuntimeError(f"Reset failed: {resp}")
+
+    def refresh_state_snapshot(self):
+        """Refresh shared-memory state from the robot without moving it.
+
+        Starts a short idle Cartesian control session, samples the current
+        pose/state, and updates shared memory so manual positioning can be
+        captured before torque mode starts.
+        """
+        self._cmd_queue.put(("sample_state",))
+        resp = self._response_queue.get(timeout=10.0)
+        if resp[0] != "sample_state_done":
+            raise RuntimeError(f"State refresh failed: {resp}")
 
     def start_torque_mode(self, log_trajectory: bool = False):
         """Start torque control mode with 1kHz comm loop in comm process.
