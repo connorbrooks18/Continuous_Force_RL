@@ -1,4 +1,3 @@
 error handling in process (if it's a fail like cartesian_motion_generator... during a reset_to..._pose), just do that run again after a few seconds.
 
-
-setup for multiple spur sizes 
+run calibration processs. setup system to handle the camera to base transform (rather than reference tag to base)

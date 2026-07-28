@@ -870,7 +870,8 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
 
     # Restore the robot before Parquet writing or optional post-run compilation.
     time.sleep(2)
-    robot.reset_to_start_pose(home_pose_4x4)
+    if not manual_setup_enabled:
+        robot.reset_to_start_pose(home_pose_4x4)
 
     # Assemble and persist the completed static-hold episode.
     full_pull_data = np.concatenate(pull_data, axis=0) if pull_data else np.zeros((0, 6), dtype=np.float32)
