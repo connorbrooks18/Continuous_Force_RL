@@ -14,7 +14,9 @@ import json
 import math
 import platform
 import socket
+import subprocess
 import sys
+import tempfile
 import time
 import warnings
 from datetime import datetime, timezone
@@ -46,9 +48,10 @@ CLOSE_PULL_START_POSITION_M = np.array([0.0, 0.7, 0.35], dtype=np.float64)
 CLOSE_PULL_ROLL_FORWARD_DEG = 20.0
 MANUAL_SETUP_START_POSE_NAME = "manual_setup_current_tcp_pose"
 
-# When a settled apple pose is available from camera tracking, offset the TCP
-# from the apple center by one apple radius in the Franka base-frame +Y axis.
-# This keeps the pre-grasp target simple and independent of apple orientation.
+# When a lengthened structure snapshot is available from camera tracking,
+# offset the TCP from the apple center by one apple radius in the Franka
+# base-frame +Y axis. This keeps the pull-start target simple and
+# independent of apple orientation.
 DYNAMIC_APPLE_BASE_Y_SIGN = -1.0
 
 # Baseline mode records an unloaded wrench profile. When this is True, collect
@@ -94,13 +97,52 @@ def _snapshot_geometry(snap, *, target_pose_4x4: np.ndarray | None = None) -> di
     return geometry
 
 
+def _capture_camera_snapshot(*, request_path: str | None = None, output_path: str | None = None) -> dict:
+    """Capture a snapshot through the running detector, or directly if absent."""
+    if request_path and output_path:
+        request = Path(request_path)
+        output = Path(output_path)
+        output.unlink(missing_ok=True)
+        request.touch()
+        deadline = time.time() + 15.0
+        while time.time() < deadline:
+            if output.exists():
+                with output.open("r", encoding="utf-8") as f:
+                    return json.load(f)
+            time.sleep(0.05)
+        raise RuntimeError(f"Timed out waiting for running detector snapshot: {output}")
+
+    # Direct invocation fallback when apple_pullto_static is not launched by
+    # runner.py with a detector process.
+    with tempfile.NamedTemporaryFile(
+        prefix="post_grasp_camera_snapshot_",
+        suffix=".json",
+        delete=False,
+    ) as tmp:
+        output_path = Path(tmp.name)
+    command = [
+        sys.executable,
+        "-m",
+        "real_robot_exps.camera_snapshot",
+        "--output",
+        str(output_path),
+    ]
+    try:
+        subprocess.run(command, check=True)
+        with output_path.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    finally:
+        if output_path.exists():
+            output_path.unlink()
+
+
 def _load_dynamic_pull_start_pose(run_metadata: dict, fallback_pose_4x4: np.ndarray) -> tuple[np.ndarray, str, float | None]:
     pre = dict(run_metadata.get("pre_grasp_geometry", {}) or {})
-    settled = dict(pre.get("settled_snapshot", {}) or pre.get("snapshot", {}) or {})
-    if not settled:
+    lengthened = dict(pre.get("snapshot", {}) or pre.get("lengthened_snapshot", {}) or pre.get("settled_snapshot", {}) or {})
+    if not lengthened:
         return np.asarray(fallback_pose_4x4, dtype=np.float64), "apple_pose_4x4", None
 
-    apple_pos_flat = settled.get("apple_pos")
+    apple_pos_flat = lengthened.get("apple_pos")
     if apple_pos_flat is None:
         return np.asarray(fallback_pose_4x4, dtype=np.float64), "apple_pose_4x4", None
 
@@ -113,7 +155,7 @@ def _load_dynamic_pull_start_pose(run_metadata: dict, fallback_pose_4x4: np.ndar
     pose = np.asarray(fallback_pose_4x4, dtype=np.float64).copy()
     apple_center = np.asarray(apple_pos_flat, dtype=np.float64).reshape(3)
     pose[:3, 3] = apple_center + np.array([0.0, DYNAMIC_APPLE_BASE_Y_SIGN * apple_radius_m, 0.0], dtype=np.float64)
-    return pose, "settled_snapshot_apple_center_plus_apple_radius_base_y_offset", apple_radius_m
+    return pose, "lengthened_snapshot_apple_center_plus_apple_radius_base_y_offset", apple_radius_m
 
 
 def _metadata_entry(metadata: dict) -> dict:
@@ -717,26 +759,35 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     only_metadata = bool(run_args.get("only_metadata", False))
     manual_setup_enabled = bool(run_args.get("manual_setup", False))
     excitation_direction = np.zeros(3, dtype=np.float32)
-    time.sleep(2.0) # let it settle
+    time.sleep(2.0)  # let the robot settle before recording the pull-start TCP snapshot
     
     if not manual_setup_enabled:
         robot.reset_to_start_pose(pull_start_pose_4x4)
     snap = robot.get_state_snapshot()
-    pre_grasp_snapshot = _snapshot_geometry(
+    pull_start_snapshot = _snapshot_geometry(
         snap,
         target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
     )
-    pre_grasp_snapshot["setup_mode"] = "manual" if manual_setup_enabled else "dynamic"
-    pre_grasp_snapshot["manual_setup_enabled"] = manual_setup_enabled
-    pre_grasp_snapshot["pull_start_pose_name"] = str(run_args.get("pull_start_pose_name", "unspecified"))
+    pull_start_snapshot["setup_mode"] = "manual" if manual_setup_enabled else "dynamic"
+    pull_start_snapshot["manual_setup_enabled"] = manual_setup_enabled
+    pull_start_snapshot["pull_start_pose_name"] = str(run_args.get("pull_start_pose_name", "unspecified"))
+    # `snapshot` is the compatibility field for the camera's lengthened state.
+    # The manual TCP setup snapshot must never replace it.
+    pre_geometry = dict(pre_grasp_geometry or {})
+    lengthened_snapshot = dict(
+        pre_geometry.get("snapshot", {})
+        or pre_geometry.get("lengthened_snapshot", {})
+        or pre_geometry.get("settled_snapshot", {})
+        or {}
+    )
     if bool(run_args.get("debug_pre_grasp", False)):
         settled = dict(pre_grasp_geometry or {})
-        settled_snapshot = dict(settled.get("settled_snapshot", {}) or settled.get("snapshot", {}) or {})
-        apple_pos = settled_snapshot.get("apple_pos")
+        lengthened_snapshot = dict(settled.get("snapshot", {}) or settled.get("lengthened_snapshot", {}) or settled.get("settled_snapshot", {}) or {})
+        apple_pos = lengthened_snapshot.get("apple_pos")
         pull_start_target_pos = np.asarray(pull_start_pose_4x4[:3, 3], dtype=np.float64)
-        tcp_pos = np.asarray(pre_grasp_snapshot["tcp_pos"], dtype=np.float64)
-        print("\n[pre-grasp debug]")
-        print(f"  pull_start_pose_name: {pre_grasp_snapshot['pull_start_pose_name']}")
+        tcp_pos = np.asarray(pull_start_snapshot["tcp_pos"], dtype=np.float64)
+        print("\n[lengthened pre-grasp debug]")
+        print(f"  pull_start_pose_name: {pull_start_snapshot['pull_start_pose_name']}")
         print(f"  pull_start_target_base_m: {_format_pos_m(pull_start_target_pos)}")
         print(f"  tcp_pos_base_m: {_format_pos_m(tcp_pos)}")
         if apple_pos is not None:
@@ -749,12 +800,21 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     robot_rows = []
     rest_reference_timestamp = time.time()
     gc.send_request(True)
+    # Capture the post-grasp robot state after the gripper has fully closed
+    # and before any pull motion starts.
     time.sleep(5.0)
     snap = robot.get_state_snapshot()
     post_grasp_geometry = _snapshot_geometry(
         snap,
         target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
     )
+    post_grasp_camera_snapshot = _capture_camera_snapshot(
+        request_path=run_args.get("post_grasp_camera_request"),
+        output_path=run_args.get("post_grasp_camera_output"),
+    )
+    post_grasp_geometry["snapshot"] = post_grasp_camera_snapshot
+    post_grasp_geometry["robot_snapshot"] = dict(post_grasp_geometry)
+    post_grasp_geometry["camera_snapshot_source"] = "post_grasp_camera_capture"
     post_grasp_geometry["setup_mode"] = "manual" if manual_setup_enabled else "dynamic"
     post_grasp_geometry["manual_setup_enabled"] = manual_setup_enabled
     post_grasp_geometry["pull_start_pose_name"] = str(run_args.get("pull_start_pose_name", "unspecified"))
@@ -994,7 +1054,14 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         },
         "pre_grasp_geometry": {
             **(pre_grasp_geometry or {}),
-            "snapshot": pre_grasp_snapshot,
+            "snapshot": dict(
+                pre_geometry.get("snapshot", {})
+                or pre_geometry.get("lengthened_snapshot", {})
+                or pre_geometry.get("settled_snapshot", {})
+                or {}
+            ),
+            "pull_start_pose_name": str(run_args.get("pull_start_pose_name", "unspecified")),
+            "robot_snapshot": pull_start_snapshot,
         },
         "post_grasp_geometry": post_grasp_geometry,
         "theta_rad": float(theta),
@@ -1022,16 +1089,35 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     elif USE_DYNAMIC_BASELINE_CORRECTION:
         baseline_path = Path(run_args.get("baseline_path")) if run_args.get("baseline_path") else Path(f"{base_label}_baseline_robot.parquet")
         if not baseline_path.exists():
-            raise FileNotFoundError(
-                f"Dynamic baseline correction is enabled, but {baseline_path} does not exist. "
-                "Run the same trajectory with --mode baseline first, or set "
-                "USE_DYNAMIC_BASELINE_CORRECTION = False."
+            print(
+                f"Warning: dynamic baseline correction is enabled, but {baseline_path} does not exist. "
+                "Writing the collect run with uncorrected ft_wrist data."
             )
-        baseline_metadata = _read_parquet_metadata(baseline_path)
-        _validate_baseline_compatibility(robot_metadata, baseline_metadata, baseline_path)
-        correction_metadata = apply_dynamic_baseline(robot_rows, baseline_path)
-        correction_metadata.update({"role": "corrected_collect_run", "applied": True})
-        robot_metadata["dynamic_baseline"] = correction_metadata
+            robot_metadata["dynamic_baseline"] = {
+                "role": "uncorrected_collect_run",
+                "applied": False,
+                "reason": "baseline file missing",
+                "baseline_path": str(baseline_path.resolve()),
+            }
+        else:
+            try:
+                baseline_metadata = _read_parquet_metadata(baseline_path)
+                _validate_baseline_compatibility(robot_metadata, baseline_metadata, baseline_path)
+                correction_metadata = apply_dynamic_baseline(robot_rows, baseline_path)
+                correction_metadata.update({"role": "corrected_collect_run", "applied": True})
+                robot_metadata["dynamic_baseline"] = correction_metadata
+            except ValueError as exc:
+                print(
+                    f"Warning: {exc}. "
+                    "Writing the collect run with uncorrected ft_wrist data."
+                )
+                robot_metadata["dynamic_baseline"] = {
+                    "role": "uncorrected_collect_run",
+                    "applied": False,
+                    "reason": "baseline incompatible with collect run",
+                    "error": str(exc),
+                    "baseline_path": str(baseline_path.resolve()),
+                }
     else:
         robot_metadata["dynamic_baseline"] = {
             "role": "uncorrected_collect_run",
@@ -1069,8 +1155,10 @@ def main():
     parser.add_argument("--run-metadata-file", default=None, help="Optional JSON file containing structure/direction metadata to embed in the run output")
     parser.add_argument("--only-metadata", action=argparse.BooleanOptionalAction, default=False, help="Capture pre/post-grasp reconstruction metadata only; skip baseline correction and pull trajectory")
     parser.add_argument("--manual-setup", action=argparse.BooleanOptionalAction, default=False, help="Pause without torque mode so the arm can be manually positioned on the apple surface before the pull")
-    parser.add_argument("--debug-pre-grasp", action=argparse.BooleanOptionalAction, default=False, help="Print pre-grasp apple and TCP positions during the run")
+    parser.add_argument("--debug-pre-grasp", action=argparse.BooleanOptionalAction, default=False, help="Print lengthened pre-grasp apple and TCP positions during the run")
     parser.add_argument("--mock-gripper", action=argparse.BooleanOptionalAction, default=False, help="Use a no-op gripper client and never connect to the real gripper")
+    parser.add_argument("--post-grasp-camera-request", default=None, help="Request path used to ask a running detector for the post-grasp snapshot")
+    parser.add_argument("--post-grasp-camera-output", default=None, help="Output path for the running detector post-grasp snapshot")
     args = parser.parse_args()
 
     if args.num_directions < 1:
@@ -1227,8 +1315,8 @@ def main():
         print("The robot will stay idle with torque mode off.")
         print("Moving to home first so the robot state stream is initialized.")
         robot.reset_to_start_pose(home_pose_4x4)
-        print("Move the arm to the desired apple surface contact point, then press Enter.")
-        input("Press Enter once the arm is positioned on the apple: ")
+        print("Lengthen the apple/structure so the segment angles and lengths are visible, then press Enter.")
+        input("Press Enter once the lengthened snapshot is ready: ")
         robot.refresh_state_snapshot()
         manual_snap = robot.get_state_snapshot()
         pull_start_pose_4x4 = _tcp_pose_4x4_from_snapshot(manual_snap)

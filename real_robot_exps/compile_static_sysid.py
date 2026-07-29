@@ -563,22 +563,27 @@ def compile_static_episode(
         output_rows,
         schema=_unified_schema(n_holds, n_directions),
     )
-    post_grasp_geometry = {}
+    # Preserve the robot-side post-grasp snapshot, including the camera
+    # snapshot captured after closure. Tracking data is only a fallback for
+    # fields that the robot metadata does not contain.
+    post_grasp_geometry = dict(robot_metadata.get("post_grasp_geometry", {}) or {})
     if output_rows:
         first_row = output_rows[0]
-        post_grasp_geometry = {
-            "timestamp": first_row["timestamp"],
-            "hold_index": first_row["hold_index"],
-            "hold_step_idx": first_row["hold_step_idx"],
-            "tcp_pos": first_row["tcp_pos"],
-            "tcp_pose_4x4": first_row["tcp_pose_4x4"],
-            "target_pose_4x4": first_row["target_pose_4x4"],
-            "apple_pos": first_row["apple_pos"],
-            "apple_pose_4x4": first_row["apple_pose_4x4"],
-            "woody_part_start_pos": first_row["woody_part_start_pos"],
-            "woody_part_end_pos": first_row["woody_part_end_pos"],
-            "woody_bending_angles": first_row["woody_bending_angles"],
+        tracking_post_geometry = {
+            "tracking_timestamp": first_row["timestamp"],
+            "tracking_hold_index": first_row["hold_index"],
+            "tracking_hold_step_idx": first_row["hold_step_idx"],
+            "tracking_tcp_pos": first_row["tcp_pos"],
+            "tracking_tcp_pose_4x4": first_row["tcp_pose_4x4"],
+            "tracking_target_pose_4x4": first_row["target_pose_4x4"],
+            "tracking_apple_pos": first_row["apple_pos"],
+            "tracking_apple_pose_4x4": first_row["apple_pose_4x4"],
+            "tracking_woody_part_start_pos": first_row["woody_part_start_pos"],
+            "tracking_woody_part_end_pos": first_row["woody_part_end_pos"],
+            "tracking_woody_bending_angles": first_row["woody_bending_angles"],
         }
+        for key, value in tracking_post_geometry.items():
+            post_grasp_geometry.setdefault(key, value)
     rest_snapshot_during_run = {
         "timestamp": rest_timestamp,
         "tcp_pos": robot_rows[0]["tcp_pos"],
@@ -594,7 +599,15 @@ def compile_static_episode(
     }
     pre_grasp_geometry = dict(robot_metadata.get("pre_grasp_geometry", {}) or {})
     if not pre_grasp_geometry.get("snapshot"):
-        pre_grasp_geometry["snapshot"] = pre_grasp_geometry.get("settled_snapshot", rest_snapshot_during_run)
+        pre_grasp_geometry["snapshot"] = (
+            pre_grasp_geometry.get("lengthened_snapshot")
+            or pre_grasp_geometry.get("settled_snapshot")
+            or rest_snapshot_during_run
+        )
+    pre_grasp_geometry.setdefault(
+        "under_gravity_snapshot",
+        pre_grasp_geometry.get("settled_snapshot", {}),
+    )
     pre_grasp_geometry["rest_snapshot_during_run"] = rest_snapshot_during_run
     metadata_dump = {
         **robot_metadata,

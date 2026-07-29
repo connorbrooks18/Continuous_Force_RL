@@ -8,16 +8,17 @@ README.
 - `baseline`: records an unloaded dynamic baseline for the same trajectory.
 - `collect`: records the loaded trial and subtracts the matching baseline when
   dynamic correction is enabled.
-- `collect --only-metadata`: captures settled pre-grasp geometry and a
+- `collect --only-metadata`: captures under-gravity and lengthened pre-grasp geometry plus a
   post-grasp reconstruction snapshot without running the pull trajectory or
   applying a baseline.
 
-The runner (`real_robot_exps.runner`) now captures the settled apple snapshot
-before checking for missing baselines. That settled snapshot is reused by both
-the baseline pass and the collect pass so they target the same structure state.
-The dynamic pre-grasp target uses the apple center in the Franka base frame
-minus one apple radius along base Y, which keeps the start pose definition
-simple. The camera/base calibration helper
+The runner captures an under-gravity snapshot and then a lengthened snapshot
+before checking for missing baselines. The lengthened snapshot is the canonical
+pre-grasp geometry and remains available through the backward-compatible
+`pre_grasp_geometry.snapshot` field. The natural snapshot is retained as both
+`settled_snapshot` and `under_gravity_snapshot`. The dynamic pre-grasp target
+uses the lengthened apple center in the Franka base frame minus one apple
+radius along base Y. The camera/base calibration helper
 [`real_robot_exps.remake_translation_matrix`](/home/skand/connor/Continuous_Force_RL/real_robot_exps/remake_translation_matrix.py)
 recomputes the reference-tag-to-base translation from live detections and the
 current TCP reading. It assumes the TCP sits `4 cm` negative `Y` of the apple
@@ -25,7 +26,8 @@ center in base frame unless you override `--apple-to-tcp-distance-m`, and it
 prints the solved translation plus the full `4x4` matrix to the terminal.
 `apple_pullto_static.py --manual-setup` is the manual alternative: it keeps
 torque mode off while you move the arm onto the apple surface, then records the
-current TCP pose as the run's start pose and metadata.
+current TCP pose as a separate pull-start record without overwriting the
+lengthened camera snapshot.
 For camera/base calibration, `real_robot_exps.calibrate_camera_to_base` reads
 the eye-on-base `.calib` file as the camera pose in the Franka base frame and
 prints the ready-to-paste `CAMERA_TO_BASE_4X4_DEFAULT` candidate.
@@ -118,7 +120,11 @@ USE_CLOSE_PULL_START_POSE = False
 
 ## AprilTag / camera notes
 
-- `Detecting.py` is the standalone tracking process.
+- `Detecting.py` is the standalone tracking process and the sole RealSense
+  owner during runner-based collection.
+- After grasp closure, `apple_pullto_static.py` requests a one-shot snapshot
+  from that existing detector so the apple’s moved post-grasp position is
+  captured without opening a second RealSense pipeline.
 - `Replay.py` reprojects compiled unified data back onto the live feed.
 - The camera pipeline stores tag-frame information and the compiler converts it
   into the Franka base frame before saving the unified Parquet.

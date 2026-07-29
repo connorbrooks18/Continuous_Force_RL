@@ -93,10 +93,11 @@ def _normalized_pre_grasp_geometry(structure_index: int, structure: dict[str, An
         "structure_name": structure.get("name", f"structure_{int(structure_index):02d}"),
         "angles_source": structure.get("angles_source", ""),
         "geometry_source": structure.get("geometry_source", ""),
-        "note": "Manual structure catalog plus settled/lengthened camera snapshots.",
+        "note": "Manual structure catalog plus a lengthened camera snapshot for angle/length estimation.",
         "parts": out,
         "snapshot": {},
         "settled_snapshot": {},
+        "under_gravity_snapshot": {},
         "lengthened_snapshot": {},
     }
 
@@ -133,7 +134,7 @@ def _build_run_metadata(
         "dump": {
             "structure_catalog_entry": structure,
             "direction_entry": direction,
-            "note": "structure index selects the manual geometry package; angles are only derived from the lengthened-state check prompt",
+            "note": "structure index selects the manual geometry package; angles and segment lengths come from the lengthened-state capture prompt",
         },
     }
 
@@ -175,6 +176,8 @@ def _run_one(
     tracking_path = _run_output_path(args.output_dir / f"{run_id}_tracking.parquet")
     unified_path = _run_output_path(args.output_dir / f"{run_id}.parquet")
     metadata_path = _run_output_path(args.output_dir / f"{run_id}_metadata.tmp.json")
+    post_snapshot_request_path = _run_output_path(args.output_dir / f"{run_id}_post_grasp_camera.request")
+    post_snapshot_output_path = _run_output_path(args.output_dir / f"{run_id}_post_grasp_camera.json")
     detector_proc = None
     baseline_path_for_collect = expected_baseline
 
@@ -202,6 +205,10 @@ def _run_one(
             "--output",
             str(tracking_path),
             "--headless",
+            "--snapshot-request",
+            str(post_snapshot_request_path),
+            "--snapshot-output",
+            str(post_snapshot_output_path),
         ]
         if args.detector_extra_args:
             detector_cmd.extend(args.detector_extra_args)
@@ -245,6 +252,13 @@ def _run_one(
         robot_cmd.append("--debug-pre-grasp")
     if args.mock_gripper:
         robot_cmd.append("--mock-gripper")
+    if args.start_detector:
+        robot_cmd.extend([
+            "--post-grasp-camera-request",
+            str(post_snapshot_request_path),
+            "--post-grasp-camera-output",
+            str(post_snapshot_output_path),
+        ])
 
     print(f"\n=== Running {run_id} ===")
     print(" ".join(robot_cmd))
@@ -259,6 +273,8 @@ def _run_one(
             except subprocess.TimeoutExpired:
                 detector_proc.kill()
                 detector_proc.wait(timeout=10.0)
+    post_snapshot_request_path.unlink(missing_ok=True)
+    post_snapshot_output_path.unlink(missing_ok=True)
     duration = time.time() - start
     if metadata_path.exists():
         metadata_path.unlink()
@@ -512,12 +528,18 @@ def main() -> None:
     pre_grasp_geometry = _normalized_pre_grasp_geometry(structure_index, structure)
 
     if args.mode == "collect":
-        input("Let the apple settle naturally in its starting state, then press Enter to capture the settled snapshot...")
-        settled_snapshot = _capture_snapshot_via_subprocess()
+        input("Let the apple/structure settle naturally under gravity, then press Enter to capture that snapshot...")
+        under_gravity_snapshot = _capture_snapshot_via_subprocess()
+        input(
+            "Now lengthen the apple/structure so the connection angles and segment lengths are visible, "
+            "then press Enter to capture the lengthened snapshot..."
+        )
+        lengthened_snapshot = _capture_snapshot_via_subprocess()
         pre_grasp_geometry = update_pre_grasp_geometry_with_snapshots(
             pre_grasp_geometry,
-            settled_snapshot=settled_snapshot,
-            lengthened_snapshot={},
+            lengthened_snapshot=lengthened_snapshot,
+            settled_snapshot=under_gravity_snapshot,
+            under_gravity_snapshot=under_gravity_snapshot,
         )
 
     output_dir = args.output_dir

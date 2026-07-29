@@ -335,6 +335,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                     _pack_state(state, [0.0] * 6, jac_flat, mass_flat, gravity)
                     state_ready.set()
 
+                    ctrl = None
                     robot.stop()
                     time.sleep(0.5)
                     response_queue.put(("reset_done", None))
@@ -352,7 +353,26 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
             elif cmd[0] == "start_torque":
                 log_trajectory = cmd[1] if len(cmd) > 1 else False
 
-                ctrl = robot.start_torque_control()
+                ctrl = None
+                last_start_error = None
+                for attempt in range(3):
+                    try:
+                        ctrl = robot.start_torque_control()
+                        break
+                    except Exception as e:
+                        last_start_error = e
+                        sys.stdout.write(
+                            f"[COMM PROCESS] start_torque_control attempt {attempt + 1}/3 failed: {e}\r\n"
+                        )
+                        sys.stdout.flush()
+                        try:
+                            robot.stop()
+                        except Exception:
+                            pass
+                        time.sleep(0.5)
+                if ctrl is None:
+                    response_queue.put(("error", str(last_start_error)))
+                    continue
 
                 # Warmup (1 step)
                 state, _ = ctrl.readOnce()
@@ -527,6 +547,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                         ctrl.writeOnce(pose_cmd)
                         state, _ = ctrl.readOnce()
 
+                    ctrl = None
                     robot.stop()
                     time.sleep(0.5)
                     response_queue.put(("retract_done", None))
@@ -552,6 +573,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                     _pack_state(state, [0.0] * 6, jac_flat, mass_flat, gravity)
                     state_ready.set()
 
+                    ctrl = None
                     robot.stop()
                     time.sleep(0.25)
                     response_queue.put(("sample_state_done", None))
@@ -587,6 +609,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                     ctrl.writeOnce(jcmd)
                     state, _ = ctrl.readOnce()
 
+                ctrl = None
                 robot.stop()
                 time.sleep(0.5)
                 response_queue.put(("move_done", None))
@@ -626,6 +649,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                     jcmd.motion_finished = True
                     ctrl.writeOnce(jcmd)
 
+                    ctrl = None
                     robot.stop()
                     time.sleep(0.5)
                     response_queue.put(("calibrate_ft_done", mean_bias))

@@ -16,7 +16,7 @@ class DynamicPullPoseTest(unittest.TestCase):
                         "radius_m": 0.035,
                     }
                 },
-                "settled_snapshot": {
+                "lengthened_snapshot": {
                     "apple_pos": [0.4, 0.5, 0.6],
                 },
             }
@@ -25,7 +25,7 @@ class DynamicPullPoseTest(unittest.TestCase):
         pose, name, radius_m = _load_dynamic_pull_start_pose(run_metadata, fallback)
 
         np.testing.assert_allclose(pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
-        self.assertEqual(name, "settled_snapshot_apple_center_plus_apple_radius_base_y_offset")
+        self.assertEqual(name, "lengthened_snapshot_apple_center_plus_apple_radius_base_y_offset")
         self.assertEqual(radius_m, 0.035)
 
     def test_falls_back_when_snapshot_or_radius_missing(self):

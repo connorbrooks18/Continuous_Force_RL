@@ -234,21 +234,33 @@ def capture_structure_snapshot(
 def update_pre_grasp_geometry_with_snapshots(
     pre_grasp_geometry: dict[str, Any],
     *,
-    settled_snapshot: dict[str, Any],
     lengthened_snapshot: dict[str, Any] | None = None,
+    settled_snapshot: dict[str, Any] | None = None,
+    under_gravity_snapshot: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    """Attach snapshot metadata to the pre-grasp geometry block.
+
+    The lengthened snapshot is the canonical pre-grasp snapshot used for
+    angles and segment-length estimation. `snapshot` remains its compatibility
+    field. The settled and under-gravity snapshots describe the same natural,
+    unloaded structure state; both fields are retained for explicitness.
+    """
     out = json.loads(json.dumps(pre_grasp_geometry))
-    out["settled_snapshot"] = settled_snapshot
-    out["lengthened_snapshot"] = lengthened_snapshot or {}
-    out["snapshot"] = settled_snapshot
+    canonical_lengthened = lengthened_snapshot or pre_grasp_geometry.get("snapshot", {}) or {}
+    legacy_settled = settled_snapshot or under_gravity_snapshot or pre_grasp_geometry.get("settled_snapshot", {}) or {}
+    canonical_under_gravity = under_gravity_snapshot or settled_snapshot or pre_grasp_geometry.get("under_gravity_snapshot", {}) or {}
+    out["lengthened_snapshot"] = canonical_lengthened
+    out["settled_snapshot"] = legacy_settled
+    out["under_gravity_snapshot"] = canonical_under_gravity
+    out["snapshot"] = canonical_lengthened
 
     parts = out.setdefault("parts", {})
     if "primary" in parts:
         parts["primary"]["connection_rpy_deg"] = [0.0, 0.0, 0.0]
-    if lengthened_snapshot and all(key in lengthened_snapshot for key in ("branch_pos", "spur_pos", "apple_pos")):
-        branch = np.asarray(lengthened_snapshot["branch_pos"], dtype=np.float64)
-        spur = np.asarray(lengthened_snapshot["spur_pos"], dtype=np.float64)
-        apple = np.asarray(lengthened_snapshot["apple_pos"], dtype=np.float64)
+    if canonical_lengthened and all(key in canonical_lengthened for key in ("branch_pos", "spur_pos", "apple_pos")):
+        branch = np.asarray(canonical_lengthened["branch_pos"], dtype=np.float64)
+        spur = np.asarray(canonical_lengthened["spur_pos"], dtype=np.float64)
+        apple = np.asarray(canonical_lengthened["apple_pos"], dtype=np.float64)
         spur_vec = spur - branch
         stem_vec = apple - spur
         if "spur" in parts:
@@ -259,7 +271,7 @@ def update_pre_grasp_geometry_with_snapshots(
             parts["stem"]["connection_source"] = "lengthened_snapshot"
     if "apple" in parts:
         parts["apple"]["connection_rpy_deg"] = [0.0, 0.0, 0.0]
-        parts["apple"]["connection_source"] = "settled_snapshot"
+        parts["apple"]["connection_source"] = "lengthened_snapshot"
     return out
 
 

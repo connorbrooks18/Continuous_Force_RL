@@ -4,10 +4,11 @@ This repository collects apple-pull data from a Franka arm, optional AprilTag
 tracking, and unified Parquet files for reconstruction and analysis.
 
 The main entry point is [`real_robot_exps.runner`](/home/skand/connor/Continuous_Force_RL/real_robot_exps/runner.py).
-It now assumes the apple is present first, captures a settled pre-grasp camera
-snapshot, uses that snapshot to build the dynamic apple start pose from the
-apple center plus one apple radius along base-frame Y, and only then decides whether a
-structure-specific baseline must be collected.
+It captures both the natural under-gravity structure and a lengthened
+structure before the arm approaches. The lengthened snapshot remains available
+through the compatibility field `pre_grasp_geometry.snapshot` and is used to
+build the dynamic apple start pose from the apple center plus one apple radius
+along base-frame Y.
 
 ## Main workflows
 
@@ -29,7 +30,7 @@ Useful flags:
 - `--camera-ema-alpha 0.3` enables light camera smoothing during unified compile.
 - `--no-start-detector` disables the AprilTag tracking subprocess.
 - `--no-expect-tracking` skips unified compile and PNG generation.
-- `--only-metadata` skips baseline generation and the pull trajectory, but still captures settled geometry and post-grasp reconstruction data.
+- `--only-metadata` skips baseline generation and the pull trajectory, but still captures under-gravity, lengthened, and post-grasp reconstruction data.
 - `--manual-setup` pauses with torque mode off so you can physically place the arm on the apple surface before the pull starts.
 
 ## Current runner behavior
@@ -37,12 +38,12 @@ Useful flags:
 For a normal `collect` run, the runner does this:
 
 1. prompts for the structure,
-2. asks for the apple in its settled starting state,
-3. captures the settled snapshot,
-4. uses that snapshot to define the dynamic apple pose,
-5. checks for missing baseline files for that structure and direction,
-6. if needed, asks you to remove the apple and runs those baselines,
-7. runs the actual tracked collection,
+2. asks for the natural under-gravity state and captures it,
+3. asks you to lengthen the apple/structure and captures connection angles and lengths,
+4. checks for missing baseline files for that structure and direction,
+5. if needed, asks you to remove the apple and runs those baselines,
+6. runs the tracked collection,
+7. after grasp closure, requests a fresh camera snapshot from the running detector,
 8. compiles the unified Parquet and saves a PNG.
 
 Baseline files are structure-specific, for example:
@@ -66,6 +67,15 @@ Unified Parquet files contain:
 - timestamp alignment fields,
 - `pre_grasp_geometry`,
 - `post_grasp_geometry`.
+
+The complete file and metadata contract is documented in
+[PARQUET_DATA.md](/home/skand/connor/Continuous_Force_RL/PARQUET_DATA.md).
+
+The pre-grasp camera snapshot is captured before the arm approaches and does
+not contain a TCP position. The pull-start TCP is stored separately as
+`pre_grasp_geometry.robot_snapshot`. The post-grasp block contains both a
+measured TCP state and a fresh camera snapshot taken after the apple has moved
+with the grasp.
 
 Important convention: `ft_wrist` force components are in the end-effector
 frame, while torque components, TCP pose, and camera-derived geometry are in
@@ -117,3 +127,4 @@ prints a ready-to-paste
 
 - Dense implementation notes: [REFERENCE.md](/home/skand/connor/Continuous_Force_RL/REFERENCE.md)
 - Geometry-data collection instructions: [GEOMETRY_COLLECTION.md](/home/skand/connor/Continuous_Force_RL/GEOMETRY_COLLECTION.md)
+- Parquet schema and metadata reference: [PARQUET_DATA.md](/home/skand/connor/Continuous_Force_RL/PARQUET_DATA.md)
