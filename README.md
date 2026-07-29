@@ -108,10 +108,10 @@ python -m real_robot_exps.remake_translation_matrix --apple-to-tcp-distance-m 0.
 ```
 
 For the camera-to-base calibration path, use
-`real_robot_exps.calibrate_reference_tag_to_base`. It prompts for the camera
-pose in the robot base frame, captures the reference AprilTag pose in the live
-camera, and prints a ready-to-paste `REFERENCE_TAG_TO_BASE_4X4_DEFAULT`
-matrix.
+`real_robot_exps.calibrate_camera_to_base`. It reads the eye-on-base hand-eye
+solution from the `.calib` file as the camera pose in the base frame and
+prints a ready-to-paste
+`CAMERA_TO_BASE_4X4_DEFAULT` matrix.
 
 ## Extra references
 

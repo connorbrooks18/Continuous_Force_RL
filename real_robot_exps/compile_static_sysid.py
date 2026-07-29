@@ -1,8 +1,9 @@
 """Compile separately recorded robot and AprilTag data into one episode Parquet.
 
 Both inputs use Unix wall-clock seconds from ``time.time()``. Robot measurements
-remain at the robot policy rate. A small median-filtered camera estimate is
-attached to every robot row in the corresponding static hold.
+remain at the robot policy rate. The tracking Parquet is expected to already be
+expressed in the Franka base frame, so the compiler only aligns timestamps and
+aggregates geometry; it does not apply any camera-to-base calibration.
 
 Usage:
     python -m real_robot_exps.compile_static_sysid \
@@ -29,9 +30,6 @@ import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
-
-from real_robot_exps.static_constants import REFERENCE_TAG_TO_BASE_4X4_DEFAULT
-
 
 SCHEMA_NAME = "real_static_sysid_episode"
 SCHEMA_VERSION = "1.0.0"
@@ -103,6 +101,36 @@ def _load_tracking_frames(path: Path) -> pd.DataFrame:
     if tracking.empty:
         raise ValueError("Tracking input contains no complete valid Branch/Spur/Apple frames")
     return tracking.sort_values("timestamp").reset_index(drop=True)
+
+
+def _require_tracking_frame_base(metadata: dict[str, Any], path: Path) -> None:
+    frame = str(metadata.get("coordinate_frame", "")).strip()
+    if frame not in {"franka_base_o", "franka_base_o_frame"}:
+        raise ValueError(
+            f"Tracking input {path} must already be expressed in Franka base frame; "
+            f"got coordinate_frame={frame!r}"
+        )
+
+
+def _require_reference_tag_calibration(metadata: dict[str, Any], path: Path) -> np.ndarray:
+    tag_to_base = metadata.get("reference_tag_to_base_4x4_used")
+    if tag_to_base is None:
+        tag_to_base = metadata.get("reference_tag_to_base_4x4")
+    if tag_to_base is None:
+        raise ValueError(
+            f"Tracking input {path} is missing reference_tag_to_base_4x4_used metadata; "
+            "record tracking with the reference tag visible."
+        )
+    tag_to_base = np.asarray(tag_to_base, dtype=np.float64)
+    if tag_to_base.shape != (4, 4) or not np.isfinite(tag_to_base).all():
+        raise ValueError(
+            f"Tracking input {path} has invalid reference_tag_to_base_4x4_used metadata"
+        )
+    if abs(float(np.linalg.det(tag_to_base[:3, :3]))) < 1e-10:
+        raise ValueError(
+            f"Tracking input {path} has a non-invertible reference_tag_to_base_4x4_used rotation"
+        )
+    return tag_to_base
 
 
 def _select_frames(
@@ -240,19 +268,11 @@ def _make_transform(pos: np.ndarray, quat_xyzw: np.ndarray) -> np.ndarray:
     return T
 
 
-def _transform_tracking_geometry(
+def _identity_tracking_geometry(
     positions: dict[str, np.ndarray],
     poses: dict[str, np.ndarray],
-    tag_to_base_T: np.ndarray,
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
-    base_positions: dict[str, np.ndarray] = {}
-    base_poses: dict[str, np.ndarray] = {}
-    for name in TRACKED_NAMES:
-        tag_pose = poses[name]
-        base_pose = tag_to_base_T @ tag_pose
-        base_positions[name] = base_pose[:3, 3].copy()
-        base_poses[name] = base_pose
-    return base_positions, base_poses
+    return positions, poses
 
 
 def _endpoints(positions: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -343,7 +363,6 @@ def compile_static_episode(
     camera_frame_count: int = 5,
     max_camera_delta_s: float = 1.0,
     camera_ema_alpha: float = 1.0,
-    reference_tag_to_base_4x4: np.ndarray | None = None,
     command_argv: list[str] | None = None,
 ) -> Path:
     robot_path = Path(robot_path)
@@ -377,15 +396,9 @@ def compile_static_episode(
             except json.JSONDecodeError:
                 pass
     tracking_metadata = _read_dataset_metadata(tracking_path)
+    _require_tracking_frame_base(tracking_metadata, tracking_path)
+    reference_tag_to_base_4x4 = _require_reference_tag_calibration(tracking_metadata, tracking_path)
     camera_frames = _load_tracking_frames(tracking_path)
-
-    tag_to_base_was_explicit = reference_tag_to_base_4x4 is not None
-    if reference_tag_to_base_4x4 is None:
-        reference_tag_to_base_4x4 = np.asarray(
-            tracking_metadata.get("reference_tag_to_base_4x4", REFERENCE_TAG_TO_BASE_4X4_DEFAULT),
-            dtype=np.float64,
-        )
-    reference_tag_to_base_4x4 = np.asarray(reference_tag_to_base_4x4, dtype=np.float64).reshape(4, 4)
 
     rest_timestamp = float(
         robot_metadata.get(
@@ -406,8 +419,8 @@ def compile_static_episode(
         pose_rows = rest_frames[rest_frames["name"] == name][["qx", "qy", "qz", "qw"]].to_numpy()
         quat = np.median(pose_rows.astype(np.float64), axis=0)
         rest_poses_tag[name] = _make_transform(rest_positions_tag[name], quat)
-    rest_positions, rest_poses = _transform_tracking_geometry(
-        rest_positions_tag, rest_poses_tag, reference_tag_to_base_4x4
+    rest_positions, rest_poses = _identity_tracking_geometry(
+        rest_positions_tag, rest_poses_tag
     )
     rest_starts, rest_ends, rest_chords = _endpoints(rest_positions)
 
@@ -436,8 +449,8 @@ def compile_static_episode(
             pose_rows = selected[selected["name"] == name][["qx", "qy", "qz", "qw"]].to_numpy()
             quat = np.median(pose_rows.astype(np.float64), axis=0)
             poses_tag[name] = _make_transform(positions_tag[name], quat)
-        positions, poses = _transform_tracking_geometry(
-            positions_tag, poses_tag, reference_tag_to_base_4x4
+        positions, poses = _identity_tracking_geometry(
+            positions_tag, poses_tag
         )
         starts, ends, chords = _endpoints(positions)
         bending = _chord_deflections(chords, rest_chords)
@@ -486,8 +499,8 @@ def compile_static_episode(
             pose_rows = selected[selected["name"] == name][["qx", "qy", "qz", "qw"]].to_numpy()
             quat = np.median(pose_rows.astype(np.float64), axis=0)
             poses_tag[name] = _make_transform(positions_tag[name], quat)
-        positions, poses = _transform_tracking_geometry(
-            positions_tag, poses_tag, reference_tag_to_base_4x4
+        positions, poses = _identity_tracking_geometry(
+            positions_tag, poses_tag
         )
         starts, ends, chords = _endpoints(positions)
         bending = _chord_deflections(chords, rest_chords)
@@ -598,8 +611,7 @@ def compile_static_episode(
             "robot_dump": robot_metadata.get("dump", {}),
             "pre_grasp_geometry": robot_metadata.get("pre_grasp_geometry", {}),
             "post_grasp_geometry": robot_metadata.get("post_grasp_geometry", {}),
-            "tracking_reference_tag_is_fruiting_base": tracking_metadata.get("reference_tag_is_fruiting_base"),
-            "tracking_reference_tag_to_base_note": tracking_metadata.get("reference_tag_to_base_note"),
+            "tracking_coordinate_frame": tracking_metadata.get("coordinate_frame"),
         },
         "field_layout": {
             "ft_wrist": {"dim": 6, "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"]},
@@ -658,12 +670,14 @@ def compile_static_episode(
         "schema_name": SCHEMA_NAME,
         "schema_version": SCHEMA_VERSION,
         "created_utc": datetime.now(timezone.utc).isoformat(),
-        "coordinate_frame": "reference_apriltag",
+        "coordinate_frame": "franka_base_o",
         "data_frame": "franka_base_o_frame",
         "position_unit": "m",
         "angle_unit": "rad",
         "timestamp_clock": "Unix wall clock from time.time() on the shared host",
         "timestamp_unit": "seconds",
+        "camera_to_base_4x4_used": tracking_metadata.get("camera_to_base_4x4_used"),
+        "reference_tag_to_base_4x4_used": reference_tag_to_base_4x4.tolist(),
         "topology": {
             "node_order": ["Branch", "Spur", "Apple"],
             "junction_names": list(WOODY_PART_NAMES),
@@ -672,13 +686,6 @@ def compile_static_episode(
             "end_nodes": ["Spur", "Apple", "Apple"],
             "shared_endpoints": True,
         },
-        "reference_tag_to_base_4x4_used": reference_tag_to_base_4x4.tolist(),
-        "reference_tag_to_base_4x4": reference_tag_to_base_4x4.tolist(),
-        "reference_tag_to_base_source": (
-            "explicit compiler argument"
-            if tag_to_base_was_explicit
-            else "hardcoded default in compile_static_sysid.py"
-        ),
         "bending_definition": (
             "Per-part unsigned chord deflection from frame-0/rest: "
             "acos(clip(dot(chord_t,chord_0)/(|chord_t||chord_0|),-1,1))"
@@ -729,19 +736,7 @@ def main() -> None:
         default=1.0,
         help="EMA alpha for smoothing camera geometry; 1.0 disables smoothing",
     )
-    parser.add_argument(
-        "--reference-tag-to-base-pos",
-        type=float,
-        nargs=3,
-        metavar=("X", "Y", "Z"),
-        default=None,
-        help="Override reference-tag origin position in the Franka base frame",
-    )
     args = parser.parse_args()
-    reference_tag_to_base_4x4 = None
-    if args.reference_tag_to_base_pos is not None:
-        reference_tag_to_base_4x4 = np.eye(4, dtype=np.float64)
-        reference_tag_to_base_4x4[:3, 3] = np.asarray(args.reference_tag_to_base_pos, dtype=np.float64)
     output = compile_static_episode(
         args.robot,
         args.tracking,
@@ -749,7 +744,6 @@ def main() -> None:
         camera_frame_count=args.camera_frames,
         max_camera_delta_s=args.max_camera_delta,
         camera_ema_alpha=args.camera_ema_alpha,
-        reference_tag_to_base_4x4=reference_tag_to_base_4x4,
         command_argv=sys.argv,
     )
     print(f"Wrote unified static system-ID episode to {output}")

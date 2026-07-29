@@ -26,13 +26,13 @@ import yaml
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from real_robot_exps.pro_robot_interface import FrankaInterface, StateSnapshot
-from real_robot_exps.observation_builder import ObservationBuilder, OBS_DIM_MAP
-from eval.pro_real_robot_eval import (
-    load_real_robot_config,
-    sanitize_tag,
-    load_from_cache,
-    reconstruct_obs_order,
-)
+#from real_robot_exps.observation_builder import ObservationBuilder, OBS_DIM_MAP
+# from eval.pro_real_robot_eval import (
+#     load_real_robot_config,
+#     sanitize_tag,
+#     load_from_cache,
+#     reconstruct_obs_order,
+# )
 
 
 def print_snapshot(snap: StateSnapshot):

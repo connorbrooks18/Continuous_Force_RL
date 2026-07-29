@@ -73,6 +73,8 @@ class CompileStaticSysidTest(unittest.TestCase):
                     })
             _write_with_metadata(tracking_path, tracking_rows, {
                 "reference_tag_is_fruiting_base": True,
+                "coordinate_frame": "franka_base_o",
+                "reference_tag_to_base_4x4_used": np.eye(4, dtype=np.float64).tolist(),
             })
 
             compile_static_episode(
@@ -105,6 +107,8 @@ class CompileStaticSysidTest(unittest.TestCase):
             self.assertEqual(metadata["topology"]["n_woody_parts"], 3)
             self.assertEqual(metadata["topology"]["node_order"], ["Branch", "Spur", "Apple"])
             self.assertEqual(metadata["camera_aggregation"]["requested_frame_count"], 2)
+            self.assertEqual(metadata["coordinate_frame"], "franka_base_o")
+            self.assertEqual(metadata["reference_tag_to_base_4x4_used"], np.eye(4).tolist())
             self.assertIn("source_files", metadata)
             self.assertIn("source_metadata_summary", metadata)
             self.assertIn("tau_J_d", output.schema.names)
@@ -112,6 +116,58 @@ class CompileStaticSysidTest(unittest.TestCase):
             self.assertIn("tcp_pose_4x4", output.schema.names)
             self.assertIn("target_pose_4x4", output.schema.names)
             self.assertIn("sample_label", output.schema.names)
+
+    def test_rejects_tracking_files_not_in_base_frame(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            robot_path = tmp / "robot.parquet"
+            tracking_path = tmp / "tracking.parquet"
+            output_path = tmp / "unified.parquet"
+
+            robot_rows = [{
+                "timestamp": 101.0,
+                "hold_step_idx": 0,
+                "hold_index": 0,
+                "ft_wrist": np.zeros(6, dtype=np.float32),
+                "tau_J_d": np.zeros(7, dtype=np.float32),
+                "joint_pos": np.zeros(7, dtype=np.float32),
+                "tcp_velocity": np.zeros(6, dtype=np.float32),
+                "action": np.zeros(6, dtype=np.float32),
+                "tcp_pos": np.zeros(3, dtype=np.float32),
+                "tcp_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
+                "target_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
+                "hold_number": np.array([1.0], dtype=np.float32),
+                "direction": np.array([1.0], dtype=np.float32),
+                "phase": 1,
+                "phase_name": "hold",
+                "sample_label": "hold",
+                "amplitude_m": 0.01,
+                "excitation_direction": np.zeros(3, dtype=np.float32),
+            }]
+            _write_with_metadata(robot_path, robot_rows, {"episode_id": "episode-test"})
+
+            tracking_rows = []
+            for name in ("Branch", "Spur", "Apple"):
+                tracking_rows.append({
+                    "timestamp": 101.0,
+                    "name": name,
+                    "x": 1.0, "y": 0.0, "z": 0.0,
+                    "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0,
+                })
+            _write_with_metadata(tracking_path, tracking_rows, {
+                "coordinate_frame": "camera_color_optical_frame",
+                "reference_tag_to_base_4x4_used": np.eye(4, dtype=np.float64).tolist(),
+            })
+
+            with self.assertRaises(ValueError):
+                compile_static_episode(
+                    robot_path,
+                    tracking_path,
+                    output_path,
+                    camera_frame_count=1,
+                    max_camera_delta_s=0.25,
+                    command_argv=["test"],
+                )
 
 
 if __name__ == "__main__":

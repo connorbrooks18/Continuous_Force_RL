@@ -116,6 +116,7 @@ def _build_run_metadata(
     pre_grasp_geometry: dict[str, Any],
     kp: float,
     manual_setup: bool,
+    debug_pre_grasp: bool,
 ) -> dict[str, Any]:
     return {
         "structure_index": structure_index,
@@ -128,6 +129,7 @@ def _build_run_metadata(
         "pre_grasp_geometry": pre_grasp_geometry,
         "post_grasp_geometry": {},
         "manual_setup": bool(manual_setup),
+        "debug_pre_grasp": bool(debug_pre_grasp),
         "dump": {
             "structure_catalog_entry": structure,
             "direction_entry": direction,
@@ -184,6 +186,7 @@ def _run_one(
         pre_grasp_geometry=pre_grasp_geometry,
         kp=float(args.kp),
         manual_setup=bool(args.manual_setup),
+        debug_pre_grasp=bool(args.debug_pre_grasp),
     )
     _write_json(metadata_path, run_metadata)
     baseline_cmd = None
@@ -238,6 +241,10 @@ def _run_one(
         robot_cmd.append("--only-metadata")
     if args.manual_setup:
         robot_cmd.append("--manual-setup")
+    if args.debug_pre_grasp:
+        robot_cmd.append("--debug-pre-grasp")
+    if args.mock_gripper:
+        robot_cmd.append("--mock-gripper")
 
     print(f"\n=== Running {run_id} ===")
     print(" ".join(robot_cmd))
@@ -374,6 +381,8 @@ def _run_missing_baselines(
             direction=direction,
             pre_grasp_geometry=pre_grasp_geometry,
             kp=float(args.kp),
+            debug_pre_grasp=bool(args.debug_pre_grasp),
+            manual_setup=bool(args.manual_setup),
         )
         _write_json(metadata_path, run_metadata)
         baseline_cmd = [
@@ -403,6 +412,10 @@ def _run_missing_baselines(
             "--run-metadata-file",
             str(metadata_path),
         ]
+        if args.debug_pre_grasp:
+            baseline_cmd.append("--debug-pre-grasp")
+        if args.mock_gripper:
+            baseline_cmd.append("--mock-gripper")
         print("\n=== Running baseline ===")
         print(" ".join(baseline_cmd))
         subprocess.run(baseline_cmd, check=True)
@@ -448,6 +461,18 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Forward manual pull-start setup to apple_pullto_static so the arm can be positioned by hand",
+    )
+    parser.add_argument(
+        "--debug-pre-grasp",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Print pre-grasp apple and TCP positions during each run",
+    )
+    parser.add_argument(
+        "--mock-gripper",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Forward a no-op gripper client to apple_pullto_static so no gripper connection is attempted",
     )
     args = parser.parse_args()
 

@@ -27,7 +27,8 @@ if str(AT_TRACKING_ROOT) not in sys.path:
 
 import Tracker  # noqa: E402
 
-from real_robot_exps.static_constants import REFERENCE_TAG_TO_BASE_4X4_DEFAULT
+from real_robot_exps.frame_transforms import median_pose_4x4, transform_pose_to_base
+from real_robot_exps.static_constants import CAMERA_TO_BASE_4X4_DEFAULT
 
 
 TAG_SIZE_M = 0.0170
@@ -66,13 +67,6 @@ def _quat_xyzw_from_rotmat(R: np.ndarray) -> np.ndarray:
             qz = 0.25 * s
     quat = np.asarray([qx, qy, qz, qw], dtype=np.float64)
     return quat / max(np.linalg.norm(quat), 1e-12)
-
-
-def _make_transform(rotation: np.ndarray, translation: np.ndarray) -> np.ndarray:
-    T = np.eye(4, dtype=np.float64)
-    T[:3, :3] = np.asarray(rotation, dtype=np.float64).reshape(3, 3)
-    T[:3, 3] = np.asarray(translation, dtype=np.float64).reshape(3)
-    return T
 
 
 def _tracker_set() -> list[Any]:
@@ -133,23 +127,6 @@ def _detect_valid_tags(detector, frame, camera_params, decision_margin: float):
     }
 
 
-def _transform_to_reference(tag_dict: dict[int, Any], reference_id: int) -> dict[int, dict[str, np.ndarray]]:
-    ref_tag = tag_dict[reference_id]
-    R_ref_inv = ref_tag.pose_R.T
-    t_ref = ref_tag.pose_t
-    out = {}
-    for tag_id, tag in tag_dict.items():
-        out[tag_id] = {
-            "pos": (R_ref_inv @ (tag.pose_t - t_ref)).reshape(3).astype(np.float64),
-            "rot": (R_ref_inv @ tag.pose_R).astype(np.float64),
-        }
-    return out
-
-
-def _transform_pose_to_base(pose_ref: dict[str, np.ndarray], ref_to_base: np.ndarray) -> np.ndarray:
-    return ref_to_base @ _make_transform(pose_ref["rot"], pose_ref["pos"])
-
-
 def _rpy_deg_from_vector(vec: np.ndarray) -> list[float]:
     vec = np.asarray(vec, dtype=np.float64).reshape(3)
     norm = float(np.linalg.norm(vec))
@@ -161,7 +138,12 @@ def _rpy_deg_from_vector(vec: np.ndarray) -> list[float]:
     return [0.0, pitch, yaw]
 
 
-def _build_snapshot(sample_poses_base: dict[str, list[np.ndarray]], timestamps: list[float], ref_to_base: np.ndarray) -> dict[str, Any]:
+def _build_snapshot(
+    sample_poses_base: dict[str, list[np.ndarray]],
+    timestamps: list[float],
+    camera_to_base: np.ndarray,
+    reference_tag_to_base: np.ndarray | None,
+) -> dict[str, Any]:
     median_poses = {}
     median_positions = {}
     for name in TRACKED_NAMES:
@@ -181,7 +163,12 @@ def _build_snapshot(sample_poses_base: dict[str, list[np.ndarray]], timestamps: 
         "timestamp": float(np.median(np.asarray(timestamps, dtype=np.float64))),
         "camera_selected_timestamps": [float(t) for t in timestamps],
         "camera_frame_count": int(len(timestamps)),
-        "reference_tag_to_base_4x4": np.asarray(ref_to_base, dtype=np.float64).tolist(),
+        "camera_to_base_4x4": np.asarray(camera_to_base, dtype=np.float64).tolist(),
+        "reference_tag_to_base_4x4_used": (
+            np.asarray(reference_tag_to_base, dtype=np.float64).tolist()
+            if reference_tag_to_base is not None
+            else None
+        ),
         "apple_pos": apple.tolist(),
         "apple_pose_4x4": median_poses["Apple"].reshape(-1).tolist(),
         "apple_quat_xyzw": _quat_xyzw_from_rotmat(median_poses["Apple"][:3, :3]).tolist(),
@@ -197,7 +184,7 @@ def _build_snapshot(sample_poses_base: dict[str, list[np.ndarray]], timestamps: 
 
 def capture_structure_snapshot(
     *,
-    reference_tag_to_base_4x4: np.ndarray | None = None,
+    camera_to_base_4x4: np.ndarray | None = None,
     min_complete_frames: int = 5,
     timeout_s: float = 8.0,
     camera_fps: int = 15,
@@ -206,14 +193,15 @@ def capture_structure_snapshot(
     exposure: int = 100,
     decision_margin: float = 3.0,
 ) -> dict[str, Any]:
-    ref_to_base = np.asarray(
-        REFERENCE_TAG_TO_BASE_4X4_DEFAULT if reference_tag_to_base_4x4 is None else reference_tag_to_base_4x4,
+    camera_to_base = np.asarray(
+        CAMERA_TO_BASE_4X4_DEFAULT if camera_to_base_4x4 is None else camera_to_base_4x4,
         dtype=np.float64,
     ).reshape(4, 4)
     trackers = _tracker_set()
     detector = _make_detector()
     pipeline, camera_params = _init_camera(camera_fps, width, height, exposure)
     sample_poses_base = {name: [] for name in TRACKED_NAMES}
+    reference_tag_base_samples: list[np.ndarray] = []
     timestamps: list[float] = []
 
     try:
@@ -225,16 +213,28 @@ def capture_structure_snapshot(
                 continue
             frame = np.asanyarray(color_frame.get_data())
             tag_dict = _detect_valid_tags(detector, frame, camera_params, decision_margin)
-            if REFERENCE_TAG_ID not in tag_dict:
-                continue
-            tags_in_ref = _transform_to_reference(tag_dict, REFERENCE_TAG_ID)
+            tags_in_camera = {
+                tag_id: {
+                    "pos": np.asarray(tag.pose_t, dtype=np.float64).reshape(3),
+                    "rot": np.asarray(tag.pose_R, dtype=np.float64),
+                }
+                for tag_id, tag in tag_dict.items()
+            }
             for tracker in trackers:
-                tracker.updatePose(tags_in_ref)
+                tracker.updatePose(tags_in_camera)
             if any(tracker.pose is None for tracker in trackers):
                 continue
+            if REFERENCE_TAG_ID in tag_dict:
+                ref_tag = tag_dict[REFERENCE_TAG_ID]
+                reference_tag_base_samples.append(
+                    transform_pose_to_base(
+                        {"pos": np.asarray(ref_tag.pose_t, dtype=np.float64).reshape(3), "rot": np.asarray(ref_tag.pose_R, dtype=np.float64)},
+                        camera_to_base=camera_to_base,
+                    )
+                )
             now = time.time()
             for tracker in trackers:
-                pose_base = _transform_pose_to_base(tracker.pose, ref_to_base)
+                pose_base = transform_pose_to_base(tracker.pose, camera_to_base=camera_to_base)
                 sample_poses_base[tracker.name].append(pose_base)
             timestamps.append(now)
         if len(timestamps) < int(min_complete_frames):
@@ -242,7 +242,12 @@ def capture_structure_snapshot(
                 f"Only captured {len(timestamps)} complete frames in {timeout_s:.1f}s; "
                 f"need at least {min_complete_frames}"
             )
-        return _build_snapshot(sample_poses_base, timestamps, ref_to_base)
+        return _build_snapshot(
+            sample_poses_base,
+            timestamps,
+            camera_to_base,
+            median_pose_4x4(reference_tag_base_samples),
+        )
     finally:
         pipeline.stop()
 

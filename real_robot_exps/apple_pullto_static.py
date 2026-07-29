@@ -128,6 +128,11 @@ def _flat_float32(value) -> np.ndarray:
     return np.asarray(value, dtype=np.float32).reshape(-1)
 
 
+def _format_pos_m(value) -> str:
+    vec = np.asarray(value, dtype=np.float64).reshape(3)
+    return np.array2string(vec, precision=3, suppress_small=True)
+
+
 def _append_robot_sample(
     record_rows,
     *,
@@ -724,6 +729,23 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     pre_grasp_snapshot["setup_mode"] = "manual" if manual_setup_enabled else "dynamic"
     pre_grasp_snapshot["manual_setup_enabled"] = manual_setup_enabled
     pre_grasp_snapshot["pull_start_pose_name"] = str(run_args.get("pull_start_pose_name", "unspecified"))
+    if bool(run_args.get("debug_pre_grasp", False)):
+        settled = dict(pre_grasp_geometry or {})
+        settled_snapshot = dict(settled.get("settled_snapshot", {}) or settled.get("snapshot", {}) or {})
+        apple_pos = settled_snapshot.get("apple_pos")
+        pull_start_target_pos = np.asarray(pull_start_pose_4x4[:3, 3], dtype=np.float64)
+        tcp_pos = np.asarray(pre_grasp_snapshot["tcp_pos"], dtype=np.float64)
+        print("\n[pre-grasp debug]")
+        print(f"  pull_start_pose_name: {pre_grasp_snapshot['pull_start_pose_name']}")
+        print(f"  pull_start_target_base_m: {_format_pos_m(pull_start_target_pos)}")
+        print(f"  tcp_pos_base_m: {_format_pos_m(tcp_pos)}")
+        if apple_pos is not None:
+            apple_pos = np.asarray(apple_pos, dtype=np.float64)
+            print(f"  apple_pos_base_m: {_format_pos_m(apple_pos)}")
+            print(f"  tcp_minus_apple_base_m: {_format_pos_m(tcp_pos - apple_pos)}")
+            print(f"  apple_plus_radius_target_base_m: {_format_pos_m(pull_start_target_pos)}")
+        else:
+            print("  apple_pos_base_m: <missing>")
     robot_rows = []
     rest_reference_timestamp = time.time()
     gc.send_request(True)
@@ -1024,14 +1046,6 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
 
 
 def main():
-
-
-    from real_robot_exps.gripper_test import GripperClient
-    gc = GripperClient()
-    
-
-
-
     parser = argparse.ArgumentParser(description="Integrated static apple-pull system-ID collection")
     parser.add_argument("--config", type=str, default="real_robot_exps/config.yaml", help="Real robot config path")
     parser.add_argument("--device", type=str, default="cpu", help="Torch device")
@@ -1055,6 +1069,8 @@ def main():
     parser.add_argument("--run-metadata-file", default=None, help="Optional JSON file containing structure/direction metadata to embed in the run output")
     parser.add_argument("--only-metadata", action=argparse.BooleanOptionalAction, default=False, help="Capture pre/post-grasp reconstruction metadata only; skip baseline correction and pull trajectory")
     parser.add_argument("--manual-setup", action=argparse.BooleanOptionalAction, default=False, help="Pause without torque mode so the arm can be manually positioned on the apple surface before the pull")
+    parser.add_argument("--debug-pre-grasp", action=argparse.BooleanOptionalAction, default=False, help="Print pre-grasp apple and TCP positions during the run")
+    parser.add_argument("--mock-gripper", action=argparse.BooleanOptionalAction, default=False, help="Use a no-op gripper client and never connect to the real gripper")
     args = parser.parse_args()
 
     if args.num_directions < 1:
@@ -1076,6 +1092,9 @@ def main():
     if (mode != "collect") and (mode != "baseline"):
         print("Invalid mode command. Should be 'collect' or 'baseline'")
         sys.exit()
+
+    from real_robot_exps.gripper_test import GripperClient
+    gc = GripperClient(mock=bool(args.mock_gripper))
 
     run_metadata = {}
     if args.run_metadata_file:
@@ -1230,7 +1249,7 @@ def main():
         default_dof_pos = manual_snap.joint_pos.clone()
         print(
             f"Manual pull start selection: {pull_start_pose_name} at "
-            f"{pull_start_pose_4x4[:3, 3].tolist()} m"
+            f"{_format_pos_m(pull_start_pose_4x4[:3, 3])} m"
         )
     else:
         dynamic_pull_pose_4x4, dynamic_pull_pose_name, dynamic_pull_apple_radius_m = _load_dynamic_pull_start_pose(
@@ -1248,7 +1267,7 @@ def main():
             )
         print(
             f"Pull start selection: {pull_start_pose_name} at "
-            f"{pull_start_pose_4x4[:3, 3].tolist()} m"
+            f"{_format_pos_m(pull_start_pose_4x4[:3, 3])} m"
         )
         if dynamic_pull_apple_radius_m is not None:
             print(f"Dynamic apple radius from structure metadata: {dynamic_pull_apple_radius_m:.5f} m")

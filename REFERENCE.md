@@ -26,10 +26,14 @@ prints the solved translation plus the full `4x4` matrix to the terminal.
 `apple_pullto_static.py --manual-setup` is the manual alternative: it keeps
 torque mode off while you move the arm onto the apple surface, then records the
 current TCP pose as the run's start pose and metadata.
-For camera/base calibration, `real_robot_exps.calibrate_reference_tag_to_base`
-prompts for the camera pose in the robot base frame, captures the reference
-tag in the live image, composes base->camera with camera->reference, and
-prints the inverted `REFERENCE_TAG_TO_BASE_4X4_DEFAULT` candidate.
+For camera/base calibration, `real_robot_exps.calibrate_camera_to_base` reads
+the eye-on-base `.calib` file as the camera pose in the Franka base frame and
+prints the ready-to-paste `CAMERA_TO_BASE_4X4_DEFAULT` candidate.
+The live tracker writer now applies that calibration once and emits base-frame
+poses directly, so `compile_static_sysid.py` only aggregates and timestamps the
+tracking data instead of re-transforming it. The compiler now also validates
+that tracking input is already in Franka base frame and refuses to guess if the
+metadata says otherwise.
 
 ## File naming
 
