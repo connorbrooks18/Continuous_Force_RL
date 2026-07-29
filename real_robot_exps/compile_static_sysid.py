@@ -31,6 +31,8 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from real_robot_exps.static_constants import CAMERA_TO_BASE_4X4_DEFAULT
+
 SCHEMA_NAME = "real_static_sysid_episode"
 SCHEMA_VERSION = "1.0.0"
 TRACKED_NAMES = ("Branch", "Spur", "Apple")
@@ -112,25 +114,18 @@ def _require_tracking_frame_base(metadata: dict[str, Any], path: Path) -> None:
         )
 
 
-def _require_reference_tag_calibration(metadata: dict[str, Any], path: Path) -> np.ndarray:
-    tag_to_base = metadata.get("reference_tag_to_base_4x4_used")
-    if tag_to_base is None:
-        tag_to_base = metadata.get("reference_tag_to_base_4x4")
-    if tag_to_base is None:
+def _load_camera_to_base(metadata: dict[str, Any], path: Path) -> np.ndarray:
+    camera_to_base = metadata.get("camera_to_base_4x4_used", CAMERA_TO_BASE_4X4_DEFAULT)
+    camera_to_base = np.asarray(camera_to_base, dtype=np.float64)
+    if camera_to_base.shape != (4, 4) or not np.isfinite(camera_to_base).all():
         raise ValueError(
-            f"Tracking input {path} is missing reference_tag_to_base_4x4_used metadata; "
-            "record tracking with the reference tag visible."
+            f"Tracking input {path} has invalid camera_to_base_4x4_used metadata"
         )
-    tag_to_base = np.asarray(tag_to_base, dtype=np.float64)
-    if tag_to_base.shape != (4, 4) or not np.isfinite(tag_to_base).all():
+    if abs(float(np.linalg.det(camera_to_base[:3, :3]))) < 1e-10:
         raise ValueError(
-            f"Tracking input {path} has invalid reference_tag_to_base_4x4_used metadata"
+            f"Tracking input {path} has a non-invertible camera_to_base_4x4_used rotation"
         )
-    if abs(float(np.linalg.det(tag_to_base[:3, :3]))) < 1e-10:
-        raise ValueError(
-            f"Tracking input {path} has a non-invertible reference_tag_to_base_4x4_used rotation"
-        )
-    return tag_to_base
+    return camera_to_base
 
 
 def _select_frames(
@@ -397,7 +392,7 @@ def compile_static_episode(
                 pass
     tracking_metadata = _read_dataset_metadata(tracking_path)
     _require_tracking_frame_base(tracking_metadata, tracking_path)
-    reference_tag_to_base_4x4 = _require_reference_tag_calibration(tracking_metadata, tracking_path)
+    camera_to_base_4x4 = _load_camera_to_base(tracking_metadata, tracking_path)
     camera_frames = _load_tracking_frames(tracking_path)
 
     rest_timestamp = float(
@@ -676,8 +671,7 @@ def compile_static_episode(
         "angle_unit": "rad",
         "timestamp_clock": "Unix wall clock from time.time() on the shared host",
         "timestamp_unit": "seconds",
-        "camera_to_base_4x4_used": tracking_metadata.get("camera_to_base_4x4_used"),
-        "reference_tag_to_base_4x4_used": reference_tag_to_base_4x4.tolist(),
+        "camera_to_base_4x4_used": camera_to_base_4x4.tolist(),
         "topology": {
             "node_order": ["Branch", "Spur", "Apple"],
             "junction_names": list(WOODY_PART_NAMES),

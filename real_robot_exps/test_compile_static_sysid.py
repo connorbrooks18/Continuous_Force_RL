@@ -72,9 +72,8 @@ class CompileStaticSysidTest(unittest.TestCase):
                         "qx": 0.0, "qy": 0.0, "qz": 0.0, "qw": 1.0,
                     })
             _write_with_metadata(tracking_path, tracking_rows, {
-                "reference_tag_is_fruiting_base": True,
                 "coordinate_frame": "franka_base_o",
-                "reference_tag_to_base_4x4_used": np.eye(4, dtype=np.float64).tolist(),
+                "camera_to_base_4x4_used": np.eye(4, dtype=np.float64).tolist(),
             })
 
             compile_static_episode(
@@ -108,7 +107,7 @@ class CompileStaticSysidTest(unittest.TestCase):
             self.assertEqual(metadata["topology"]["node_order"], ["Branch", "Spur", "Apple"])
             self.assertEqual(metadata["camera_aggregation"]["requested_frame_count"], 2)
             self.assertEqual(metadata["coordinate_frame"], "franka_base_o")
-            self.assertEqual(metadata["reference_tag_to_base_4x4_used"], np.eye(4).tolist())
+            self.assertEqual(metadata["camera_to_base_4x4_used"], np.eye(4).tolist())
             self.assertIn("source_files", metadata)
             self.assertIn("source_metadata_summary", metadata)
             self.assertIn("tau_J_d", output.schema.names)
@@ -156,7 +155,7 @@ class CompileStaticSysidTest(unittest.TestCase):
                 })
             _write_with_metadata(tracking_path, tracking_rows, {
                 "coordinate_frame": "camera_color_optical_frame",
-                "reference_tag_to_base_4x4_used": np.eye(4, dtype=np.float64).tolist(),
+                "camera_to_base_4x4_used": np.eye(4, dtype=np.float64).tolist(),
             })
 
             with self.assertRaises(ValueError):
