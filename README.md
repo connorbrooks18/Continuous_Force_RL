@@ -33,6 +33,31 @@ Useful flags:
 - `--only-metadata` skips baseline generation and the pull trajectory, but still captures under-gravity, lengthened, and post-grasp reconstruction data.
 - `--manual-setup` pauses with torque mode off so you can physically place the arm on the apple surface before the pull starts.
 
+## Understanding Pull Angles (theta & phi)
+
+The script calculates the pull trajectory using a spherical coordinate system. Because the script subtracts the calculated vector from the target position, the arm pulls *away* from the origin (the apple). 
+
+* `theta`: Controls the vertical trajectory (inclination/altitude).
+  * 1.57 (pi/2): Purely horizontal pull.
+  * 2.36 (3pi/4): Pulls upward.
+* `phi`: Controls the horizontal (left/right/back) trajectory on the XY plane (azimuth). (0 to pi to stay on front semisphere)
+
+### Common Angle Configurations (Radians)
+
+Here are the exact arguments you can pass to `--theta` and `--phi` to achieve specific pull directions:
+
+| Direction         | --theta | --phi  | Formula           |
+|-------------------|---------|--------|-------------------|
+| Left              | 1.57    | 0.00   | pi/2 / 0          |
+| Back-Left         | 1.57    | 0.79   | pi/2 / pi/4       |
+| Back              | 1.57    | 1.57   | pi/2 / pi/2       |
+| Back-Right        | 1.57    | 2.36   | pi/2 / 3pi/4      |
+| Right             | 1.57    | 3.14   | pi/2 / pi         |
+| Up-Back-Left      | 2.36    | 0.79   | 3pi/4 / pi/4      |
+| Up-Back (Default) | 2.36    | 1.57   | 3pi/4 / pi/2      |
+| Up-Back-Right     | 2.36    | 2.36   | 3pi/4 / 3pi/4     |
+
+
 ## Current runner behavior
 
 For a normal `collect` run, the runner does this:
