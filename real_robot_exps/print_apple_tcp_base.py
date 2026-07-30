@@ -185,6 +185,14 @@ def _print_parquet_distances(parquet_path: Path) -> None:
     else:
         print("pre_grasp_tcp_apple_distance_m:   <unavailable>")
 
+    approach_geo = dict(metadata.get("approach_geometry", {}) or {})
+    approach_tcp = approach_geo.get("tcp_pos")
+    if approach_tcp is not None and fallback_apple is not None:
+        approach_delta, approach_distance = _vector_distance(approach_tcp, fallback_apple)
+        print(f"approach_tcp_minus_apple_base_m:   {_format_pos_m(approach_delta)}")
+        print(f"approach_tcp_apple_distance_m:     {approach_distance:.6f}")
+    else:
+        print("approach_tcp_apple_distance_m:     <unavailable>")
     if post_delta is not None and post_distance is not None:
         print(f"post_grasp_tcp_minus_apple_base_m: {_format_pos_m(post_delta)}")
         print(f"post_grasp_tcp_apple_distance_m:   {post_distance:.6f}")
@@ -196,7 +204,9 @@ def _print_parquet_distances(parquet_path: Path) -> None:
             return fallback
         robot_snapshot = dict(phase_geo.get("robot_snapshot", {}) or {})
         return str(
-            phase_geo.get("pull_start_pose_name")
+            phase_geo.get("post_grasp_pose_name")
+            or phase_geo.get("pull_surface_pose_name")
+            or phase_geo.get("pull_start_pose_name")
             or robot_snapshot.get("pull_start_pose_name")
             or phase_geo.get("robot_snapshot_pull_start_pose_name")
             or fallback
@@ -204,6 +214,9 @@ def _print_parquet_distances(parquet_path: Path) -> None:
 
     if pre_geo is not None:
         print(f"pre_grasp_pose_name: {_pose_name(pre_geo)}")
+    if approach_geo:
+        print(f"approach_pose_name: {approach_geo.get('pose_name', _pose_name(approach_geo))}")
+        print(f"approach_target_reached: {bool(approach_geo.get('target_reached', False))}")
     if post_geo is not None:
         print(f"post_grasp_pose_name: {_pose_name(post_geo)}")
 
@@ -279,6 +292,10 @@ def main() -> None:
             print(f"camera_snapshot_timestamp_s: {camera_snapshot['timestamp']:.3f}")
             print(f"robot_snapshot_window_s:     {robot_start:.3f} -> {robot_end:.3f}")
             print(f"tcp_minus_apple_base_m: {_format_pos_m(tcp_pos_base - object_poses['apple'][0])}")
+            diff = tcp_pos_base - object_poses["apple"][0]
+            import math as math
+            dist = math.sqrt(diff[0]*diff[0] + diff[1]*diff[1] + diff[2]*diff[2])
+            print(f"tcp_minus_apple_base_m magnitude {dist:.2f}")
             return
 
         print("Watching apple, spur, branch, and TCP poses in base frame. Ctrl-C to stop.")

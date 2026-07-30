@@ -17,8 +17,10 @@ before checking for missing baselines. The lengthened snapshot is the canonical
 pre-grasp geometry and remains available through the backward-compatible
 `pre_grasp_geometry.snapshot` field. The natural snapshot is retained as both
 `settled_snapshot` and `under_gravity_snapshot`. The dynamic pre-grasp target
-uses the lengthened apple center in the Franka base frame minus one apple
-radius along base Y. The camera/base calibration helper
+now stages 2 cm beyond the apple surface in the requested pull direction, then
+approaches the surface point at that `theta`/`phi` before the pull phase
+starts. The total center-to-stage distance is computed after the apple radius
+is known, so it becomes `apple_radius + 2 cm`. The camera/base calibration helper
 [`real_robot_exps.remake_translation_matrix`](/home/skand/connor/Continuous_Force_RL/real_robot_exps/remake_translation_matrix.py)
 recomputes the reference-tag-to-base translation from live detections and the
 current TCP reading. It assumes the TCP sits `4 cm` negative `Y` of the apple
@@ -66,8 +68,11 @@ The raw robot files also keep compatibility fields such as:
 - `theta_rad`
 - `phi_rad`
 - `distance_m`
+- `approach_offset_m`
+- `approach_clearance_m`
 - `n_holds`
 - `pull_start_pose_name`
+- `pull_surface_pose_name`
 - `robot_start_pose_4x4`
 
 ## Field conventions
@@ -138,8 +143,10 @@ Baseline and collect are compared using:
 
 - pull angles,
 - distance,
+- approach offset,
 - number of holds,
 - pull-start pose name,
+- pull-surface pose name,
 - start-pose rotation,
 - start-pose translation within a small tolerance,
 - structure identity when present in `pre_grasp_geometry`.

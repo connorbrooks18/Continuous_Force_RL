@@ -25,7 +25,7 @@ Use the runner in `--only-metadata` mode to capture:
 
 - settled pre-grasp geometry with the apple present,
 - lengthened pre-grasp geometry with connection angles and segment lengths visible,
-- dynamic apple start pose metadata,
+- dynamic apple staging and surface pose metadata,
 - post-grasp robot and camera geometry after the grasp has settled,
 - structure-linked metadata that can be reused for simulation setup.
 
@@ -44,7 +44,7 @@ python -m real_robot_exps.runner --only-metadata
 2. Leave the apple attached and let it settle naturally under gravity.
 3. When prompted, press Enter to capture the under-gravity snapshot.
 4. When prompted, lengthen the apple/structure so the connection angles and segment lengths are visible, then press Enter.
-5. Let the robot move to the dynamic apple start pose and perform the grasp.
+5. Let the robot stage 2 cm beyond the apple surface, approach the surface at the requested pull direction, and perform the grasp/pull sequence.
 6. Wait for the gripper and apple to settle. The running detector captures the post-grasp camera snapshot before any pull motion.
 7. Let the run finish and write the robot/tracking/unified files.
 

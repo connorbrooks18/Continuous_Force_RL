@@ -7,8 +7,9 @@ The main entry point is [`real_robot_exps.runner`](/home/skand/connor/Continuous
 It captures both the natural under-gravity structure and a lengthened
 structure before the arm approaches. The lengthened snapshot remains available
 through the compatibility field `pre_grasp_geometry.snapshot` and is used to
-build the dynamic apple start pose from the apple center plus one apple radius
-along base-frame Y.
+build the dynamic apple pull staging pose from the apple surface plus a
+2 cm offset along the pull direction. The total center-to-stage distance is
+the apple radius plus that 2 cm clearance.
 
 ## Main workflows
 

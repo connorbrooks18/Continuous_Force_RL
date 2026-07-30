@@ -40,6 +40,7 @@ CONVERGE_THRESHOLD = 1e-4  # 0.1mm
 CONVERGE_FRAMES = 10
 MAX_STEPS = 500             # ~33s at 15Hz safety cap
 MOVE_DISTANCE = 0.02     # 5cm
+DYNAMIC_PULL_APPROACH_CLEARANCE_M = 0.02
 
 # One-line switch for unloaded/system-identification trials closer to the robot.
 # False uses the normal apple pose; True uses CLOSE_PULL_START_POSITION_M.
@@ -47,12 +48,6 @@ USE_CLOSE_PULL_START_POSE = False
 CLOSE_PULL_START_POSITION_M = np.array([0.0, 0.7, 0.35], dtype=np.float64)
 CLOSE_PULL_ROLL_FORWARD_DEG = 20.0
 MANUAL_SETUP_START_POSE_NAME = "manual_setup_current_tcp_pose"
-
-# When a lengthened structure snapshot is available from camera tracking,
-# offset the TCP from the apple center by one apple radius in the Franka
-# base-frame +Y axis. This keeps the pull-start target simple and
-# independent of apple orientation.
-DYNAMIC_APPLE_BASE_Y_SIGN = -1.0
 
 # Baseline mode records an unloaded wrench profile. When this is True, collect
 # mode subtracts the matching profile point-by-point within each static hold.
@@ -85,6 +80,84 @@ def _pose_4x4_from_pos_quat(pos: torch.Tensor, quat: torch.Tensor) -> np.ndarray
     pose[:3, :3] = _quat_wxyz_to_rotmat(quat)
     pose[:3, 3] = pos.detach().cpu().numpy().astype(np.float64, copy=False)
     return pose
+
+
+def _pose_4x4_with_translation(template_pose_4x4: np.ndarray, translation: np.ndarray) -> np.ndarray:
+    pose = np.asarray(template_pose_4x4, dtype=np.float64).copy()
+    pose[:3, 3] = np.asarray(translation, dtype=np.float64).reshape(3)
+    return pose
+
+
+def _rotmat_wxyz_from_matrix(R: np.ndarray) -> np.ndarray:
+    """Convert a 3x3 rotation matrix to a normalized wxyz quaternion."""
+    R = np.asarray(R, dtype=np.float64).reshape(3, 3)
+    trace = float(np.trace(R))
+    if trace > 0.0:
+        s = math.sqrt(trace + 1.0) * 2.0
+        w = 0.25 * s
+        x = (R[2, 1] - R[1, 2]) / s
+        y = (R[0, 2] - R[2, 0]) / s
+        z = (R[1, 0] - R[0, 1]) / s
+    else:
+        idx = int(np.argmax(np.diag(R)))
+        if idx == 0:
+            s = math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+            w = (R[2, 1] - R[1, 2]) / s
+            x = 0.25 * s
+            y = (R[0, 1] + R[1, 0]) / s
+            z = (R[0, 2] + R[2, 0]) / s
+        elif idx == 1:
+            s = math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+            w = (R[0, 2] - R[2, 0]) / s
+            x = (R[0, 1] + R[1, 0]) / s
+            y = 0.25 * s
+            z = (R[1, 2] + R[2, 1]) / s
+        else:
+            s = math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+            w = (R[1, 0] - R[0, 1]) / s
+            x = (R[0, 2] + R[2, 0]) / s
+            y = (R[1, 2] + R[2, 1]) / s
+            z = 0.25 * s
+    quat = np.array([w, x, y, z], dtype=np.float64)
+    return quat / max(float(np.linalg.norm(quat)), 1e-12)
+
+
+def _pose_4x4_to_quat_tensor(pose_4x4: np.ndarray, *, device: str = "cpu") -> torch.Tensor:
+    quat_wxyz = _rotmat_wxyz_from_matrix(np.asarray(pose_4x4, dtype=np.float64)[:3, :3])
+    return torch.as_tensor(quat_wxyz, device=device, dtype=torch.float32)
+
+
+def _look_at_rotation_toward_apple(position: np.ndarray, apple_center: np.ndarray, fallback_rotation: np.ndarray) -> np.ndarray:
+    """Build a rotation whose local +Z axis points toward the apple center."""
+    position = np.asarray(position, dtype=np.float64).reshape(3)
+    apple_center = np.asarray(apple_center, dtype=np.float64).reshape(3)
+    forward = apple_center - position
+    forward_norm = float(np.linalg.norm(forward))
+    if forward_norm < 1e-12:
+        return np.asarray(fallback_rotation, dtype=np.float64).reshape(3, 3)
+    z_axis = forward / forward_norm
+    up_hint = np.array([0.0, 0.0, 1.0], dtype=np.float64)
+    if abs(float(np.dot(z_axis, up_hint))) > 0.95:
+        up_hint = np.array([0.0, 1.0, 0.0], dtype=np.float64)
+    x_axis = np.cross(up_hint, z_axis)
+    x_norm = float(np.linalg.norm(x_axis))
+    if x_norm < 1e-12:
+        return np.asarray(fallback_rotation, dtype=np.float64).reshape(3, 3)
+    x_axis /= x_norm
+    y_axis = np.cross(z_axis, x_axis)
+    y_norm = float(np.linalg.norm(y_axis))
+    if y_norm < 1e-12:
+        return np.asarray(fallback_rotation, dtype=np.float64).reshape(3, 3)
+    y_axis /= y_norm
+    return np.column_stack([x_axis, y_axis, z_axis])
+
+
+def _pull_direction_vector(theta: float, phi: float) -> np.ndarray:
+    """Return the current pull direction convention used by the trajectory."""
+    dx = math.sin(theta) * math.cos(phi)
+    dy = math.sin(theta) * math.sin(phi)
+    dz = math.cos(theta)
+    return np.array([-dx, -dy, -dz], dtype=np.float64)
 
 
 def _snapshot_geometry(snap, *, target_pose_4x4: np.ndarray | None = None) -> dict:
@@ -136,26 +209,46 @@ def _capture_camera_snapshot(*, request_path: str | None = None, output_path: st
             output_path.unlink()
 
 
-def _load_dynamic_pull_start_pose(run_metadata: dict, fallback_pose_4x4: np.ndarray) -> tuple[np.ndarray, str, float | None]:
+def _load_dynamic_pull_start_pose(
+    run_metadata: dict,
+    fallback_pose_4x4: np.ndarray,
+    *,
+    theta: float | None = None,
+    phi: float | None = None,
+    approach_clearance_m: float = DYNAMIC_PULL_APPROACH_CLEARANCE_M,
+) -> tuple[np.ndarray, str, float | None, np.ndarray]:
     pre = dict(run_metadata.get("pre_grasp_geometry", {}) or {})
     lengthened = dict(pre.get("snapshot", {}) or pre.get("lengthened_snapshot", {}) or pre.get("settled_snapshot", {}) or {})
     if not lengthened:
-        return np.asarray(fallback_pose_4x4, dtype=np.float64), "apple_pose_4x4", None
+        fallback_pose = np.asarray(fallback_pose_4x4, dtype=np.float64)
+        return fallback_pose, "apple_pose_4x4", None, fallback_pose
 
     apple_pos_flat = lengthened.get("apple_pos")
     if apple_pos_flat is None:
-        return np.asarray(fallback_pose_4x4, dtype=np.float64), "apple_pose_4x4", None
+        fallback_pose = np.asarray(fallback_pose_4x4, dtype=np.float64)
+        return fallback_pose, "apple_pose_4x4", None, fallback_pose
 
     parts = dict(pre.get("parts", {}) or {})
     apple_radius_m = parts.get("apple", {}).get("radius_m")
     if apple_radius_m is None:
-        return np.asarray(fallback_pose_4x4, dtype=np.float64), "apple_pose_4x4", None
+        fallback_pose = np.asarray(fallback_pose_4x4, dtype=np.float64)
+        return fallback_pose, "apple_pose_4x4", None, fallback_pose
+    if theta is None or phi is None:
+        fallback_pose = np.asarray(fallback_pose_4x4, dtype=np.float64)
+        return fallback_pose, "apple_pose_4x4", float(apple_radius_m), fallback_pose
     apple_radius_m = float(apple_radius_m)
 
-    pose = np.asarray(fallback_pose_4x4, dtype=np.float64).copy()
+    pull_direction = _pull_direction_vector(theta, phi)
     apple_center = np.asarray(apple_pos_flat, dtype=np.float64).reshape(3)
-    pose[:3, 3] = apple_center + np.array([0.0, DYNAMIC_APPLE_BASE_Y_SIGN * apple_radius_m, 0.0], dtype=np.float64)
-    return pose, "lengthened_snapshot_apple_center_plus_apple_radius_base_y_offset", apple_radius_m
+    surface_pos = apple_center + pull_direction * apple_radius_m
+    staged_pos = surface_pos + pull_direction * float(approach_clearance_m)
+    staged_rot = _look_at_rotation_toward_apple(staged_pos, apple_center, fallback_pose_4x4[:3, :3])
+    surface_rot = _look_at_rotation_toward_apple(surface_pos, apple_center, fallback_pose_4x4[:3, :3])
+    pose = _pose_4x4_with_translation(np.eye(4, dtype=np.float64), staged_pos)
+    pose[:3, :3] = staged_rot
+    surface_pose = _pose_4x4_with_translation(np.eye(4, dtype=np.float64), surface_pos)
+    surface_pose[:3, :3] = surface_rot
+    return pose, "lengthened_snapshot_apple_surface_plus_2cm_pull_direction_offset", apple_radius_m, surface_pose
 
 
 def _metadata_entry(metadata: dict) -> dict:
@@ -340,6 +433,7 @@ def run_move(
     n_directions: int = 1,
     excitation_direction=None,
     amplitude_m: float = 0.0,
+    phase_name: str = "move",
     sample_label: str = "move",
 ) -> dict:
     """Run torque control until robot converges to target_pos.
@@ -380,7 +474,7 @@ def run_move(
             hold_step_idx=step,
             hold_index=hold_index,
             phase=0,
-            phase_name="move",
+            phase_name=phase_name,
             amplitude_m=amplitude_m,
             target_pose_4x4=_pose_4x4_from_pos_quat(target_pos, target_quat),
             hold_one_hot=hold_one_hot,
@@ -586,8 +680,10 @@ def _validate_baseline_compatibility(current: dict, baseline: dict, baseline_pat
         ("theta_rad", 1e-9),
         ("phi_rad", 1e-9),
         ("distance_m", 1e-9),
+        ("approach_offset_m", 1e-9),
         ("n_holds", 0.0),
         ("pull_start_pose_name", None),
+        ("pull_surface_pose_name", None),
     )
     mismatches = []
     for key, tolerance in comparisons:
@@ -749,15 +845,18 @@ def update_gains(gains, new_prop_gains, device):
     gains["task_deriv_gains"] = torch.tensor(derivs, device=device, dtype=torch.float32)
     return gains
 
-def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5, args=None, config_snapshot=None, ee_config=None, ft_calibration_enabled: bool = False, pre_grasp_geometry=None, robot_info=None, kp_value=None, metadata_overrides=None):
+def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surface_pose_4x4, default_dof_pos, gains, home_pose_4x4, gc, device: str = "cpu", baseline: bool = False, debug: bool = False, to_plot: bool = False, distance: float = 0.05, stops: int = 5, args=None, config_snapshot=None, ee_config=None, ft_calibration_enabled: bool = False, pre_grasp_geometry=None, robot_info=None, kp_value=None, metadata_overrides=None):
     collection_start_timestamp = time.time()
     episode_id = str(uuid4())
     run_args = dict(args or {})
     base_label = f"pull_theta{theta:.2f}_phi{phi:.2f}"
     label = f"{base_label}_{'baseline' if baseline else 'raw'}"
+    approach_geometry = {}
     post_grasp_geometry = {}
     only_metadata = bool(run_args.get("only_metadata", False))
     manual_setup_enabled = bool(run_args.get("manual_setup", False))
+    approach_clearance_m = float(run_args.get("approach_clearance_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M))
+    approach_offset_m = float(run_args.get("approach_offset_m", approach_clearance_m))
     excitation_direction = np.zeros(3, dtype=np.float32)
     time.sleep(2.0)  # let the robot settle before recording the pull-start TCP snapshot
     
@@ -794,55 +893,11 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
             apple_pos = np.asarray(apple_pos, dtype=np.float64)
             print(f"  apple_pos_base_m: {_format_pos_m(apple_pos)}")
             print(f"  tcp_minus_apple_base_m: {_format_pos_m(tcp_pos - apple_pos)}")
-            print(f"  apple_plus_radius_target_base_m: {_format_pos_m(pull_start_target_pos)}")
+            print(f"  staged_pull_start_base_m: {_format_pos_m(pull_start_target_pos)}")
         else:
             print("  apple_pos_base_m: <missing>")
     robot_rows = []
     rest_reference_timestamp = time.time()
-    gc.send_request(True)
-    # Capture the post-grasp robot state after the gripper has fully closed
-    # and before any pull motion starts.
-    time.sleep(5.0)
-    snap = robot.get_state_snapshot()
-    post_grasp_geometry = _snapshot_geometry(
-        snap,
-        target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
-    )
-    post_grasp_camera_snapshot = _capture_camera_snapshot(
-        request_path=run_args.get("post_grasp_camera_request"),
-        output_path=run_args.get("post_grasp_camera_output"),
-    )
-    post_grasp_geometry["snapshot"] = post_grasp_camera_snapshot
-    post_grasp_geometry["robot_snapshot"] = dict(post_grasp_geometry)
-    post_grasp_geometry["camera_snapshot_source"] = "post_grasp_camera_capture"
-    post_grasp_geometry["setup_mode"] = "manual" if manual_setup_enabled else "dynamic"
-    post_grasp_geometry["manual_setup_enabled"] = manual_setup_enabled
-    post_grasp_geometry["pull_start_pose_name"] = str(run_args.get("pull_start_pose_name", "unspecified"))
-    if only_metadata:
-        direction_idx = int(run_args.get("direction_index", 0))
-        n_directions = int(run_args.get("num_directions", 1))
-        direction_one_hot = np.zeros(max(1, n_directions), dtype=np.float32)
-        if 0 <= direction_idx < direction_one_hot.size:
-            direction_one_hot[direction_idx] = 1.0
-        _append_robot_sample(
-            robot_rows,
-            timestamp=time.time(),
-            hold_step_idx=0,
-            hold_index=0,
-            phase=1,
-            phase_name="metadata_only",
-            sample_label="metadata_only_post_grasp",
-            amplitude_m=0.0,
-            target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
-            hold_one_hot=np.asarray([1.0], dtype=np.float32),
-            direction_one_hot=direction_one_hot,
-            excitation_direction=np.zeros(3, dtype=np.float32),
-            snap=snap,
-            action=np.zeros(6, dtype=np.float32),
-        )
-    else:
-        robot.start_torque_mode()
-
     # distance = .05
     # stops = 5
     steps = stops
@@ -858,32 +913,141 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     
     
     pull_data = []
-    if not only_metadata:
-        snap = robot.get_state_snapshot()
-        target = snap.ee_pos.clone()
-        dx = distance * math.sin(theta) * math.cos(phi)
-        dy = distance * math.sin(theta) * math.sin(phi)
-        dz = distance * math.cos(theta)
-        displacement = np.array([-dx, -dy, -dz], dtype=np.float64)
-        displacement_norm = float(np.linalg.norm(displacement))
-        excitation_direction = (displacement / displacement_norm).astype(np.float32)
+    snap = robot.get_state_snapshot()
+    pull_direction = _pull_direction_vector(theta, phi)
+    pull_direction_norm = float(np.linalg.norm(pull_direction))
+    if pull_direction_norm < 1e-12:
+        raise ValueError("Pull direction is ill-defined for the provided theta/phi")
+    pull_direction = pull_direction / pull_direction_norm
+    excitation_direction = pull_direction.astype(np.float32)
 
+    surface_target = torch.as_tensor(
+        np.asarray(pull_surface_pose_4x4[:3, 3], dtype=np.float64),
+        device=snap.ee_pos.device,
+        dtype=snap.ee_pos.dtype,
+    )
+    surface_quat = _pose_4x4_to_quat_tensor(pull_surface_pose_4x4, device=snap.ee_pos.device)
+
+    if debug:
+        surface_target_pos = np.asarray(pull_surface_pose_4x4[:3, 3], dtype=np.float64)
+        print("\n[dynamic pull staging]")
+        print(f"  approach_clearance_m: {approach_clearance_m:.3f}")
+        print(f"  approach_offset_m: {approach_offset_m:.3f}")
+        print(f"  staged_start_base_m: {_format_pos_m(pull_start_pose_4x4[:3, 3])}")
+        print(f"  surface_target_base_m: {_format_pos_m(surface_target_pos)}")
+        print(f"  pull_direction_base_m: {_format_pos_m(pull_direction)}")
+
+    # Both collection modes use the same approach and grasp sequence. Metadata
+    # mode only skips the force/pull portion after this point.
+    print(
+        "Approaching apple surface: "
+        f"staged TCP {_format_pos_m(pull_start_pose_4x4[:3, 3])} -> "
+        f"surface TCP {_format_pos_m(pull_surface_pose_4x4[:3, 3])} "
+        f"({approach_clearance_m * 100.0:.1f} cm inward)"
+    )
+    # Use the same Cartesian reset implementation as the staged move. This
+    # avoids the torque-mode approach controller and gives the arm a complete
+    # reset from the 2 cm staging pose to the apple surface.
+    robot.reset_to_start_pose(pull_surface_pose_4x4)
+    snap = robot.get_state_snapshot()
+    position_error = float(torch.linalg.vector_norm(snap.ee_pos - surface_target).item())
+    _, orientation_error = compute_pose_error(
+        snap.ee_pos,
+        snap.ee_quat,
+        surface_target,
+        surface_quat,
+    )
+    orientation_error_deg = float(torch.linalg.vector_norm(orientation_error).item() * 180.0 / math.pi)
+    approach_geometry = _snapshot_geometry(
+        snap,
+        target_pose_4x4=pull_surface_pose_4x4,
+    )
+    approach_geometry["pose_name"] = str(run_args.get("pull_surface_pose_name", "unspecified"))
+    approach_geometry["target_reached"] = bool(position_error <= CONVERGE_THRESHOLD)
+    approach_geometry["target_position_error_m"] = position_error
+    approach_geometry["target_orientation_error_deg"] = orientation_error_deg
+    print(
+        "Approach complete: "
+        f"reached={approach_geometry['target_reached']} "
+        f"position_error={approach_geometry['target_position_error_m'] * 1000.0:.2f} mm"
+    )
+
+    rest_reference_timestamp = time.time()
+    gc.send_request(True)
+    # This is the only close command. Capture post-grasp state after closure,
+    # while retaining the pre-close approach snapshot above.
+    time.sleep(5.0)
+    snap = robot.get_state_snapshot()
+    robot_post_grasp_geometry = _snapshot_geometry(
+        snap,
+        target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
+    )
+    post_grasp_geometry = dict(robot_post_grasp_geometry)
+    post_grasp_camera_snapshot = _capture_camera_snapshot(
+        request_path=run_args.get("post_grasp_camera_request"),
+        output_path=run_args.get("post_grasp_camera_output"),
+    )
+    post_grasp_geometry["snapshot"] = post_grasp_camera_snapshot
+    post_grasp_geometry["robot_snapshot"] = robot_post_grasp_geometry
+    post_grasp_geometry["camera_snapshot_source"] = "post_grasp_camera_capture"
+    post_grasp_geometry["setup_mode"] = "manual" if manual_setup_enabled else "dynamic"
+    post_grasp_geometry["manual_setup_enabled"] = manual_setup_enabled
+    post_grasp_geometry["pull_start_pose_name"] = str(run_args.get("pull_start_pose_name", "unspecified"))
+    post_grasp_geometry["pull_surface_pose_name"] = str(run_args.get("pull_surface_pose_name", "unspecified"))
+    post_grasp_geometry["pull_surface_pose_4x4"] = np.asarray(pull_surface_pose_4x4).tolist()
+    post_grasp_geometry["post_grasp_pose_name"] = "post_grasp_surface_pose"
+
+    if only_metadata:
+        direction_idx = int(run_args.get("direction_index", 0))
+        n_directions = int(run_args.get("num_directions", 1))
+        hold_one_hot = np.zeros(max(1, stops), dtype=np.float32)
+        hold_one_hot[0] = 1.0
+        direction_one_hot = np.zeros(max(1, n_directions), dtype=np.float32)
+        if 0 <= direction_idx < direction_one_hot.size:
+            direction_one_hot[direction_idx] = 1.0
+        _append_robot_sample(
+            robot_rows,
+            timestamp=time.time(),
+            hold_step_idx=0,
+            hold_index=0,
+            phase=1,
+            phase_name="metadata_only",
+            sample_label="metadata_only_post_grasp",
+            amplitude_m=0.0,
+            target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
+            hold_one_hot=hold_one_hot,
+            direction_one_hot=direction_one_hot,
+            excitation_direction=excitation_direction,
+            snap=snap,
+            action=np.zeros(6, dtype=np.float32),
+        )
+    else:
+        robot.start_torque_mode()
+
+    if not only_metadata:
         for i in range(steps):
             if(debug):
                 print(f"Starting {i+1} of {steps}...")
             
             segment_idx = len(pull_data)
-            target[0] -= (dx/steps)
-            target[1] -= (dy/steps)
-            target[2] -= (dz/steps)
-            apple_quat = snap.ee_quat.clone()
+            step_target = torch.as_tensor(
+                np.asarray(pull_surface_pose_4x4[:3, 3], dtype=np.float64),
+                device=snap.ee_pos.device,
+                dtype=snap.ee_pos.dtype,
+            )
+            step_target += torch.as_tensor(
+                pull_direction * (distance * float(segment_idx + 1) / float(stops)),
+                device=snap.ee_pos.device,
+                dtype=snap.ee_pos.dtype,
+            )
+            apple_quat = _pose_4x4_to_quat_tensor(pull_surface_pose_4x4, device=snap.ee_pos.device)
             run_move(
                 robot,
                 gains,
-                target,
+                step_target,
                 apple_quat,
                 default_dof_pos,
-                f"closer #{i}",
+                f"pull #{i}",
                 prnt=debug,
                 manage_control=False,
                 record_rows=robot_rows,
@@ -894,7 +1058,8 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
                 n_directions=int(run_args.get("num_directions", 1)),
                 excitation_direction=excitation_direction,
                 amplitude_m=distance * float(segment_idx + 1) / float(stops),
-                sample_label="moving",
+                phase_name="pull",
+                sample_label="pull",
             )
             
             if((i+1) % (steps/stops) == 0):
@@ -905,7 +1070,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
                 data = hold_and_record(
                     robot,
                     gains,
-                    target,
+                    step_target,
                     apple_quat,
                     default_dof_pos,
                     duration_sec=s,
@@ -947,8 +1112,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
     time.sleep(1) # wait for gripper to open
 
     # Safely drop out of torque mode
-    if not only_metadata:
-        robot.end_control()
+    robot.end_control()
 
     # Restore the robot before Parquet writing or optional post-run compilation.
     time.sleep(2)
@@ -984,6 +1148,8 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         "phi_rad": float(phi),
         "pull_direction": excitation_direction.tolist(),
         "distance_m": float(0.0 if only_metadata else distance),
+        "approach_offset_m": float(run_args.get("approach_offset_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M)),
+        "approach_clearance_m": float(run_args.get("approach_clearance_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M)),
         "n_holds": int(1 if only_metadata else stops),
         "hold_duration_s": 0.0 if only_metadata else 1.0,
         "hold_ranges": hold_ranges,
@@ -991,7 +1157,8 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         "num_directions": int(run_args.get("num_directions", 1)),
         "action_semantics": "legacy 6D control placeholder; row phase indicates move vs hold",
         "sample_labels": [
-            "moving",
+            "approach",
+            "pull",
             "hold",
         ],
         "phase_encoding": {"moving": 0, "hold": 1},
@@ -1023,6 +1190,10 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
         "torque_unit": "N*m",
         "robot_start_pose_4x4": np.asarray(pull_start_pose_4x4).tolist(),
         "pull_start_pose_name": str(run_args.get("pull_start_pose_name", "unspecified")),
+        "pull_surface_pose_4x4": np.asarray(pull_surface_pose_4x4).tolist(),
+        "pull_surface_pose_name": str(run_args.get("pull_surface_pose_name", "unspecified")),
+        "approach_offset_m": float(run_args.get("approach_offset_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M)),
+        "approach_clearance_m": float(run_args.get("approach_clearance_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M)),
         "home_pose_4x4": np.asarray(home_pose_4x4).tolist(),
         "controller_gains": {
             key: value.detach().cpu().tolist() if torch.is_tensor(value) else value
@@ -1038,10 +1209,13 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
             "theta": run_args.get("theta"),
             "phi": run_args.get("phi"),
             "distance": run_args.get("distance"),
+            "approach_offset_m": run_args.get("approach_offset_m"),
+            "approach_clearance_m": run_args.get("approach_clearance_m"),
             "stops": run_args.get("stops"),
             "direction_index": run_args.get("direction_index"),
             "num_directions": run_args.get("num_directions"),
             "pull_start_pose_name": run_args.get("pull_start_pose_name"),
+            "pull_surface_pose_name": run_args.get("pull_surface_pose_name"),
         },
         "raw_robot_row_count": len(robot_rows),
     }
@@ -1061,15 +1235,21 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, default_d
                 or {}
             ),
             "pull_start_pose_name": str(run_args.get("pull_start_pose_name", "unspecified")),
+            "pull_surface_pose_name": str(run_args.get("pull_surface_pose_name", "unspecified")),
             "robot_snapshot": pull_start_snapshot,
         },
+        "approach_geometry": approach_geometry,
         "post_grasp_geometry": post_grasp_geometry,
         "theta_rad": float(theta),
         "phi_rad": float(phi),
         "distance_m": float(distance),
+        "approach_offset_m": float(run_args.get("approach_offset_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M)),
+        "approach_clearance_m": float(run_args.get("approach_clearance_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M)),
         "n_holds": int(stops),
         "pull_start_pose_name": str(run_args.get("pull_start_pose_name", "unspecified")),
+        "pull_surface_pose_name": str(run_args.get("pull_surface_pose_name", "unspecified")),
         "robot_start_pose_4x4": np.asarray(pull_start_pose_4x4).tolist(),
+        "pull_surface_pose_4x4": np.asarray(pull_surface_pose_4x4).tolist(),
     }
     if metadata_overrides:
         robot_metadata["dump"].setdefault("runner_metadata", metadata_overrides)
@@ -1292,8 +1472,10 @@ def main():
     # print(apple_rot)
     apple_pose_4x4 = make_ee_target_pose_from_matrix(np.array([0, .87, .41]), apple_rot)
     dynamic_pull_apple_radius_m = None
-    dynamic_pull_pose_4x4 = apple_pose_4x4
-    dynamic_pull_pose_name = "apple_pose_4x4"
+    dynamic_pull_stage_pose_4x4 = apple_pose_4x4
+    dynamic_pull_surface_pose_4x4 = apple_pose_4x4
+    dynamic_pull_stage_pose_name = "apple_pose_4x4"
+    dynamic_pull_surface_pose_name = "apple_pose_4x4"
     close_roll_rad = math.radians(CLOSE_PULL_ROLL_FORWARD_DEG)
     close_roll_local_x = np.array([
         [1.0, 0.0, 0.0],
@@ -1308,8 +1490,10 @@ def main():
         close_rot,
     )
     manual_setup_snapshot = None
-    pull_start_pose_4x4 = close_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_pose_4x4
-    pull_start_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_pose_name
+    pull_start_pose_4x4 = close_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_stage_pose_4x4
+    pull_surface_pose_4x4 = pull_start_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_surface_pose_4x4
+    pull_start_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_stage_pose_name
+    pull_surface_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_surface_pose_name
     if args.manual_setup:
         print("\nManual setup mode selected.")
         print("The robot will stay idle with torque mode off.")
@@ -1320,8 +1504,9 @@ def main():
         robot.refresh_state_snapshot()
         manual_snap = robot.get_state_snapshot()
         pull_start_pose_4x4 = _tcp_pose_4x4_from_snapshot(manual_snap)
-        dynamic_pull_pose_4x4 = pull_start_pose_4x4
+        pull_surface_pose_4x4 = pull_start_pose_4x4
         pull_start_pose_name = MANUAL_SETUP_START_POSE_NAME
+        pull_surface_pose_name = MANUAL_SETUP_START_POSE_NAME
         dynamic_pull_apple_radius_m = None
         manual_setup_snapshot = _snapshot_geometry(
             manual_snap,
@@ -1340,14 +1525,29 @@ def main():
             f"{_format_pos_m(pull_start_pose_4x4[:3, 3])} m"
         )
     else:
-        dynamic_pull_pose_4x4, dynamic_pull_pose_name, dynamic_pull_apple_radius_m = _load_dynamic_pull_start_pose(
+        dynamic_pull_stage_pose_4x4, dynamic_pull_stage_pose_name, dynamic_pull_apple_radius_m, dynamic_pull_surface_pose_4x4 = _load_dynamic_pull_start_pose(
             run_metadata,
             apple_pose_4x4,
+            theta=theta,
+            phi=phi,
+            approach_clearance_m=DYNAMIC_PULL_APPROACH_CLEARANCE_M,
+        )
+        approach_offset_m = (
+            float(dynamic_pull_apple_radius_m + DYNAMIC_PULL_APPROACH_CLEARANCE_M)
+            if dynamic_pull_apple_radius_m is not None
+            else float(DYNAMIC_PULL_APPROACH_CLEARANCE_M)
+        )
+        dynamic_pull_surface_pose_name = (
+            "apple_pose_4x4"
+            if dynamic_pull_stage_pose_name == "apple_pose_4x4"
+            else "lengthened_snapshot_apple_surface_pose"
         )
         pull_start_pose_4x4 = (
-            close_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_pose_4x4
+            close_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_stage_pose_4x4
         )
-        pull_start_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_pose_name
+        pull_surface_pose_4x4 = pull_start_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_surface_pose_4x4
+        pull_start_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_stage_pose_name
+        pull_surface_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_surface_pose_name
         if pull_start_pose_name == "apple_pose_4x4":
             print(
                 "WARNING: dynamic apple snapshot/radius was unavailable, so the "
@@ -1357,6 +1557,11 @@ def main():
             f"Pull start selection: {pull_start_pose_name} at "
             f"{_format_pos_m(pull_start_pose_4x4[:3, 3])} m"
         )
+        if pull_surface_pose_4x4 is not None:
+            print(
+                f"Pull surface selection: {pull_surface_pose_name} at "
+                f"{_format_pos_m(pull_surface_pose_4x4[:3, 3])} m"
+            )
         if dynamic_pull_apple_radius_m is not None:
             print(f"Dynamic apple radius from structure metadata: {dynamic_pull_apple_radius_m:.5f} m")
 
@@ -1389,11 +1594,15 @@ def main():
             "use_close_pull_start_pose": bool(USE_CLOSE_PULL_START_POSE),
             "manual_setup": bool(args.manual_setup),
             "pull_start_pose_name": pull_start_pose_name,
+            "pull_surface_pose_name": pull_surface_pose_name,
             "close_pull_start_position_m": CLOSE_PULL_START_POSITION_M.tolist(),
             "close_pull_roll_forward_deg": float(CLOSE_PULL_ROLL_FORWARD_DEG),
             "dynamic_apple_radius_m": None if dynamic_pull_apple_radius_m is None else float(dynamic_pull_apple_radius_m),
+            "approach_offset_m": float(approach_offset_m),
+            "approach_clearance_m": float(DYNAMIC_PULL_APPROACH_CLEARANCE_M),
             "apple_pose_4x4": apple_pose_4x4.tolist(),
-            "dynamic_pull_pose_4x4": dynamic_pull_pose_4x4.tolist(),
+            "dynamic_pull_pose_4x4": dynamic_pull_stage_pose_4x4.tolist(),
+            "dynamic_pull_surface_pose_4x4": dynamic_pull_surface_pose_4x4.tolist(),
             "close_pose_4x4": close_pose_4x4.tolist(),
             "manual_setup_snapshot": manual_setup_snapshot,
             "camera_collection": "separate process; compile after robot collection",
@@ -1404,6 +1613,7 @@ def main():
                 phi_value,
                 robot,
                 pull_start_pose_4x4,
+                pull_surface_pose_4x4,
                 default_dof_pos,
                 gains,
                 home_pose_4x4,
