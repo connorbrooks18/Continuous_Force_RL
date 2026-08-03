@@ -367,11 +367,12 @@ def _run_missing_baselines(
     structure_index: int,
     structure: dict[str, Any],
     directions: list[dict[str, Any]],
+    start_at: int,
     args,
     pre_grasp_geometry: dict[str, Any],
 ) -> None:
     missing = []
-    for direction_index, direction in enumerate(directions):
+    for direction_index, direction in enumerate(directions[start_at:], start=start_at):
         baseline_path = _baseline_path_for_direction(args, structure_index, direction)
         if not baseline_path.exists():
             missing.append((direction_index, direction, baseline_path))
@@ -444,6 +445,12 @@ def main() -> None:
     parser.add_argument("--structures", type=Path, default=Path("real_robot_exps/structures.json"))
     parser.add_argument("--directions", type=Path, default=Path("real_robot_exps/directions.json"))
     parser.add_argument("--structure-index", type=int, default=None)
+    parser.add_argument(
+        "--start-at",
+        type=int,
+        default=0,
+        help="Zero-based direction index to start at; runs this direction and all later ones",
+    )
     parser.add_argument("--output-dir", type=Path, default=Path("."))
     parser.add_argument("--manifest", type=Path, default=Path("manifest.json"))
     parser.add_argument("--config", type=Path, default=Path("real_robot_exps/config.yaml"))
@@ -508,6 +515,8 @@ def main() -> None:
     directions = [_normalize_direction(entry) for entry in directions_raw]
     if not directions:
         raise SystemExit(f"No directions found in {args.directions}")
+    if not 0 <= args.start_at < len(directions):
+        raise SystemExit(f"--start-at must be in [0, {len(directions)})")
 
     if args.structure_index is None:
         print("\nAvailable structures:")
@@ -550,12 +559,13 @@ def main() -> None:
             structure_index=structure_index,
             structure=structure,
             directions=directions,
+            start_at=args.start_at,
             args=args,
             pre_grasp_geometry=pre_grasp_geometry,
         )
 
     manifest_runs: list[dict[str, Any]] = []
-    for direction_index, direction in enumerate(directions):
+    for direction_index, direction in enumerate(directions[args.start_at:], start=args.start_at):
         _run_one(
             structure_index=structure_index,
             structure=structure,
@@ -570,6 +580,7 @@ def main() -> None:
     manifest = {
         "structure_index": structure_index,
         "structure_name": structure.get("name", f"structure_{structure_index:02d}"),
+        "start_at": int(args.start_at),
         "structures_source": str(args.structures),
         "directions_source": str(args.directions),
         "runs": manifest_runs,

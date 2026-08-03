@@ -41,6 +41,7 @@ class VizStaticSysidTest(unittest.TestCase):
                     "direction": np.eye(1, dtype=np.float32)[0],
                     "phase": 1,
                     "phase_name": "hold",
+                    "sample_label": "hold",
                     "amplitude_m": 0.01,
                     "excitation_direction": np.array([0, 1, 0], dtype=np.float32),
                     "camera_timestamp": timestamp - 0.01,
@@ -61,6 +62,11 @@ class VizStaticSysidTest(unittest.TestCase):
             data = _load_plot_data(path)
             fig = plot_static_sysid(data)
             self.assertEqual(len(fig.axes), 8)
+            header = "\n".join(text.get_text() for text in fig.texts)
+            self.assertIn("episode_id: episode-test", header)
+            self.assertIn("phase_name(s): hold", header)
+            self.assertIn("sample_label(s): hold", header)
+            self.assertIn("junction_names: n/a", header)
 
     def test_builds_figure_from_arm_only_parquet(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -97,6 +103,10 @@ class VizStaticSysidTest(unittest.TestCase):
             self.assertFalse(data.has_camera)
             fig = plot_static_sysid(data)
             self.assertEqual(len(fig.axes), 5)
+            header = "\n".join(text.get_text() for text in fig.texts)
+            self.assertIn("episode_id: n/a", header)
+            self.assertIn("phase_name(s): hold", header)
+            self.assertIn("sample_label(s): n/a", header)
 
 
 if __name__ == "__main__":

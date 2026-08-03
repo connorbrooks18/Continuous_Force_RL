@@ -978,24 +978,25 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
     # while retaining the pre-close approach snapshot above.
     time.sleep(5.0)
     snap = robot.get_state_snapshot()
-    robot_post_grasp_geometry = _snapshot_geometry(
-        snap,
-        target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
-    )
-    post_grasp_geometry = dict(robot_post_grasp_geometry)
-    post_grasp_camera_snapshot = _capture_camera_snapshot(
-        request_path=run_args.get("post_grasp_camera_request"),
-        output_path=run_args.get("post_grasp_camera_output"),
-    )
-    post_grasp_geometry["snapshot"] = post_grasp_camera_snapshot
-    post_grasp_geometry["robot_snapshot"] = robot_post_grasp_geometry
-    post_grasp_geometry["camera_snapshot_source"] = "post_grasp_camera_capture"
-    post_grasp_geometry["setup_mode"] = "manual" if manual_setup_enabled else "dynamic"
-    post_grasp_geometry["manual_setup_enabled"] = manual_setup_enabled
-    post_grasp_geometry["pull_start_pose_name"] = str(run_args.get("pull_start_pose_name", "unspecified"))
-    post_grasp_geometry["pull_surface_pose_name"] = str(run_args.get("pull_surface_pose_name", "unspecified"))
-    post_grasp_geometry["pull_surface_pose_4x4"] = np.asarray(pull_surface_pose_4x4).tolist()
-    post_grasp_geometry["post_grasp_pose_name"] = "post_grasp_surface_pose"
+    if not baseline:
+        robot_post_grasp_geometry = _snapshot_geometry(
+            snap,
+            target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
+        )
+        post_grasp_geometry = dict(robot_post_grasp_geometry)
+        post_grasp_camera_snapshot = _capture_camera_snapshot(
+            request_path=run_args.get("post_grasp_camera_request"),
+            output_path=run_args.get("post_grasp_camera_output"),
+        )
+        post_grasp_geometry["snapshot"] = post_grasp_camera_snapshot
+        post_grasp_geometry["robot_snapshot"] = robot_post_grasp_geometry
+        post_grasp_geometry["camera_snapshot_source"] = "post_grasp_camera_capture"
+        post_grasp_geometry["setup_mode"] = "manual" if manual_setup_enabled else "dynamic"
+        post_grasp_geometry["manual_setup_enabled"] = manual_setup_enabled
+        post_grasp_geometry["pull_start_pose_name"] = str(run_args.get("pull_start_pose_name", "unspecified"))
+        post_grasp_geometry["pull_surface_pose_name"] = str(run_args.get("pull_surface_pose_name", "unspecified"))
+        post_grasp_geometry["pull_surface_pose_4x4"] = np.asarray(pull_surface_pose_4x4).tolist()
+        post_grasp_geometry["post_grasp_pose_name"] = "post_grasp_surface_pose"
 
     if only_metadata:
         direction_idx = int(run_args.get("direction_index", 0))
@@ -1460,7 +1461,7 @@ def main():
 
     # arbitrarily chosen 'home'
     home_rot = np.array([[-1, 0, 0.0], [0.0, 0.0, 1.0], [0, 1, 0]])
-    home_pos = np.array([0.0, 0.80, 0.41])
+    home_pos = np.array([0.033, 0.70, 0.41])
     home_pose_4x4 = make_ee_target_pose_from_matrix(home_pos, home_rot)
 
     apple_rot = np.array([

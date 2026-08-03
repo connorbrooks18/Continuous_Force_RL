@@ -95,6 +95,29 @@ def _episode_id_from_metadata(metadata: dict[str, Any], rows: list[dict[str, Any
     return ""
 
 
+def _unique_string_values(rows: list[dict[str, Any]], key: str) -> str:
+    values: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        value = row.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        values.append(text)
+    return ", ".join(values)
+
+
+def _junction_names_from_metadata(metadata: dict[str, Any]) -> str:
+    topology = metadata.get("topology", {}) if isinstance(metadata, dict) else {}
+    names = topology.get("junction_names") or topology.get("node_order") or ()
+    if not names:
+        return ""
+    return ", ".join(str(name) for name in names if str(name).strip())
+
+
 def _plot_vector_panel(ax, t, values, labels, title):
     for idx, label in enumerate(labels):
         ax.plot(t, values[:, idx], label=label, linewidth=1.4)
@@ -176,6 +199,9 @@ def plot_static_sysid(
         apple_pos = start_pos = end_pos = bend = None
     hold_index = np.asarray([row["hold_index"] for row in rows], dtype=int)
     episode_id = _episode_id_from_metadata(data.metadata, rows)
+    phase_names = _unique_string_values(rows, "phase_name")
+    sample_labels = _unique_string_values(rows, "sample_label")
+    junction_names = _junction_names_from_metadata(data.metadata)
 
     n_panels = 8 if has_camera else 5
     fig, axes = plt.subplots(n_panels, 1, figsize=(16, 4 * n_panels), sharex=True, constrained_layout=True)
@@ -312,6 +338,9 @@ def plot_static_sysid(
 
     meta_lines = [
         f"episode_id: {episode_id or 'n/a'}",
+        f"phase_name(s): {phase_names or 'n/a'}",
+        f"sample_label(s): {sample_labels or 'n/a'}",
+        f"junction_names: {junction_names or 'n/a'}",
         f"rows: {len(rows)}",
         f"unique holds: {len(np.unique(hold_index))}",
         f"camera present: {has_camera}",

@@ -120,7 +120,7 @@ control_gains:
   # Singularity damping for J M^-1 J^T inverse (Levenberg-Marquardt)
   # Adds lambda*I to prevent blow-up near kinematic singularities.
   # Set enabled=false to revert to undamped inverse.
-  singularity_damping_enabled: true
+  singularity_damping_enabled: false
   singularity_damping_lambda: 0.08
 
   # Partial inertia decoupling: compute separate 3x3 Lambda matrices for
