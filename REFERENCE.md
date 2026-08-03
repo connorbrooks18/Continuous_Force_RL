@@ -13,14 +13,16 @@ README.
   applying a baseline.
 
 The runner captures an under-gravity snapshot and then a lengthened snapshot
-before checking for missing baselines. The lengthened snapshot is the canonical
-pre-grasp geometry and remains available through the backward-compatible
-`pre_grasp_geometry.snapshot` field. The natural snapshot is retained as both
-`settled_snapshot` and `under_gravity_snapshot`. The dynamic pre-grasp target
-now stages 2 cm beyond the apple surface in the requested pull direction, then
-approaches the surface point at that `theta`/`phi` before the pull phase
-starts. The total center-to-stage distance is computed after the apple radius
-is known, so it becomes `apple_radius + 2 cm`. The camera/base calibration helper
+the first time a structure is measured, writes that measured pre-grasp geometry
+to `metadata_cache.json`, and reuses the cached JSON on later runs with the same
+structure so it can skip the camera prompts. The lengthened snapshot is the
+canonical pre-grasp geometry and remains available through the backward-
+compatible `pre_grasp_geometry.snapshot` field. The natural snapshot is
+retained as both `settled_snapshot` and `under_gravity_snapshot`. The dynamic
+pre-grasp target now stages 2 cm beyond the apple surface in the requested pull
+direction, then approaches the surface point at that `theta`/`phi` before the
+pull phase starts. The total center-to-stage distance is computed after the
+apple radius is known, so it becomes `apple_radius + 2 cm`. The camera/base calibration helper
 [`real_robot_exps.remake_translation_matrix`](/home/skand/connor/Continuous_Force_RL/real_robot_exps/remake_translation_matrix.py)
 recomputes the reference-tag-to-base translation from live detections and the
 current TCP reading. It assumes the TCP sits `4 cm` negative `Y` of the apple

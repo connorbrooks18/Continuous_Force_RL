@@ -66,11 +66,13 @@ For a normal `collect` run, the runner does this:
 1. prompts for the structure,
 2. asks for the natural under-gravity state and captures it,
 3. asks you to lengthen the apple/structure and captures connection angles and lengths,
-4. checks for missing baseline files for that structure and direction,
-5. if needed, asks you to remove the apple and runs those baselines,
-6. runs the tracked collection,
-7. after grasp closure, requests a fresh camera snapshot from the running detector,
-8. compiles the unified Parquet and saves a PNG.
+4. writes that measured pre-grasp geometry to `metadata_cache.json` under `--output-dir`,
+5. reuses that cache on later runs with the same structure so it can skip the camera prompts,
+6. checks for missing baseline files for that structure and direction,
+7. if needed, asks you to remove the apple and runs those baselines,
+8. runs the tracked collection,
+9. after grasp closure, requests a fresh camera snapshot from the running detector,
+10. compiles the unified Parquet and saves a PNG.
 
 Baseline files are structure-specific, for example:
 

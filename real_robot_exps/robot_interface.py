@@ -192,7 +192,7 @@ _FR3_JOINT_POS_LIMITS = np.array([
     [-2.8973, 2.8973],
     [-3.0718, -0.0698],
     [-2.8973, 2.8973],
-    [-0.0175, 4.5],   # [-0.0175, 3.7525],
+    [-0.0175, 4.6],   # [-0.0175, 3.7525],
     [-2.8973, 2.8973],
 ])
 
@@ -206,8 +206,8 @@ _MAX_TORQUE_DELTA = 0.2
 _FR3_JOINT_TORQUE_LIMITS = np.array([87.0, 87.0, 87.0, 87.0, 12.0, 12.0, 12.0])
 
 # Safety margins (percentage of limit before triggering violation)
-_SAFETY_MARGIN_POS = 0.95  # warn at 95% of position limit
-_SAFETY_MARGIN_VEL = 0.95
+_SAFETY_MARGIN_POS = 0.98  # warn at 95% of position limit
+_SAFETY_MARGIN_VEL = 0.98
 _SAFETY_MARGIN_FORCE = 50.0  # N, max L2 force norm
 
 

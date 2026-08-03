@@ -26,6 +26,10 @@ from typing import Any
 import pyarrow.parquet as pq
 
 from real_robot_exps.camera_snapshot import update_pre_grasp_geometry_with_snapshots
+from real_robot_exps.metadata_cache import (
+    load_pre_grasp_metadata_cache,
+    write_pre_grasp_metadata_cache,
+)
 
 
 PART_ORDER = ("primary", "spur", "stem", "apple")
@@ -59,6 +63,13 @@ def _unique_path(path: Path) -> Path:
 
 def _run_output_path(path: Path) -> Path:
     return _unique_path(path)
+
+
+def _resolve_metadata_cache_path(args) -> Path:
+    cache_path = getattr(args, "metadata_cache", Path("metadata_cache.json"))
+    if cache_path.is_absolute():
+        return cache_path
+    return args.output_dir / cache_path
 
 
 
@@ -453,6 +464,12 @@ def main() -> None:
     )
     parser.add_argument("--output-dir", type=Path, default=Path("."))
     parser.add_argument("--manifest", type=Path, default=Path("manifest.json"))
+    parser.add_argument(
+        "--metadata-cache",
+        type=Path,
+        default=Path("metadata_cache.json"),
+        help="Cache file for measured pre-grasp metadata; relative paths are resolved under --output-dir",
+    )
     parser.add_argument("--config", type=Path, default=Path("real_robot_exps/config.yaml"))
     parser.add_argument("--mode", choices=["collect", "baseline"], default="collect")
     parser.add_argument("--kp", type=float, default=100.0)
@@ -535,8 +552,21 @@ def main() -> None:
 
     structure = structures[structure_index]
     pre_grasp_geometry = _normalized_pre_grasp_geometry(structure_index, structure)
+    metadata_cache_path = _resolve_metadata_cache_path(args)
+    cached_pre_grasp_geometry = None
+    try:
+        cached_pre_grasp_geometry = load_pre_grasp_metadata_cache(
+            metadata_cache_path,
+            structure_index=structure_index,
+            structure=structure,
+        )
+    except ValueError as exc:
+        print(f"[WARN] Ignoring invalid metadata cache {metadata_cache_path}: {exc}")
+    if cached_pre_grasp_geometry is not None:
+        pre_grasp_geometry = cached_pre_grasp_geometry
+        print(f"Using cached pre-grasp metadata from {metadata_cache_path}")
 
-    if args.mode == "collect":
+    if args.mode == "collect" and cached_pre_grasp_geometry is None:
         input("Let the apple/structure settle naturally under gravity, then press Enter to capture that snapshot...")
         under_gravity_snapshot = _capture_snapshot_via_subprocess()
         input(
@@ -550,6 +580,13 @@ def main() -> None:
             settled_snapshot=under_gravity_snapshot,
             under_gravity_snapshot=under_gravity_snapshot,
         )
+        write_pre_grasp_metadata_cache(
+            metadata_cache_path,
+            structure_index=structure_index,
+            structure=structure,
+            pre_grasp_geometry=pre_grasp_geometry,
+        )
+        print(f"Wrote cached pre-grasp metadata to {metadata_cache_path}")
 
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
