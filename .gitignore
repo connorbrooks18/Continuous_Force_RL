@@ -47,3 +47,5 @@ s00-d00_metadata.tmp-02.json
 s00-d00_metadata.tmp-01.json
 real_robot_exps/static_constants.py
 metadata_cache.json
+s01.zip
+*.zip
