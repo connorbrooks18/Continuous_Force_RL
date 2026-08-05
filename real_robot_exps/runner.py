@@ -46,6 +46,13 @@ def _write_json(path: Path, payload: Any) -> None:
         json.dump(payload, f, indent=2, sort_keys=True)
 
 
+def _prompt_or_continue(prompt: str, skip: bool) -> str:
+    if skip:
+        print(prompt)
+        return ""
+    return input(prompt)
+
+
 def _unique_path(path: Path) -> Path:
     """Return a non-colliding path by appending -01, -02, ... before suffix."""
     if not path.exists():
@@ -265,6 +272,8 @@ def _run_one(
         robot_cmd.append("--debug-pre-grasp")
     if args.mock_gripper:
         robot_cmd.append("--mock-gripper")
+    if args.no_enter:
+        robot_cmd.append("--no-enter")
     if args.start_detector:
         robot_cmd.extend([
             "--post-grasp-camera-request",
@@ -446,6 +455,8 @@ def _run_missing_baselines(
             baseline_cmd.append("--debug-pre-grasp")
         if args.mock_gripper:
             baseline_cmd.append("--mock-gripper")
+        if args.no_enter:
+            baseline_cmd.append("--no-enter")
         print("\n=== Running baseline ===")
         print(" ".join(baseline_cmd))
         subprocess.run(baseline_cmd, check=True)
@@ -521,6 +532,12 @@ def main() -> None:
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Forward a no-op gripper client to apple_pullto_static so no gripper connection is attempted",
+    )
+    parser.add_argument(
+        "--no-enter",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Skip Enter prompts in the runner and forwarded apple_pullto_static runs",
     )
     args = parser.parse_args()
 
