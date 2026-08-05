@@ -115,7 +115,7 @@ def _normalized_pre_grasp_geometry(structure_index: int, structure: dict[str, An
 
 def _baseline_path_for_direction(args, structure_index: int, direction: dict[str, Any]) -> Path:
     return args.output_dir / (
-        f"s{structure_index:02d}_pull_theta{direction['theta']:.2f}_phi{direction['phi']:.2f}_kp{args.kp:.0f}_baseline_robot.parquet"
+        f"baselines/s{structure_index:02d}_pull_theta{direction['theta']:.2f}_phi{direction['phi']:.2f}_kp{args.kp:.0f}_baseline_robot.parquet"
     )
 
 
