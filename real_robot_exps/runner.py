@@ -221,6 +221,8 @@ def _run_one(
             "--snapshot-output",
             str(post_snapshot_output_path),
         ]
+        if args.record:
+            detector_cmd.append("--record")
         if args.detector_extra_args:
             detector_cmd.extend(args.detector_extra_args)
         print(" ".join(detector_cmd))
@@ -487,6 +489,12 @@ def main() -> None:
         default=True,
         help="Launch at-tracking/Detecting.py before each robot run (default: true)",
     )
+    parser.add_argument(
+        "--record",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Record the detector video feed for each run (default: false)",
+    )
     parser.add_argument("--detector-script", type=Path, default=Path("at-tracking/Detecting.py"))
     parser.add_argument("--detector-extra-args", nargs=argparse.REMAINDER, default=[])
     parser.add_argument("--camera-ema-alpha", type=float, default=1.0, help="EMA alpha for camera smoothing during compile; 1.0 disables smoothing")
@@ -562,9 +570,11 @@ def main() -> None:
         )
     except ValueError as exc:
         print(f"[WARN] Ignoring invalid metadata cache {metadata_cache_path}: {exc}")
-    if cached_pre_grasp_geometry is not None:
+    if cached_pre_grasp_geometry is not None and args.only_metadata:
         pre_grasp_geometry = cached_pre_grasp_geometry
         print(f"Using cached pre-grasp metadata from {metadata_cache_path}")
+    else:
+        cached_pre_grasp_geometry = None
 
     if args.mode == "collect" and cached_pre_grasp_geometry is None:
         input("Let the apple/structure settle naturally under gravity, then press Enter to capture that snapshot...")

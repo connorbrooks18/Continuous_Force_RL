@@ -31,6 +31,7 @@ Useful flags:
 - `--camera-ema-alpha 0.3` enables light camera smoothing during unified compile.
 - `--no-start-detector` disables the AprilTag tracking subprocess.
 - `--no-expect-tracking` skips unified compile and PNG generation.
+- `--record` saves the detector video feed for each run as an `.mp4` next to the tracking output.
 - `--only-metadata` skips baseline generation and the pull trajectory, but still captures under-gravity, lengthened, and post-grasp reconstruction data.
 - `--manual-setup` pauses with torque mode off so you can physically place the arm on the apple surface before the pull starts.
 

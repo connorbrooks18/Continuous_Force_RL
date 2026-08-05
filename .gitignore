@@ -49,3 +49,5 @@ real_robot_exps/static_constants.py
 metadata_cache.json
 s01.zip
 *.zip
+s00-d00_tracking.mp4
+*.mp4
