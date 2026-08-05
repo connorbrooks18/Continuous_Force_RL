@@ -5,11 +5,12 @@ tracking, and unified Parquet files for reconstruction and analysis.
 
 The main entry point is [`real_robot_exps.runner`](/home/skand/connor/Continuous_Force_RL/real_robot_exps/runner.py).
 It captures both the natural under-gravity structure and a lengthened
-structure before the arm approaches. The lengthened snapshot remains available
-through the compatibility field `pre_grasp_geometry.snapshot` and is used to
-build the dynamic apple pull staging pose from the apple surface plus a
-2 cm offset along the pull direction. The total center-to-stage distance is
-the apple radius plus that 2 cm clearance.
+structure before the arm approaches. The settled / under-gravity snapshot now
+drives the dynamic apple pull staging pose, while the lengthened snapshot
+remains available through the compatibility field `pre_grasp_geometry.snapshot`
+for older readers. The staged target is the apple surface plus a 2 cm offset
+along the pull direction, so the total center-to-stage distance is the apple
+radius plus that 2 cm clearance.
 
 ## Main workflows
 
@@ -32,7 +33,7 @@ Useful flags:
 - `--no-start-detector` disables the AprilTag tracking subprocess.
 - `--no-expect-tracking` skips unified compile and PNG generation.
 - `--record` saves the detector video feed for each run as an `.mp4` next to the tracking output.
-- `--only-metadata` skips baseline generation and the pull trajectory, but still captures under-gravity, lengthened, and post-grasp reconstruction data.
+- `--only-metadata` skips baseline generation and the pull trajectory, but still captures under-gravity, settled, lengthened, and post-grasp reconstruction data.
 - `--manual-setup` pauses with torque mode off so you can physically place the arm on the apple surface before the pull starts.
 
 ## Understanding Pull Angles (theta & phi)

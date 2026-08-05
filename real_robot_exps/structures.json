@@ -63,6 +63,38 @@
           "density_kg_m3": 650
         }
       }
+    },
+    {
+      "name": "Default 60deg",
+      "notes": "default spur and apple but spur at different 60 degree angle (not 90)",
+      "angles_source": "lengthened_state_check",
+      "geometry_source": "catalog_entry_selected_by_structure_index",
+      "parts": {
+        "primary": {
+          "shape": "cylinder",
+          "length_m": 0.827,
+          "radius_m": 0.0125,
+          "density_kg_m3": 660
+        },
+        "spur": {
+          "shape": "cylinder",
+          "length_m": 0.13,
+          "radius_m": 0.0025,
+          "density_kg_m3": 1200
+        },
+        "stem": {
+          "shape": "cylinder",
+          "length_m": 0.005,
+          "radius_m": 0.0005,
+          "density_kg_m3": 1000
+        },
+        "apple": {
+          "shape": "sphere",
+          "length_m": 0.07,
+          "radius_m": 0.035,
+          "density_kg_m3": 650
+        }
+      }
     }
   ]
 }

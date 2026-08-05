@@ -570,7 +570,7 @@ def main() -> None:
         )
     except ValueError as exc:
         print(f"[WARN] Ignoring invalid metadata cache {metadata_cache_path}: {exc}")
-    if cached_pre_grasp_geometry is not None and args.only_metadata:
+    if cached_pre_grasp_geometry is not None:
         pre_grasp_geometry = cached_pre_grasp_geometry
         print(f"Using cached pre-grasp metadata from {metadata_cache_path}")
     else:

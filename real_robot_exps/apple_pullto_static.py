@@ -209,6 +209,22 @@ def _capture_camera_snapshot(*, request_path: str | None = None, output_path: st
             output_path.unlink()
 
 
+def _select_pre_grasp_snapshot(pre_grasp_geometry: dict) -> tuple[dict, str | None]:
+    """Pick the best pre-grasp snapshot for dynamic pull staging.
+
+    Settled / under-gravity snapshots are preferred because they reflect the
+    relaxed apple pose we want to line the robot up against. Older cached
+    metadata may only have a lengthened snapshot, so we keep that as a legacy
+    fallback instead of hard-failing.
+    """
+    pre = dict(pre_grasp_geometry or {})
+    for key in ("settled_snapshot", "under_gravity_snapshot", "lengthened_snapshot", "snapshot"):
+        snapshot = dict(pre.get(key, {}) or {})
+        if snapshot:
+            return snapshot, key
+    return {}, None
+
+
 def _load_dynamic_pull_start_pose(
     run_metadata: dict,
     fallback_pose_4x4: np.ndarray,
@@ -218,12 +234,12 @@ def _load_dynamic_pull_start_pose(
     approach_clearance_m: float = DYNAMIC_PULL_APPROACH_CLEARANCE_M,
 ) -> tuple[np.ndarray, str, float | None, np.ndarray]:
     pre = dict(run_metadata.get("pre_grasp_geometry", {}) or {})
-    lengthened = dict(pre.get("snapshot", {}) or pre.get("lengthened_snapshot", {}) or pre.get("settled_snapshot", {}) or {})
-    if not lengthened:
+    snapshot, snapshot_source = _select_pre_grasp_snapshot(pre)
+    if not snapshot:
         fallback_pose = np.asarray(fallback_pose_4x4, dtype=np.float64)
         return fallback_pose, "apple_pose_4x4", None, fallback_pose
 
-    apple_pos_flat = lengthened.get("apple_pos")
+    apple_pos_flat = snapshot.get("apple_pos")
     if apple_pos_flat is None:
         fallback_pose = np.asarray(fallback_pose_4x4, dtype=np.float64)
         return fallback_pose, "apple_pose_4x4", None, fallback_pose
@@ -248,7 +264,8 @@ def _load_dynamic_pull_start_pose(
     pose[:3, :3] = staged_rot
     surface_pose = _pose_4x4_with_translation(np.eye(4, dtype=np.float64), surface_pos)
     surface_pose[:3, :3] = surface_rot
-    return pose, "lengthened_snapshot_apple_surface_plus_2cm_pull_direction_offset", apple_radius_m, surface_pose
+    source_name = "settled_snapshot" if snapshot_source in {"settled_snapshot", "under_gravity_snapshot"} else "lengthened_snapshot"
+    return pose, f"{source_name}_apple_surface_plus_2cm_pull_direction_offset", apple_radius_m, surface_pose
 
 
 def _metadata_entry(metadata: dict) -> dict:
@@ -881,11 +898,17 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
     )
     if bool(run_args.get("debug_pre_grasp", False)):
         settled = dict(pre_grasp_geometry or {})
-        lengthened_snapshot = dict(settled.get("snapshot", {}) or settled.get("lengthened_snapshot", {}) or settled.get("settled_snapshot", {}) or {})
-        apple_pos = lengthened_snapshot.get("apple_pos")
+        settled_snapshot = dict(
+            settled.get("settled_snapshot", {})
+            or settled.get("under_gravity_snapshot", {})
+            or settled.get("lengthened_snapshot", {})
+            or settled.get("snapshot", {})
+            or {}
+        )
+        apple_pos = settled_snapshot.get("apple_pos")
         pull_start_target_pos = np.asarray(pull_start_pose_4x4[:3, 3], dtype=np.float64)
         tcp_pos = np.asarray(pull_start_snapshot["tcp_pos"], dtype=np.float64)
-        print("\n[lengthened pre-grasp debug]")
+        print("\n[settled pre-grasp debug]")
         print(f"  pull_start_pose_name: {pull_start_snapshot['pull_start_pose_name']}")
         print(f"  pull_start_target_base_m: {_format_pos_m(pull_start_target_pos)}")
         print(f"  tcp_pos_base_m: {_format_pos_m(tcp_pos)}")
@@ -1541,7 +1564,7 @@ def main():
         dynamic_pull_surface_pose_name = (
             "apple_pose_4x4"
             if dynamic_pull_stage_pose_name == "apple_pose_4x4"
-            else "lengthened_snapshot_apple_surface_pose"
+            else dynamic_pull_stage_pose_name.removesuffix("_plus_2cm_pull_direction_offset")
         )
         pull_start_pose_4x4 = (
             close_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_stage_pose_4x4
