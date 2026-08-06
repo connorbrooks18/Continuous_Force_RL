@@ -66,6 +66,13 @@ SPUR_RADIUS_BY_STIFFNESS_LEVEL = {
     1: 0.0025,
     2: 0.0030,
 }
+APPLE_RADIUS_BY_NUMBER = {
+    1: 0.0325,
+    2: 0.0350,
+    3: 0.0375,
+    4: 0.0400,
+    5: 0.0425,
+}
 STEM_ANGLE_CHOICES = {0, 30, 45, 60}
 SPUR_ANGLE_CHOICES = {45, 60, 75, 90}
 
@@ -150,6 +157,13 @@ def _parse_spur_length(raw: str) -> tuple[int, str]:
     return SPUR_LENGTH_ALIASES[key]
 
 
+def _apple_radius_from_number(apple_number: int) -> float:
+    if apple_number not in APPLE_RADIUS_BY_NUMBER:
+        choices = ", ".join(str(choice) for choice in sorted(APPLE_RADIUS_BY_NUMBER))
+        raise ValueError(f"apple # must be one of: {choices}")
+    return APPLE_RADIUS_BY_NUMBER[apple_number]
+
+
 def _build_manual_structure(
     *,
     apple_number: int,
@@ -160,9 +174,7 @@ def _build_manual_structure(
 ) -> dict[str, Any]:
     stiffness_level, stiffness_label = spur_stiffness
     spur_length_level, spur_length_label = spur_length
-    apple_radius_m = round(0.035 + 0.0025 * (apple_number - 2), 6)
-    if apple_radius_m < 0.025:
-        apple_radius_m = 0.025
+    apple_radius_m = _apple_radius_from_number(apple_number)
 
     spur_part = dict(DEFAULT_SPUR_PART)
     spur_part.update(
