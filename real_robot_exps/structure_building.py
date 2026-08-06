@@ -83,6 +83,36 @@ def load_structure_catalog(path: Path) -> list[dict[str, Any]]:
     return structures
 
 
+def append_structure_to_catalog(
+    path: Path,
+    structure: dict[str, Any],
+    *,
+    structures: list[dict[str, Any]] | None = None,
+) -> int:
+    """Append a structure to ``path`` and return the saved structure index."""
+    if structures is None:
+        structures = load_structure_catalog(path)
+    structures.append(structure)
+
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if isinstance(payload, dict):
+        catalog = payload.get("structures", [])
+        if not isinstance(catalog, list):
+            raise ValueError(f"{path} does not contain a structure list")
+        catalog.append(structure)
+        payload["structures"] = catalog
+    elif isinstance(payload, list):
+        payload.append(structure)
+    else:
+        raise ValueError(f"{path} does not contain a JSON array or object catalog")
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=True)
+    return len(structures) - 1
+
+
 def _prompt_until_valid(
     prompt: str,
     parser: Callable[[str], Any],
@@ -143,7 +173,7 @@ def _build_manual_structure(
             "stiffness_label": stiffness_label,
             "manual_selection": True,
             "manual_spur_angle_deg": spur_angle_deg,
-            "connection_rpy_deg": [0.0, 0.0, float(spur_angle_deg)],
+            "connection_rpy_deg": [0.0, float(spur_angle_deg), 0.0],
             "connection_source": "manual_selection",
         }
     )
@@ -203,6 +233,7 @@ def _build_manual_structure(
 def prompt_for_structure(
     structures: list[dict[str, Any]],
     *,
+    catalog_path: Path | None = None,
     input_fn: InputFn = input,
     print_fn: PrintFn = print,
 ) -> tuple[int, dict[str, Any]]:
@@ -237,24 +268,34 @@ def prompt_for_structure(
                 print_fn=print_fn,
             )
             stem_angle_deg = _prompt_until_valid(
-                "Stem angle (0, 30, 45, 60): ",
+                "Stem pitch (0, 30, 45, 60): ",
                 lambda raw: _parse_int_choice(raw, valid=STEM_ANGLE_CHOICES, label="stem angle"),
                 input_fn=input_fn,
                 print_fn=print_fn,
             )
             spur_angle_deg = _prompt_until_valid(
-                "Spur angle (45, 60, 75, 90): ",
+                "Spur pitch (45, 60, 75, 90): ",
                 lambda raw: _parse_int_choice(raw, valid=SPUR_ANGLE_CHOICES, label="spur angle"),
                 input_fn=input_fn,
                 print_fn=print_fn,
             )
-            return len(structures), _build_manual_structure(
+            manual_structure = _build_manual_structure(
                 apple_number=apple_number,
                 spur_stiffness=spur_stiffness,
                 spur_length=spur_length,
                 stem_angle_deg=stem_angle_deg,
                 spur_angle_deg=spur_angle_deg,
             )
+            if catalog_path is not None:
+                structure_index = append_structure_to_catalog(
+                    catalog_path,
+                    manual_structure,
+                    structures=structures,
+                )
+                print_fn(f"Saved manual structure to {catalog_path} at index {structure_index}")
+                return structure_index, manual_structure
+            structures.append(manual_structure)
+            return len(structures) - 1, manual_structure
 
         if not selected:
             return 0, structures[0]

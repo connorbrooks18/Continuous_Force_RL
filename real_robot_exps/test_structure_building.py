@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -43,23 +44,35 @@ class StructureBuildingTest(unittest.TestCase):
         def fake_print(*args, **kwargs):
             printed.append(" ".join(str(arg) for arg in args))
 
-        structures = [{"name": "default_template"}]
-        structure_index, structure = prompt_for_structure(
-            structures,
-            input_fn=fake_input,
-            print_fn=fake_print,
-        )
+        with tempfile.TemporaryDirectory() as tmp:
+            catalog_path = Path(tmp) / "structures.json"
+            catalog_path.write_text(
+                json.dumps({"structures": [{"name": "default_template"}]}, indent=2),
+                encoding="utf-8",
+            )
+            structures = load_structure_catalog(catalog_path)
+            structure_index, structure = prompt_for_structure(
+                structures,
+                catalog_path=catalog_path,
+                input_fn=fake_input,
+                print_fn=fake_print,
+            )
 
-        self.assertEqual(structure_index, 1)
-        self.assertEqual(structure["manual_selection"]["apple_number"], 3)
-        self.assertEqual(structure["manual_selection"]["spur_stiffness"], 2)
-        self.assertEqual(structure["manual_selection"]["spur_length"], "long")
-        self.assertEqual(structure["parts"]["primary"]["radius_m"], 0.0125)
-        self.assertEqual(structure["parts"]["spur"]["radius_m"], 0.003)
-        self.assertEqual(structure["parts"]["apple"]["radius_m"], 0.0375)
-        self.assertEqual(structure["parts"]["stem"]["connection_rpy_deg"], [0.0, 45.0, 0.0])
-        self.assertEqual(structure["parts"]["spur"]["connection_rpy_deg"], [0.0, 0.0, 90.0])
-        self.assertIn("n/no: build a new structure", "\n".join(printed))
+            self.assertEqual(structure_index, 1)
+            self.assertEqual(structure["manual_selection"]["apple_number"], 3)
+            self.assertEqual(structure["manual_selection"]["spur_stiffness"], 2)
+            self.assertEqual(structure["manual_selection"]["spur_length"], "long")
+            self.assertEqual(structure["parts"]["primary"]["radius_m"], 0.0125)
+            self.assertEqual(structure["parts"]["spur"]["radius_m"], 0.003)
+            self.assertEqual(structure["parts"]["apple"]["radius_m"], 0.0375)
+            self.assertEqual(structure["parts"]["stem"]["connection_rpy_deg"], [0.0, 45.0, 0.0])
+            self.assertEqual(structure["parts"]["spur"]["connection_rpy_deg"], [0.0, 90.0, 0.0])
+            self.assertIn("n/no: build a new structure", "\n".join(printed))
+
+            on_disk = json.loads(catalog_path.read_text(encoding="utf-8"))
+            self.assertEqual(len(on_disk["structures"]), 2)
+            self.assertEqual(on_disk["structures"][1]["name"], structure["name"])
+            self.assertEqual(on_disk["structures"][1]["parts"]["apple"]["radius_m"], 0.0375)
 
 
 if __name__ == "__main__":

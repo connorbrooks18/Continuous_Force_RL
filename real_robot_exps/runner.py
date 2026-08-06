@@ -558,7 +558,7 @@ def main() -> None:
         raise SystemExit(f"--start-at must be in [0, {len(directions)})")
 
     if args.structure_index is None:
-        structure_index, structure = prompt_for_structure(structures)
+        structure_index, structure = prompt_for_structure(structures, catalog_path=args.structures)
     else:
         structure_index = int(args.structure_index)
         if not 0 <= structure_index < len(structures):
