@@ -1368,7 +1368,7 @@ def main():
     parser.add_argument("--manual-setup", action=argparse.BooleanOptionalAction, default=False, help="Pause without torque mode so the arm can be manually positioned on the apple surface before the pull")
     parser.add_argument("--debug-pre-grasp", action=argparse.BooleanOptionalAction, default=False, help="Print lengthened pre-grasp apple and TCP positions during the run")
     parser.add_argument("--mock-gripper", action=argparse.BooleanOptionalAction, default=False, help="Use a no-op gripper client and never connect to the real gripper")
-    parser.add_argument("--no-enter", action=argparse.BooleanOptionalAction, default=False, help="Skip the run-start Enter prompt")
+    parser.add_argument("--skip-enter", action=argparse.BooleanOptionalAction, default=False, help="Skip the run-start Enter prompt")
     parser.add_argument("--post-grasp-camera-request", default=None, help="Request path used to ask a running detector for the post-grasp snapshot")
     parser.add_argument("--post-grasp-camera-output", default=None, help="Output path for the running detector post-grasp snapshot")
     args = parser.parse_args()
@@ -1617,7 +1617,8 @@ def main():
 
     unified_result = None
     try:
-        _prompt_or_continue(f"Press Enter to begin apple pull {mode} run...", bool(args.no_enter))
+        print(args.skip_enter)
+        _prompt_or_continue(f"Press Enter to begin apple pull {mode} run...", bool(args.skip_enter))
 
         gains = update_gains(gains, [kp, kp, kp, 30, 30, 30], device)
         angles = [(theta, phi)]

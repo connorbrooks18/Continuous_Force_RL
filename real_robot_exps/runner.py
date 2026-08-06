@@ -30,6 +30,7 @@ from real_robot_exps.metadata_cache import (
     load_pre_grasp_metadata_cache,
     write_pre_grasp_metadata_cache,
 )
+from real_robot_exps.structure_building import load_structure_catalog, prompt_for_structure
 
 
 PART_ORDER = ("primary", "spur", "stem", "apple")
@@ -272,8 +273,8 @@ def _run_one(
         robot_cmd.append("--debug-pre-grasp")
     if args.mock_gripper:
         robot_cmd.append("--mock-gripper")
-    if args.no_enter:
-        robot_cmd.append("--no-enter")
+    if args.skip_enter:
+        robot_cmd.append("--skip-enter")
     if args.start_detector:
         robot_cmd.extend([
             "--post-grasp-camera-request",
@@ -455,8 +456,8 @@ def _run_missing_baselines(
             baseline_cmd.append("--debug-pre-grasp")
         if args.mock_gripper:
             baseline_cmd.append("--mock-gripper")
-        if args.no_enter:
-            baseline_cmd.append("--no-enter")
+        if args.skip_enter:
+            baseline_cmd.append("--skip-enter")
         print("\n=== Running baseline ===")
         print(" ".join(baseline_cmd))
         subprocess.run(baseline_cmd, check=True)
@@ -534,18 +535,14 @@ def main() -> None:
         help="Forward a no-op gripper client to apple_pullto_static so no gripper connection is attempted",
     )
     parser.add_argument(
-        "--no-enter",
+        "--skip-enter",
         action=argparse.BooleanOptionalAction,
         default=False,
         help="Skip Enter prompts in the runner and forwarded apple_pullto_static runs",
     )
     args = parser.parse_args()
 
-    structures_payload = _load_json(args.structures)
-    if isinstance(structures_payload, dict):
-        structures = structures_payload.get("structures", [])
-    else:
-        structures = structures_payload
+    structures = load_structure_catalog(args.structures)
     if not structures:
         raise SystemExit(f"No structures found in {args.structures}")
 
@@ -561,21 +558,12 @@ def main() -> None:
         raise SystemExit(f"--start-at must be in [0, {len(directions)})")
 
     if args.structure_index is None:
-        print("\nAvailable structures:")
-        for idx, structure in enumerate(structures):
-            print(f"  {idx}: {structure.get('name', f'structure_{idx:02d}')}")
-        selected = input("Structure index [0]: ").strip()
-        if not selected:
-            structure_index = 0
-        else:
-            structure_index = int(selected)
+        structure_index, structure = prompt_for_structure(structures)
     else:
         structure_index = int(args.structure_index)
-
-    if not 0 <= structure_index < len(structures):
-        raise SystemExit(f"--structure-index must be in [0, {len(structures)})")
-
-    structure = structures[structure_index]
+        if not 0 <= structure_index < len(structures):
+            raise SystemExit(f"--structure-index must be in [0, {len(structures)})")
+        structure = structures[structure_index]
     pre_grasp_geometry = _normalized_pre_grasp_geometry(structure_index, structure)
     metadata_cache_path = _resolve_metadata_cache_path(args)
     cached_pre_grasp_geometry = None
