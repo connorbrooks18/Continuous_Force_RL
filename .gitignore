@@ -52,3 +52,8 @@ s01.zip
 s00-d00_tracking.mp4
 *.mp4
 s02-d00_post_grasp_camera.json
+s02-d00_metadata.tmp-01.json
+s02-d00_metadata.tmp-02.json
+.gitignore
+s02-d00_metadata.tmp-03.json
+s02-d00_post_grasp_camera-01.json

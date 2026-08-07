@@ -640,7 +640,11 @@ def compile_static_episode(
                 "description": "measured joint positions",
             },
             "tcp_velocity": {"dim": 6, "order": ["vx", "vy", "vz", "wx", "wy", "wz"]},
-            "action": {"dim": 6, "order": ["vx", "vy", "vz", "wx", "wy", "wz"]},
+            "action": {
+                "dim": 6,
+                "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+                "description": "per-frame pose-control wrench computed from pose error and twist",
+            },
             "tcp_pos": {"dim": 3, "order": ["x", "y", "z"]},
             "tcp_pose_4x4": {"dim": 16, "reshape": [4, 4]},
             "target_pose_4x4": {"dim": 16, "reshape": [4, 4]},

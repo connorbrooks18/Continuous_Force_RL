@@ -483,6 +483,12 @@ def run_move(
         snap = robot.get_state_snapshot()
         timestamp = time.time()
         robot.check_safety(snap)
+        action_wrench = compute_pose_task_wrench(
+            snap.ee_pos, snap.ee_quat, snap.ee_linvel, snap.ee_angvel,
+            target_pos, target_quat,
+            targets.task_prop_gains, targets.task_deriv_gains,
+        )
+        targets.task_prop_gains; targets.task_deriv_gains
         
         robot.set_control_targets(targets)
         _append_robot_sample(
@@ -499,6 +505,7 @@ def run_move(
             excitation_direction=excitation_direction,
             snap=snap,
             sample_label=sample_label,
+            action=action_wrench.detach().cpu().numpy(),
         )
 
         # Debug: replicate wrench computation from compute process for visibility
@@ -506,17 +513,12 @@ def run_move(
             pos_err, aa_err = compute_pose_error(
                 snap.ee_pos, snap.ee_quat, target_pos, target_quat,
             )
-            wrench = compute_pose_task_wrench(
-                snap.ee_pos, snap.ee_quat, snap.ee_linvel, snap.ee_angvel,
-                target_pos, target_quat,
-                gains['task_prop_gains'], gains['task_deriv_gains'],
-            )
             if(prnt):
                 print(f"    [step {step:3d}] orn_error (axis-angle, base frame): "
                     f"[{aa_err[0].item():.6f}, {aa_err[1].item():.6f}, {aa_err[2].item():.6f}]")
                 print(f"    [step {step:3d}] wrench [Fx,Fy,Fz,Tx,Ty,Tz] (base frame, pre-Lambda): "
-                    f"[{wrench[0].item():.4f}, {wrench[1].item():.4f}, {wrench[2].item():.4f}, "
-                    f"{wrench[3].item():.4f}, {wrench[4].item():.4f}, {wrench[5].item():.4f}]")
+                    f"[{action_wrench[0].item():.4f}, {action_wrench[1].item():.4f}, {action_wrench[2].item():.4f}, "
+                    f"{action_wrench[3].item():.4f}, {action_wrench[4].item():.4f}, {action_wrench[5].item():.4f}]")
                 print(f"    [step {step:3d}] frame: geometric Jacobian base frame "
                     f"(q_err = q_target * q_current^-1 -> axis-angle)")
 
@@ -623,6 +625,11 @@ def hold_and_record(
         timestamp = time.time()
         robot.check_safety(snap)
         robot.set_control_targets(targets)
+        action_wrench = compute_pose_task_wrench(
+            snap.ee_pos, snap.ee_quat, snap.ee_linvel, snap.ee_angvel,
+            target_pos, target_quat,
+            gains['task_prop_gains'], gains['task_deriv_gains'],
+        )
         ft = snap.force_torque.cpu().numpy()
         ft_history.append(ft)
         _append_robot_sample(
@@ -639,6 +646,7 @@ def hold_and_record(
             direction_one_hot=direction_one_hot,
             excitation_direction=excitation_direction,
             snap=snap,
+            action=action_wrench.detach().cpu().numpy(),
         )
     
     # print(ft_history)
@@ -1179,7 +1187,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
         "hold_ranges": hold_ranges,
         "direction_index": int(run_args.get("direction_index", 0)),
         "num_directions": int(run_args.get("num_directions", 1)),
-        "action_semantics": "legacy 6D control placeholder; row phase indicates move vs hold",
+        "action_semantics": "per-frame pose-control wrench [Fx, Fy, Fz, Tx, Ty, Tz] computed from the current pose error and velocity",
         "sample_labels": [
             "approach",
             "pull",

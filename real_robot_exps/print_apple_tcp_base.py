@@ -41,6 +41,11 @@ def _format_quat_xyzw(value) -> str:
     return np.array2string(quat, precision=4, suppress_small=True)
 
 
+def _format_pose_4x4(value) -> str:
+    pose = np.asarray(value, dtype=np.float64).reshape(4, 4)
+    return np.array2string(pose, precision=4, suppress_small=True)
+
+
 def _quat_xyzw_from_rotmat(rot: np.ndarray) -> np.ndarray:
     rot = np.asarray(rot, dtype=np.float64).reshape(3, 3)
     trace = float(np.trace(rot))
@@ -118,6 +123,11 @@ def _read_parquet_metadata(path: Path) -> dict:
     return json.loads(payload.decode("utf-8")) if payload else {}
 
 
+def _non_metadata_rows(path: Path) -> list[dict]:
+    rows = pq.read_table(path).to_pylist()
+    return [row for row in rows if str(row.get("row_kind", "data")) != "metadata"]
+
+
 def _vector_distance(a, b) -> tuple[np.ndarray, float]:
     a_vec = np.asarray(a, dtype=np.float64).reshape(3)
     b_vec = np.asarray(b, dtype=np.float64).reshape(3)
@@ -155,13 +165,92 @@ def _extract_grasp_distance(
     return delta, distance, phase_geometry
 
 
-def _print_parquet_distances(parquet_path: Path) -> None:
+def _snapshot_from_metadata(metadata: dict, *, phase: str) -> dict:
+    phase_geometry = dict(metadata.get(f"{phase}_grasp_geometry", {}) or {})
+    snapshot = dict(
+        phase_geometry.get("snapshot", {})
+        or phase_geometry.get("lengthened_snapshot", {})
+        or phase_geometry.get("settled_snapshot", {})
+        or phase_geometry.get("under_gravity_snapshot", {})
+        or {}
+    )
+    robot_snapshot = dict(phase_geometry.get("robot_snapshot", {}) or {})
+    return {
+        "snapshot": snapshot,
+        "robot_snapshot": robot_snapshot,
+        "phase_geometry": phase_geometry,
+    }
+
+
+def _pose_from_4x4(value) -> tuple[np.ndarray, np.ndarray]:
+    pose = np.asarray(value, dtype=np.float64).reshape(4, 4)
+    return pose[:3, 3].copy(), _quat_xyzw_from_rotmat(pose[:3, :3])
+
+
+def _pick_pose_value(source: dict, pose_key: str) -> np.ndarray | None:
+    value = source.get(pose_key)
+    if value is None:
+        return None
+    try:
+        pose = np.asarray(value, dtype=np.float64).reshape(4, 4)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(pose).all():
+        return None
+    return pose
+
+
+def _print_pose_report_block(name: str, source_name: str, pose_4x4: np.ndarray) -> None:
+    pos_m, quat_xyzw = _pose_from_4x4(pose_4x4)
+    print(f"{name}:")
+    print(f"  source: {source_name}")
+    print(f"  pos_m: {_format_pos_m(pos_m)}")
+    print(f"  quat_xyzw: {_format_quat_xyzw(quat_xyzw)}")
+    print("  pose_4x4:")
+    for line in _format_pose_4x4(pose_4x4).splitlines():
+        print(f"    {line}")
+
+
+def _print_parquet_pose_report(parquet_path: Path) -> None:
     if not parquet_path.exists():
         raise FileNotFoundError(f"Parquet file not found: {parquet_path}")
 
     metadata = _read_parquet_metadata(parquet_path)
     if not metadata:
         raise ValueError(f"No dataset metadata found in {parquet_path}")
+
+    print(f"parquet: {parquet_path}")
+    pre = _snapshot_from_metadata(metadata, phase="pre")
+    post = _snapshot_from_metadata(metadata, phase="post")
+    rows = _non_metadata_rows(parquet_path)
+    first_row = rows[0] if rows else {}
+
+    pose_sources = [
+        ("pre_grasp_geometry.robot_snapshot", pre["robot_snapshot"]),
+        ("post_grasp_geometry.robot_snapshot", post["robot_snapshot"]),
+        ("pre_grasp_geometry.snapshot", pre["snapshot"]),
+        ("post_grasp_geometry.snapshot", post["snapshot"]),
+        ("first_data_row", first_row),
+    ]
+
+    pose_keys = {
+        "tcp": "tcp_pose_4x4",
+        "apple": "apple_pose_4x4",
+        "branch": "branch_pose_4x4",
+        "spur": "spur_pose_4x4",
+    }
+    for name, pose_key in pose_keys.items():
+        pose_value = None
+        source_name = "<unavailable>"
+        for candidate_name, source in pose_sources:
+            pose_value = _pick_pose_value(source, pose_key)
+            if pose_value is not None:
+                source_name = candidate_name
+                break
+        if pose_value is None:
+            raise ValueError(f"Could not find {pose_key} in {parquet_path}")
+        _print_pose_report_block(name, source_name, pose_value)
+        print()
 
     pre_delta, pre_distance, pre_geo = _extract_grasp_distance(metadata, phase="pre")
     fallback_apple = None
@@ -178,26 +267,26 @@ def _print_parquet_distances(parquet_path: Path) -> None:
         fallback_apple_pos=fallback_apple,
     )
 
-    print(f"parquet: {parquet_path}")
+    print("Legacy diagnostics:")
     if pre_delta is not None and pre_distance is not None:
-        print(f"pre_grasp_tcp_minus_apple_base_m: {_format_pos_m(pre_delta)}")
-        print(f"pre_grasp_tcp_apple_distance_m:   {pre_distance:.6f}")
+        print(f"  pre_grasp_tcp_minus_apple_base_m: {_format_pos_m(pre_delta)}")
+        print(f"  pre_grasp_tcp_apple_distance_m:   {pre_distance:.6f}")
     else:
-        print("pre_grasp_tcp_apple_distance_m:   <unavailable>")
+        print("  pre_grasp_tcp_apple_distance_m:   <unavailable>")
 
     approach_geo = dict(metadata.get("approach_geometry", {}) or {})
     approach_tcp = approach_geo.get("tcp_pos")
     if approach_tcp is not None and fallback_apple is not None:
         approach_delta, approach_distance = _vector_distance(approach_tcp, fallback_apple)
-        print(f"approach_tcp_minus_apple_base_m:   {_format_pos_m(approach_delta)}")
-        print(f"approach_tcp_apple_distance_m:     {approach_distance:.6f}")
+        print(f"  approach_tcp_minus_apple_base_m:   {_format_pos_m(approach_delta)}")
+        print(f"  approach_tcp_apple_distance_m:     {approach_distance:.6f}")
     else:
-        print("approach_tcp_apple_distance_m:     <unavailable>")
+        print("  approach_tcp_apple_distance_m:     <unavailable>")
     if post_delta is not None and post_distance is not None:
-        print(f"post_grasp_tcp_minus_apple_base_m: {_format_pos_m(post_delta)}")
-        print(f"post_grasp_tcp_apple_distance_m:   {post_distance:.6f}")
+        print(f"  post_grasp_tcp_minus_apple_base_m:  {_format_pos_m(post_delta)}")
+        print(f"  post_grasp_tcp_apple_distance_m:    {post_distance:.6f}")
     else:
-        print("post_grasp_tcp_apple_distance_m:   <unavailable>")
+        print("  post_grasp_tcp_apple_distance_m:    <unavailable>")
 
     def _pose_name(phase_geo: dict | None, fallback: str = "unknown") -> str:
         if not phase_geo:
@@ -213,12 +302,12 @@ def _print_parquet_distances(parquet_path: Path) -> None:
         )
 
     if pre_geo is not None:
-        print(f"pre_grasp_pose_name: {_pose_name(pre_geo)}")
+        print(f"  pre_grasp_pose_name: {_pose_name(pre_geo)}")
     if approach_geo:
-        print(f"approach_pose_name: {approach_geo.get('pose_name', _pose_name(approach_geo))}")
-        print(f"approach_target_reached: {bool(approach_geo.get('target_reached', False))}")
+        print(f"  approach_pose_name: {approach_geo.get('pose_name', _pose_name(approach_geo))}")
+        print(f"  approach_target_reached: {bool(approach_geo.get('target_reached', False))}")
     if post_geo is not None:
-        print(f"post_grasp_pose_name: {_pose_name(post_geo)}")
+        print(f"  post_grasp_pose_name: {_pose_name(post_geo)}")
 
 
 def _capture_pair(
@@ -265,14 +354,14 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=Path("real_robot_exps/config.yaml"))
     parser.add_argument("--camera-frames", type=int, default=1, help="Number of camera frames to median for the apple")
     parser.add_argument("--camera-timeout", type=float, default=8.0, help="Timeout for the camera snapshot")
-    parser.add_argument("--parquet", type=Path, default=None, help="Read an existing parquet file and print pre/post grasp TCP-apple distances")
+    parser.add_argument("--parquet", type=Path, default=None, help="Read an existing parquet file and print tcp/apple/branch/spur poses")
     parser.add_argument("--watch", action=argparse.BooleanOptionalAction, default=False, help="Keep printing repeatedly")
     parser.add_argument("--interval", type=float, default=1.0, help="Seconds between prints in watch mode")
     parser.add_argument("--override", action="append", default=[], help="Override config values (repeatable)")
     args = parser.parse_args()
 
     if args.parquet is not None:
-        _print_parquet_distances(args.parquet)
+        _print_parquet_pose_report(args.parquet)
         return
 
     config = _load_config(args.config, args.override)

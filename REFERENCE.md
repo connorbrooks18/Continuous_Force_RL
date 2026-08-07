@@ -89,7 +89,7 @@ Robot-side fields:
 | `tau_J_d` | 7 | Desired link-side joint torques without gravity. |
 | `joint_pos` | 7 | Joint positions, base-to-EE order. |
 | `tcp_velocity` | 6 | TCP linear + angular velocity. |
-| `action` | 6 | Recorded command. |
+| `action` | 6 | Per-frame pose-control wrench `[Fx, Fy, Fz, Tx, Ty, Tz]`. |
 | `tcp_pos` | 3 | TCP position. |
 | `tcp_pose_4x4` | 16 | TCP pose in the Franka base frame. |
 | `target_pose_4x4` | 16 | Commanded Cartesian target. |
