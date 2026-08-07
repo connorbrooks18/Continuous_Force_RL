@@ -41,6 +41,7 @@ CONVERGE_FRAMES = 10
 MAX_STEPS = 500             # ~33s at 15Hz safety cap
 MOVE_DISTANCE = 0.02     # 5cm
 DYNAMIC_PULL_APPROACH_CLEARANCE_M = 0.02
+DYNAMIC_PULL_LOCAL_Z_TWIST_DEG = -18.5
 
 # One-line switch for unloaded/system-identification trials closer to the robot.
 # False uses the normal apple pose; True uses CLOSE_PULL_START_POSITION_M.
@@ -127,8 +128,29 @@ def _pose_4x4_to_quat_tensor(pose_4x4: np.ndarray, *, device: str = "cpu") -> to
     return torch.as_tensor(quat_wxyz, device=device, dtype=torch.float32)
 
 
-def _look_at_rotation_toward_apple(position: np.ndarray, apple_center: np.ndarray, fallback_rotation: np.ndarray) -> np.ndarray:
-    """Build a rotation whose local +Z axis points toward the apple center."""
+def _rotation_about_local_z(angle_rad: float) -> np.ndarray:
+    """Return a 3x3 rotation that twists about the local +Z axis."""
+    c = math.cos(angle_rad)
+    s = math.sin(angle_rad)
+    return np.array([
+        [c, -s, 0.0],
+        [s, c, 0.0],
+        [0.0, 0.0, 1.0],
+    ], dtype=np.float64)
+
+
+def _look_at_rotation_toward_apple(
+    position: np.ndarray,
+    apple_center: np.ndarray,
+    fallback_rotation: np.ndarray,
+    *,
+    local_z_twist_deg: float = DYNAMIC_PULL_LOCAL_Z_TWIST_DEG,
+) -> np.ndarray:
+    """Build a rotation whose local +Z axis points toward the apple center.
+
+    The twist about that +Z axis is fixed so the dynamic lining-up pose is
+    deterministic instead of being chosen implicitly by the up-vector fallback.
+    """
     position = np.asarray(position, dtype=np.float64).reshape(3)
     apple_center = np.asarray(apple_center, dtype=np.float64).reshape(3)
     forward = apple_center - position
@@ -149,7 +171,9 @@ def _look_at_rotation_toward_apple(position: np.ndarray, apple_center: np.ndarra
     if y_norm < 1e-12:
         return np.asarray(fallback_rotation, dtype=np.float64).reshape(3, 3)
     y_axis /= y_norm
-    return np.column_stack([x_axis, y_axis, z_axis])
+    base_rotation = np.column_stack([x_axis, y_axis, z_axis])
+    twist = _rotation_about_local_z(math.radians(float(local_z_twist_deg)))
+    return base_rotation @ twist
 
 
 def _pull_direction_vector(theta: float, phi: float) -> np.ndarray:
@@ -1641,6 +1665,7 @@ def main():
             "dynamic_apple_radius_m": None if dynamic_pull_apple_radius_m is None else float(dynamic_pull_apple_radius_m),
             "approach_offset_m": float(approach_offset_m),
             "approach_clearance_m": float(DYNAMIC_PULL_APPROACH_CLEARANCE_M),
+            "dynamic_pull_local_z_twist_deg": float(DYNAMIC_PULL_LOCAL_Z_TWIST_DEG),
             "apple_pose_4x4": apple_pose_4x4.tolist(),
             "dynamic_pull_pose_4x4": dynamic_pull_stage_pose_4x4.tolist(),
             "dynamic_pull_surface_pose_4x4": dynamic_pull_surface_pose_4x4.tolist(),
