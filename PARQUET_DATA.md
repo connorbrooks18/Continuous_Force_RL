@@ -28,10 +28,13 @@ are robot samples.
 - Timestamps are Unix wall-clock seconds from `time.time()`.
 - TCP poses and camera-derived poses use the `franka_base_o` frame.
 - `tcp_velocity` is ordered `[vx, vy, vz, wx, wy, wz]`.
-- `action` is ordered `[Fx, Fy, Fz, Tx, Ty, Tz]` and records the per-frame pose-control wrench.
+- `action_wrench_ee` is ordered `[Fx, Fy, Fz, Tx, Ty, Tz]` and records the per-frame pose-control wrench.
 - `ft_wrist` and `ft_wrist_raw` contain `[Fx, Fy, Fz, Tx, Ty, Tz]`.
 - Force values use the robot end-effector/body convention; interpret torque
   axes using the robot interface.
+- `target_pose_4x4`, `task_prop_gains`, and `task_deriv_gains` are stored per
+  row so `compute_pose_task_wrench(...)` can be recreated later from the saved
+  sample stream.
 
 ## Raw Robot Fields
 
@@ -50,12 +53,14 @@ are robot samples.
 | `sample_label` | string | Human-readable sample label. |
 | `amplitude_m` | scalar | Requested displacement amplitude. |
 | `target_pose_4x4` | 16 | Commanded TCP target, reshape to `[4, 4]`. |
+| `task_prop_gains` | 6 | Pose proportional gains used for the sample. |
+| `task_deriv_gains` | 6 | Pose derivative gains used for the sample. |
 | `ft_wrist` | 6 | Wrench used by the run. |
 | `ft_wrist_raw` | 6 | Wrench before dynamic baseline subtraction. |
 | `tau_J_d` | 7 | Desired joint torques. |
 | `joint_pos` | 7 | Measured joint positions. |
 | `tcp_velocity` | 6 | TCP linear and angular velocity. |
-| `action` | 6 | Per-frame pose-control wrench `[Fx, Fy, Fz, Tx, Ty, Tz]`. |
+| `action_wrench_ee` | 6 | Per-frame pose-control wrench `[Fx, Fy, Fz, Tx, Ty, Tz]`. |
 | `tcp_pos` | 3 | Measured TCP position. |
 | `tcp_pose_4x4` | 16 | Measured TCP pose, reshape to `[4, 4]`. |
 | `excitation_direction` | 3 | Unit pull direction. |
@@ -66,7 +71,8 @@ raw robot files.
 ## Unified Fields
 
 The unified file has one row per robot sample. Robot fields above are retained,
-and these camera/alignment fields are added:
+including the replay-critical target pose and gain vectors, and these
+camera/alignment fields are added:
 
 | Field | Shape | Meaning |
 | --- | ---: | --- |

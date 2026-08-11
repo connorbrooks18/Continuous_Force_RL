@@ -324,9 +324,11 @@ def _unified_schema(n_holds: int, n_directions: int) -> pa.Schema:
         pa.field("tau_J_d", vector(7), metadata={b"unit": b"N m", b"source": b"RobotState.tau_J_d"}),
         pa.field("joint_pos", vector(7), metadata={b"unit": b"rad", b"source": b"RobotState.q"}),
         pa.field("tcp_velocity", vector(6)),
-        pa.field("action", vector(6), metadata={b"semantics": b"commanded EE twist"}),
+        pa.field("action_wrench_ee", vector(6), metadata={b"semantics": b"commanded EE twist"}),
         pa.field("tcp_pos", vector(3)),
         pa.field("tcp_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
+        pa.field("task_prop_gains", vector(6), metadata={b"semantics": b"pose proportional gains"}),
+        pa.field("task_deriv_gains", vector(6), metadata={b"semantics": b"pose derivative gains"}),
         pa.field("apple_pos", vector(3), metadata={b"frame": b"franka_base_o"}),
         pa.field("apple_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
         pa.field("woody_part_start_pos", vector(9), metadata={b"frame": b"franka_base_o"}),
@@ -375,7 +377,8 @@ def compile_static_episode(
         raise ValueError("Robot input contains no hold rows")
     required_robot_fields = {
         "timestamp", "hold_index", "ft_wrist", "tau_J_d", "joint_pos",
-        "tcp_velocity", "action", "tcp_pos", "tcp_pose_4x4", "target_pose_4x4",
+        "tcp_velocity", "action_wrench_ee", "tcp_pos", "tcp_pose_4x4", "target_pose_4x4",
+        "task_prop_gains", "task_deriv_gains",
         "hold_number", "direction", "phase", "excitation_direction",
     }
     missing = required_robot_fields - set(robot_rows[0])
@@ -514,9 +517,11 @@ def compile_static_episode(
             "tau_J_d": _as_list(robot_row["tau_J_d"]),
             "joint_pos": _as_list(robot_row["joint_pos"]),
             "tcp_velocity": _as_list(robot_row["tcp_velocity"]),
-            "action": _as_list(robot_row["action"]),
+            "action_wrench_ee": _as_list(robot_row["action_wrench_ee"]),
             "tcp_pos": _as_list(robot_row["tcp_pos"]),
             "tcp_pose_4x4": _as_list(robot_row["tcp_pose_4x4"]),
+            "task_prop_gains": _as_list(robot_row["task_prop_gains"]),
+            "task_deriv_gains": _as_list(robot_row["task_deriv_gains"]),
             "apple_pos": _as_list(positions["Apple"]),
             "apple_pose_4x4": _as_list(poses["Apple"]),
             "woody_part_start_pos": _as_list(starts.reshape(-1)),
@@ -640,13 +645,23 @@ def compile_static_episode(
                 "description": "measured joint positions",
             },
             "tcp_velocity": {"dim": 6, "order": ["vx", "vy", "vz", "wx", "wy", "wz"]},
-            "action": {
+            "action_wrench_ee": {
                 "dim": 6,
                 "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
                 "description": "per-frame pose-control wrench computed from pose error and twist",
             },
             "tcp_pos": {"dim": 3, "order": ["x", "y", "z"]},
             "tcp_pose_4x4": {"dim": 16, "reshape": [4, 4]},
+            "task_prop_gains": {
+                "dim": 6,
+                "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+                "description": "pose proportional gains used to compute action",
+            },
+            "task_deriv_gains": {
+                "dim": 6,
+                "order": ["Fx", "Fy", "Fz", "Tx", "Ty", "Tz"],
+                "description": "pose derivative gains used to compute action",
+            },
             "target_pose_4x4": {"dim": 16, "reshape": [4, 4]},
             "apple_pos": {"dim": 3, "order": ["x", "y", "z"]},
             "apple_pose_4x4": {"dim": 16, "reshape": [4, 4]},

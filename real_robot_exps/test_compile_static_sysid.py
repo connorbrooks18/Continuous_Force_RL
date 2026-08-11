@@ -37,9 +37,11 @@ class CompileStaticSysidTest(unittest.TestCase):
                         "tau_J_d": np.arange(7, dtype=np.float32) + 20,
                         "joint_pos": np.arange(7, dtype=np.float32) + 40,
                         "tcp_velocity": np.zeros(6, dtype=np.float32),
-                        "action": np.zeros(6, dtype=np.float32),
+                        "action_wrench_ee": np.zeros(6, dtype=np.float32),
                         "tcp_pos": np.ones(3, dtype=np.float32),
                         "tcp_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
+                        "task_prop_gains": np.full(6, 50.0, dtype=np.float32),
+                        "task_deriv_gains": np.full(6, 15.0, dtype=np.float32),
                         "target_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
                         "hold_number": np.eye(2, dtype=np.float32)[hold_idx],
                         "direction": np.ones(1, dtype=np.float32),
@@ -113,6 +115,8 @@ class CompileStaticSysidTest(unittest.TestCase):
             self.assertIn("tau_J_d", output.schema.names)
             self.assertIn("joint_pos", output.schema.names)
             self.assertIn("tcp_pose_4x4", output.schema.names)
+            self.assertIn("task_prop_gains", output.schema.names)
+            self.assertIn("task_deriv_gains", output.schema.names)
             self.assertIn("target_pose_4x4", output.schema.names)
             self.assertIn("sample_label", output.schema.names)
 
@@ -131,9 +135,11 @@ class CompileStaticSysidTest(unittest.TestCase):
                 "tau_J_d": np.zeros(7, dtype=np.float32),
                 "joint_pos": np.zeros(7, dtype=np.float32),
                 "tcp_velocity": np.zeros(6, dtype=np.float32),
-                "action": np.zeros(6, dtype=np.float32),
+                "action_wrench_ee": np.zeros(6, dtype=np.float32),
                 "tcp_pos": np.zeros(3, dtype=np.float32),
                 "tcp_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
+                "task_prop_gains": np.ones(6, dtype=np.float32),
+                "task_deriv_gains": np.ones(6, dtype=np.float32),
                 "target_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
                 "hold_number": np.array([1.0], dtype=np.float32),
                 "direction": np.array([1.0], dtype=np.float32),

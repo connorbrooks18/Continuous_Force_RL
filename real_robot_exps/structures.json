@@ -9,7 +9,7 @@
         "apple": {
           "density_kg_m3": 650,
           "length_m": 0.07,
-          "radius_m": 0.035,
+          "radius_m": 0.04,
           "shape": "sphere"
         },
         "primary": {
@@ -41,7 +41,7 @@
         "apple": {
           "density_kg_m3": 650,
           "length_m": 0.07,
-          "radius_m": 0.035,
+          "radius_m": 0.04,
           "shape": "sphere"
         },
         "primary": {
@@ -73,7 +73,7 @@
         "apple": {
           "density_kg_m3": 650,
           "length_m": 0.07,
-          "radius_m": 0.035,
+          "radius_m": 0.04,
           "shape": "sphere"
         },
         "primary": {

@@ -43,11 +43,6 @@ MOVE_DISTANCE = 0.02     # 5cm
 DYNAMIC_PULL_APPROACH_CLEARANCE_M = 0.02
 DYNAMIC_PULL_LOCAL_Z_TWIST_DEG = -18.5
 
-# One-line switch for unloaded/system-identification trials closer to the robot.
-# False uses the normal apple pose; True uses CLOSE_PULL_START_POSITION_M.
-USE_CLOSE_PULL_START_POSE = False
-CLOSE_PULL_START_POSITION_M = np.array([0.0, 0.7, 0.35], dtype=np.float64)
-CLOSE_PULL_ROLL_FORWARD_DEG = 20.0
 MANUAL_SETUP_START_POSE_NAME = "manual_setup_current_tcp_pose"
 
 # Baseline mode records an unloaded wrench profile. When this is True, collect
@@ -320,6 +315,8 @@ def _append_robot_sample(
     sample_label: str,
     amplitude_m: float,
     target_pose_4x4: np.ndarray,
+    task_prop_gains: np.ndarray | torch.Tensor,
+    task_deriv_gains: np.ndarray | torch.Tensor,
     hold_one_hot: np.ndarray,
     direction_one_hot: np.ndarray,
     excitation_direction: np.ndarray,
@@ -340,6 +337,8 @@ def _append_robot_sample(
         "sample_label": str(sample_label),
         "amplitude_m": float(amplitude_m),
         "target_pose_4x4": _flat_float32(target_pose_4x4),
+        "task_prop_gains": _flat_float32(task_prop_gains),
+        "task_deriv_gains": _flat_float32(task_deriv_gains),
         "ft_wrist": _flat_float32(snap.force_torque.cpu().numpy()),
         "ft_wrist_raw": _flat_float32(snap.force_torque.cpu().numpy()),
         "tau_J_d": _flat_float32(snap.tau_J_d.cpu().numpy()),
@@ -348,7 +347,9 @@ def _append_robot_sample(
             snap.ee_linvel.cpu().numpy(),
             snap.ee_angvel.cpu().numpy(),
         ])),
-        "action": _flat_float32(np.zeros(6, dtype=np.float32) if action is None else np.asarray(action, dtype=np.float32).reshape(6)),
+        "action_wrench_ee": _flat_float32(
+            np.zeros(6, dtype=np.float32) if action is None else np.asarray(action, dtype=np.float32).reshape(6)
+        ),
         "tcp_pos": _flat_float32(snap.ee_pos.cpu().numpy()),
         "tcp_pose_4x4": _flat_float32(_tcp_pose_4x4_from_snapshot(snap)),
         "excitation_direction": _flat_float32(excitation_direction.copy()),
@@ -512,7 +513,6 @@ def run_move(
             target_pos, target_quat,
             targets.task_prop_gains, targets.task_deriv_gains,
         )
-        targets.task_prop_gains; targets.task_deriv_gains
         
         robot.set_control_targets(targets)
         _append_robot_sample(
@@ -524,6 +524,8 @@ def run_move(
             phase_name=phase_name,
             amplitude_m=amplitude_m,
             target_pose_4x4=_pose_4x4_from_pos_quat(target_pos, target_quat),
+            task_prop_gains=targets.task_prop_gains,
+            task_deriv_gains=targets.task_deriv_gains,
             hold_one_hot=hold_one_hot,
             direction_one_hot=direction_one_hot,
             excitation_direction=excitation_direction,
@@ -649,11 +651,13 @@ def hold_and_record(
         timestamp = time.time()
         robot.check_safety(snap)
         robot.set_control_targets(targets)
+
         action_wrench = compute_pose_task_wrench(
             snap.ee_pos, snap.ee_quat, snap.ee_linvel, snap.ee_angvel,
             target_pos, target_quat,
-            gains['task_prop_gains'], gains['task_deriv_gains'],
+            targets.task_prop_gains, targets.task_deriv_gains,
         )
+
         ft = snap.force_torque.cpu().numpy()
         ft_history.append(ft)
         _append_robot_sample(
@@ -666,6 +670,8 @@ def hold_and_record(
             sample_label=sample_label,
             amplitude_m=amplitude_m,
             target_pose_4x4=_pose_4x4_from_pos_quat(target_pos, target_quat),
+            task_prop_gains=targets.task_prop_gains,
+            task_deriv_gains=targets.task_deriv_gains,
             hold_one_hot=hold_one_hot,
             direction_one_hot=direction_one_hot,
             excitation_direction=excitation_direction,
@@ -909,9 +915,15 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
     excitation_direction = np.zeros(3, dtype=np.float32)
     time.sleep(2.0)  # let the robot settle before recording the pull-start TCP snapshot
     
-    if not manual_setup_enabled:
-        robot.reset_to_start_pose(pull_start_pose_4x4)
     snap = robot.get_state_snapshot()
+    if manual_setup_enabled:
+        # In manual mode we trust the current live pose instead of commanding a
+        # staged reset that would override the user's setup.
+        pull_start_pose_4x4 = _tcp_pose_4x4_from_snapshot(snap)
+        pull_surface_pose_4x4 = pull_start_pose_4x4
+    else:
+        robot.reset_to_start_pose(pull_start_pose_4x4)
+        snap = robot.get_state_snapshot()
     pull_start_snapshot = _snapshot_geometry(
         snap,
         target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
@@ -994,17 +1006,23 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
 
     # Both collection modes use the same approach and grasp sequence. Metadata
     # mode only skips the force/pull portion after this point.
-    print(
-        "Approaching apple surface: "
-        f"staged TCP {_format_pos_m(pull_start_pose_4x4[:3, 3])} -> "
-        f"surface TCP {_format_pos_m(pull_surface_pose_4x4[:3, 3])} "
-        f"({approach_clearance_m * 100.0:.1f} cm inward)"
-    )
-    # Use the same Cartesian reset implementation as the staged move. This
-    # avoids the torque-mode approach controller and gives the arm a complete
-    # reset from the 2 cm staging pose to the apple surface.
-    robot.reset_to_start_pose(pull_surface_pose_4x4)
-    snap = robot.get_state_snapshot()
+    if manual_setup_enabled:
+        print(
+            "Manual setup mode: keeping the live robot pose and using it as the "
+            "pull-start / surface pose without a staged reset."
+        )
+    else:
+        print(
+            "Approaching apple surface: "
+            f"staged TCP {_format_pos_m(pull_start_pose_4x4[:3, 3])} -> "
+            f"surface TCP {_format_pos_m(pull_surface_pose_4x4[:3, 3])} "
+            f"({approach_clearance_m * 100.0:.1f} cm inward)"
+        )
+        # Use the same Cartesian reset implementation as the staged move. This
+        # avoids the torque-mode approach controller and gives the arm a complete
+        # reset from the 2 cm staging pose to the apple surface.
+        robot.reset_to_start_pose(pull_surface_pose_4x4)
+        snap = robot.get_state_snapshot()
     position_error = float(torch.linalg.vector_norm(snap.ee_pos - surface_target).item())
     _, orientation_error = compute_pose_error(
         snap.ee_pos,
@@ -1071,6 +1089,8 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
             sample_label="metadata_only_post_grasp",
             amplitude_m=0.0,
             target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
+            task_prop_gains=gains["task_prop_gains"],
+            task_deriv_gains=gains["task_deriv_gains"],
             hold_one_hot=hold_one_hot,
             direction_one_hot=direction_one_hot,
             excitation_direction=excitation_direction,
@@ -1524,7 +1544,7 @@ def main():
 
     # arbitrarily chosen 'home'
     home_rot = np.array([[-1, 0, 0.0], [0.0, 0.0, 1.0], [0, 1, 0]])
-    home_pos = np.array([0.07, 0.71, 0.41])
+    home_pos = np.array([0.00, 0.61, 0.41])
     home_pose_4x4 = make_ee_target_pose_from_matrix(home_pos, home_rot)
 
     apple_rot = np.array([
@@ -1540,31 +1560,18 @@ def main():
     dynamic_pull_surface_pose_4x4 = apple_pose_4x4
     dynamic_pull_stage_pose_name = "apple_pose_4x4"
     dynamic_pull_surface_pose_name = "apple_pose_4x4"
-    close_roll_rad = math.radians(CLOSE_PULL_ROLL_FORWARD_DEG)
-    close_roll_local_x = np.array([
-        [1.0, 0.0, 0.0],
-        [0.0, math.cos(close_roll_rad), -math.sin(close_roll_rad)],
-        [0.0, math.sin(close_roll_rad), math.cos(close_roll_rad)],
-    ], dtype=np.float64)
-    # Post-multiplication rolls about the local EE X axis. For apple_rot, a
-    # positive angle tips the close-pose tool axis downward in base Z.
-    close_rot = apple_rot @ close_roll_local_x
-    close_pose_4x4 = make_ee_target_pose_from_matrix(
-        CLOSE_PULL_START_POSITION_M,
-        close_rot,
-    )
     manual_setup_snapshot = None
-    pull_start_pose_4x4 = close_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_stage_pose_4x4
-    pull_surface_pose_4x4 = pull_start_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_surface_pose_4x4
-    pull_start_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_stage_pose_name
-    pull_surface_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_surface_pose_name
+    pull_start_pose_4x4 = dynamic_pull_surface_pose_4x4
+    pull_surface_pose_4x4 = dynamic_pull_surface_pose_4x4
+    pull_start_pose_name = dynamic_pull_surface_pose_name
+    pull_surface_pose_name = dynamic_pull_surface_pose_name
+    # Keep the metadata field defined for both manual and dynamic setup flows.
+    approach_offset_m = float(DYNAMIC_PULL_APPROACH_CLEARANCE_M)
     if args.manual_setup:
         print("\nManual setup mode selected.")
-        print("The robot will stay idle with torque mode off.")
-        print("Moving to home first so the robot state stream is initialized.")
-        robot.reset_to_start_pose(home_pose_4x4)
-        print("Lengthen the apple/structure so the segment angles and lengths are visible, then press Enter.")
-        input("Press Enter once the lengthened snapshot is ready: ")
+        print("The robot will stay where you place it and torque mode will remain off.")
+        print("Move the arm to the desired manual pull-start pose and make the apple/structure visible.")
+        input("Press Enter once the manual setup pose is ready: ")
         robot.refresh_state_snapshot()
         manual_snap = robot.get_state_snapshot()
         pull_start_pose_4x4 = _tcp_pose_4x4_from_snapshot(manual_snap)
@@ -1606,13 +1613,11 @@ def main():
             if dynamic_pull_stage_pose_name == "apple_pose_4x4"
             else dynamic_pull_stage_pose_name.removesuffix("_plus_2cm_pull_direction_offset")
         )
-        pull_start_pose_4x4 = (
-            close_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_stage_pose_4x4
-        )
-        pull_surface_pose_4x4 = pull_start_pose_4x4 if USE_CLOSE_PULL_START_POSE else dynamic_pull_surface_pose_4x4
-        pull_start_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_stage_pose_name
-        pull_surface_pose_name = "close_pose_4x4" if USE_CLOSE_PULL_START_POSE else dynamic_pull_surface_pose_name
-        if pull_start_pose_name == "apple_pose_4x4":
+        pull_start_pose_4x4 = dynamic_pull_surface_pose_4x4
+        pull_surface_pose_4x4 = dynamic_pull_surface_pose_4x4
+        pull_start_pose_name = dynamic_pull_surface_pose_name
+        pull_surface_pose_name = dynamic_pull_surface_pose_name
+        if dynamic_pull_stage_pose_name == "apple_pose_4x4":
             print(
                 "WARNING: dynamic apple snapshot/radius was unavailable, so the "
                 "old hardcoded apple pose fallback is being used."
@@ -1628,6 +1633,10 @@ def main():
             )
         if dynamic_pull_apple_radius_m is not None:
             print(f"Dynamic apple radius from structure metadata: {dynamic_pull_apple_radius_m:.5f} m")
+        print(
+            "Direct surface-start mode: the first arm move goes straight to "
+            f"{pull_start_pose_name} at {_format_pos_m(pull_start_pose_4x4[:3, 3])} m"
+        )
 
     # 6. Move to home and wait for user
     if not args.manual_setup:
@@ -1656,12 +1665,9 @@ def main():
         angles = [(theta, phi)]
         run_arguments = dict(vars(args))
         run_arguments.update({
-            "use_close_pull_start_pose": bool(USE_CLOSE_PULL_START_POSE),
             "manual_setup": bool(args.manual_setup),
             "pull_start_pose_name": pull_start_pose_name,
             "pull_surface_pose_name": pull_surface_pose_name,
-            "close_pull_start_position_m": CLOSE_PULL_START_POSITION_M.tolist(),
-            "close_pull_roll_forward_deg": float(CLOSE_PULL_ROLL_FORWARD_DEG),
             "dynamic_apple_radius_m": None if dynamic_pull_apple_radius_m is None else float(dynamic_pull_apple_radius_m),
             "approach_offset_m": float(approach_offset_m),
             "approach_clearance_m": float(DYNAMIC_PULL_APPROACH_CLEARANCE_M),
@@ -1669,7 +1675,6 @@ def main():
             "apple_pose_4x4": apple_pose_4x4.tolist(),
             "dynamic_pull_pose_4x4": dynamic_pull_stage_pose_4x4.tolist(),
             "dynamic_pull_surface_pose_4x4": dynamic_pull_surface_pose_4x4.tolist(),
-            "close_pose_4x4": close_pose_4x4.tolist(),
             "manual_setup_snapshot": manual_setup_snapshot,
             "camera_collection": "separate process; compile after robot collection",
         })

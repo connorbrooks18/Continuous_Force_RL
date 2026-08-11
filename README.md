@@ -38,7 +38,7 @@ Useful flags:
 
 ## Understanding Pull Angles (theta & phi)
 
-The script calculates the pull trajectory using a spherical coordinate system. Because the script subtracts the calculated vector from the target position, the arm pulls *away* from the origin (the apple). 
+The script calculates the pull trajectory using a spherical coordinate system. Because the script subtracts the calculated vector from the target position, the pull direction still points away from the apple for the actual pull, but the arm now starts directly on the target surface pose instead of first staging 2 cm off the apple.
 
 * `theta`: Controls the vertical trajectory (inclination/altitude).
   * 1.57 (pi/2): Purely horizontal pull.

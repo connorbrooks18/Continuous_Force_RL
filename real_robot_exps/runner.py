@@ -519,7 +519,7 @@ def main() -> None:
     parser.add_argument(
         "--manual-setup",
         action=argparse.BooleanOptionalAction,
-        default=False,
+        default=True,
         help="Forward manual pull-start setup to apple_pullto_static so the arm can be positioned by hand",
     )
     parser.add_argument(
