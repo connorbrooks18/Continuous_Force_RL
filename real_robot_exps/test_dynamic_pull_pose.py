@@ -200,6 +200,5 @@ class DynamicPullPoseTest(unittest.TestCase):
         self.assertFalse(did_reset)
         self.assertEqual(fake_robot.reset_calls, [])
 
-
 if __name__ == "__main__":
     unittest.main()

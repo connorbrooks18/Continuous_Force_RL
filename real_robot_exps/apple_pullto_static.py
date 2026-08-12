@@ -1038,11 +1038,10 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
 
     if debug:
         surface_target_pos = np.asarray(pull_surface_pose_4x4[:3, 3], dtype=np.float64)
-        print("\n[dynamic pull staging]")
+        print("\n[apple alignment]")
         print(f"  approach_clearance_m: {approach_clearance_m:.3f}")
         print(f"  approach_offset_m: {approach_offset_m:.3f}")
-        print(f"  staged_start_base_m: {_format_pos_m(pull_start_pose_4x4[:3, 3])}")
-        print(f"  surface_target_base_m: {_format_pos_m(surface_target_pos)}")
+        print(f"  target_base_m: {_format_pos_m(pull_start_pose_4x4[:3, 3])}")
         print(f"  pull_direction_base_m: {_format_pos_m(pull_direction)}")
 
     # Both collection modes use the same approach and grasp sequence. Metadata
@@ -1050,7 +1049,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
     if manual_setup_enabled:
         print(
             "Manual setup mode: keeping the live robot pose and using it as the "
-            "pull-start / surface pose without a staged reset."
+            "apple pose without an additional alignment step."
         )
     elif baseline:
         print(
@@ -1059,14 +1058,12 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
         )
     else:
         print(
-            "Collect mode: staging toward the pull surface using the requested "
-            f"pull direction ({approach_clearance_m * 100.0:.1f} cm inward)."
+            "Collect mode: moving straight to the apple pose using the live "
+            "apple translation."
         )
     if not manual_setup_enabled:
-        # Use the same Cartesian reset implementation as the staged move. This
-        # avoids the torque-mode approach controller and gives the arm a complete
-        # reset from the staging pose to the apple surface.
-        robot.reset_to_start_pose(pull_surface_pose_4x4)
+        # The initial alignment is the only reset we want before force/pull
+        # data collection. Keep it to a single apple-facing move.
         snap = robot.get_state_snapshot()
     position_error = float(torch.linalg.vector_norm(snap.ee_pos - surface_target).item())
     _, orientation_error = compute_pose_error(
@@ -1086,7 +1083,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
     approach_geometry["target_orientation_error_deg"] = orientation_error_deg
     alignment_label = "Baseline" if baseline else "Pull"
     print(
-        f"{alignment_label} surface alignment complete: "
+        f"{alignment_label} apple alignment complete: "
         f"reached={approach_geometry['target_reached']} "
         f"position_error={approach_geometry['target_position_error_m'] * 1000.0:.2f} mm"
     )
