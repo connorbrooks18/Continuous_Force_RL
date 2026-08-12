@@ -287,6 +287,31 @@ def _load_dynamic_pull_start_pose(
     return pose, f"{source_name}_apple_surface_plus_2cm_pull_direction_offset", apple_radius_m, surface_pose
 
 
+def _load_baseline_front_of_apple_pose(
+    run_metadata: dict,
+    fallback_pose_4x4: np.ndarray,
+) -> tuple[np.ndarray, str, float | None, np.ndarray]:
+    """Return a fixed-orientation pose translated to the live apple position."""
+    pre = dict(run_metadata.get("pre_grasp_geometry", {}) or {})
+    snapshot, snapshot_source = _select_pre_grasp_snapshot(pre)
+    apple_pos_flat = snapshot.get("apple_pos")
+    if apple_pos_flat is None:
+        fallback_pose = np.asarray(fallback_pose_4x4, dtype=np.float64)
+        return fallback_pose, "apple_pose_4x4", None, fallback_pose
+
+    parts = dict(pre.get("parts", {}) or {})
+    apple_radius_m = parts.get("apple", {}).get("radius_m")
+    if apple_radius_m is None:
+        fallback_pose = np.asarray(fallback_pose_4x4, dtype=np.float64)
+        return fallback_pose, "apple_pose_4x4", None, fallback_pose
+
+    apple_center = np.asarray(apple_pos_flat, dtype=np.float64).reshape(3)
+    offset = np.array([0.0, -float(apple_radius_m), 0.0], dtype=np.float64)
+    pose = _pose_4x4_with_translation(fallback_pose_4x4, apple_center + offset)
+    source_name = "settled_snapshot" if snapshot_source in {"settled_snapshot", "under_gravity_snapshot"} else "lengthened_snapshot"
+    return pose, f"{source_name}_front_of_apple_pose", float(apple_radius_m), pose
+
+
 def _metadata_entry(metadata: dict) -> dict:
     row = {
         "row_kind": "metadata",
@@ -730,57 +755,69 @@ def _read_parquet_metadata(path: Path) -> dict:
     return json.loads(payload.decode("utf-8")) if payload else {}
 
 
+def _extract_pre_grasp_apple_pos(pre_grasp_geometry: dict) -> np.ndarray | None:
+    snapshot, _ = _select_pre_grasp_snapshot(pre_grasp_geometry)
+    apple_pos = snapshot.get("apple_pos")
+    if apple_pos is None:
+        return None
+    try:
+        apple_pos_arr = np.asarray(apple_pos, dtype=np.float64).reshape(3)
+    except Exception:
+        return None
+    if not np.all(np.isfinite(apple_pos_arr)):
+        return None
+    return apple_pos_arr
+
+
+def _extract_baseline_kp(metadata: dict) -> float | None:
+    dump = dict(metadata.get("dump", {}) or {})
+    robot_info = dict(dump.get("robot_info", {}) or {})
+    kp = robot_info.get("kp")
+    if kp is None:
+        return None
+    try:
+        kp_value = float(kp)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(kp_value):
+        return None
+    return kp_value
+
+
+def _default_baseline_path(base_label: str, kp_value: float | None) -> Path:
+    kp_suffix = f"_kp{float(kp_value):.0f}" if kp_value is not None else ""
+    return Path(f"{base_label}{kp_suffix}_baseline_robot.parquet")
+
+
+def _effective_manual_setup(mode: str, requested_manual_setup: bool) -> bool:
+    return bool(requested_manual_setup) and mode != "baseline"
+
+
 def _validate_baseline_compatibility(current: dict, baseline: dict, baseline_path: Path) -> None:
-    comparisons = (
-        ("theta_rad", 1e-9),
-        ("phi_rad", 1e-9),
-        ("distance_m", 1e-9),
-        ("approach_offset_m", 1e-9),
-        ("n_holds", 0.0),
-        ("pull_start_pose_name", None),
-        ("pull_surface_pose_name", None),
-    )
     mismatches = []
-    for key, tolerance in comparisons:
+
+    for key, tolerance in (("theta_rad", 1e-9), ("phi_rad", 1e-9)):
         if key not in current or key not in baseline:
             mismatches.append(f"{key}=missing")
             continue
-        if tolerance is None:
-            matches = current[key] == baseline[key]
-        elif tolerance == 0.0:
-            matches = int(current[key]) == int(baseline[key])
-        else:
-            matches = abs(float(current[key]) - float(baseline[key])) <= tolerance
-        if not matches:
+        if abs(float(current[key]) - float(baseline[key])) > tolerance:
             mismatches.append(f"{key}: collect={current[key]!r}, baseline={baseline[key]!r}")
 
-    current_pose = np.asarray(current.get("robot_start_pose_4x4", []), dtype=np.float64)
-    baseline_pose = np.asarray(baseline.get("robot_start_pose_4x4", []), dtype=np.float64)
-    if current_pose.shape != (4, 4) or baseline_pose.shape != (4, 4):
-        mismatches.append("robot_start_pose_4x4 missing or malformed")
-    else:
-        current_R = current_pose[:3, :3]
-        baseline_R = baseline_pose[:3, :3]
-        if not np.allclose(current_R, baseline_R, atol=1e-7, rtol=0.0):
-            mismatches.append("robot_start_pose_4x4 rotation differs")
-
-        # Dynamic apple targeting comes from a live settled snapshot, so the
-        # start translation can vary slightly between baseline and collect.
-        translation_delta = np.linalg.norm(current_pose[:3, 3] - baseline_pose[:3, 3])
-        if translation_delta > 0.02:
-            mismatches.append(
-                f"robot_start_pose_4x4 translation differs by {translation_delta:.4f} m"
-            )
+    current_kp = _extract_baseline_kp(current)
+    baseline_kp = _extract_baseline_kp(baseline)
+    if current_kp is None or baseline_kp is None:
+        mismatches.append("dump.robot_info.kp=missing")
+    elif abs(current_kp - baseline_kp) > 1e-6:
+        mismatches.append(f"kp: collect={current_kp!r}, baseline={baseline_kp!r}")
 
     current_pre = dict(current.get("pre_grasp_geometry", {}) or {})
     baseline_pre = dict(baseline.get("pre_grasp_geometry", {}) or {})
-    for key in ("structure_index", "structure_name"):
-        current_value = current_pre.get(key)
-        baseline_value = baseline_pre.get(key)
-        if current_value is not None and baseline_value is not None and current_value != baseline_value:
-            mismatches.append(
-                f"pre_grasp_geometry.{key}: collect={current_value!r}, baseline={baseline_value!r}"
-            )
+    current_apple_pos = _extract_pre_grasp_apple_pos(current_pre)
+    baseline_apple_pos = _extract_pre_grasp_apple_pos(baseline_pre)
+    if current_apple_pos is not None and baseline_apple_pos is not None:
+        apple_delta = np.linalg.norm(current_apple_pos - baseline_apple_pos)
+        if apple_delta > 0.10:
+            mismatches.append(f"apple_pos differs by {apple_delta:.4f} m")
     if mismatches:
         raise ValueError(
             f"Baseline {baseline_path} is incompatible with this collect run: "
@@ -922,7 +959,11 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
         pull_start_pose_4x4 = _tcp_pose_4x4_from_snapshot(snap)
         pull_surface_pose_4x4 = pull_start_pose_4x4
     else:
-        robot.reset_to_start_pose(pull_start_pose_4x4)
+        _reset_to_pose_if_needed(
+            robot,
+            pull_start_pose_4x4,
+            label="Pull-start reset" if not baseline else "Baseline alignment",
+        )
         snap = robot.get_state_snapshot()
     pull_start_snapshot = _snapshot_geometry(
         snap,
@@ -1011,16 +1052,20 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
             "Manual setup mode: keeping the live robot pose and using it as the "
             "pull-start / surface pose without a staged reset."
         )
+    elif baseline:
+        print(
+            "Baseline mode: moving straight to the front-of-apple pose with the "
+            "normal orientation."
+        )
     else:
         print(
-            "Approaching apple surface: "
-            f"staged TCP {_format_pos_m(pull_start_pose_4x4[:3, 3])} -> "
-            f"surface TCP {_format_pos_m(pull_surface_pose_4x4[:3, 3])} "
-            f"({approach_clearance_m * 100.0:.1f} cm inward)"
+            "Collect mode: staging toward the pull surface using the requested "
+            f"pull direction ({approach_clearance_m * 100.0:.1f} cm inward)."
         )
+    if not manual_setup_enabled:
         # Use the same Cartesian reset implementation as the staged move. This
         # avoids the torque-mode approach controller and gives the arm a complete
-        # reset from the 2 cm staging pose to the apple surface.
+        # reset from the staging pose to the apple surface.
         robot.reset_to_start_pose(pull_surface_pose_4x4)
         snap = robot.get_state_snapshot()
     position_error = float(torch.linalg.vector_norm(snap.ee_pos - surface_target).item())
@@ -1039,8 +1084,9 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
     approach_geometry["target_reached"] = bool(position_error <= CONVERGE_THRESHOLD)
     approach_geometry["target_position_error_m"] = position_error
     approach_geometry["target_orientation_error_deg"] = orientation_error_deg
+    alignment_label = "Baseline" if baseline else "Pull"
     print(
-        "Approach complete: "
+        f"{alignment_label} surface alignment complete: "
         f"reached={approach_geometry['target_reached']} "
         f"position_error={approach_geometry['target_position_error_m'] * 1000.0:.2f} mm"
     )
@@ -1343,7 +1389,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
             "note": "Use this file with a matching collect run; no correction is applied to baseline rows.",
         }
     elif USE_DYNAMIC_BASELINE_CORRECTION:
-        baseline_path = Path(run_args.get("baseline_path")) if run_args.get("baseline_path") else Path(f"{base_label}_baseline_robot.parquet")
+        baseline_path = Path(run_args.get("baseline_path")) if run_args.get("baseline_path") else _default_baseline_path(base_label, kp_value)
         if not baseline_path.exists():
             print(
                 f"Warning: dynamic baseline correction is enabled, but {baseline_path} does not exist. "
@@ -1393,6 +1439,32 @@ def _prompt_or_continue(prompt: str, skip: bool) -> None:
     input(prompt)
 
 
+def _reset_to_pose_if_needed(robot, target_pose_4x4: np.ndarray, *, label: str, threshold_m: float = 0.02) -> bool:
+    """Skip a reset if the TCP is already close to the requested pose."""
+    target_pose = np.asarray(target_pose_4x4, dtype=np.float64)
+    if target_pose.shape != (4, 4):
+        raise ValueError(f"Expected [4, 4] target pose for {label}, got shape {target_pose.shape}")
+
+    try:
+        current_snap = robot.get_state_snapshot()
+    except Exception:
+        current_snap = None
+
+    if current_snap is not None:
+        current_pos = np.asarray(current_snap.ee_pos.detach().cpu().numpy(), dtype=np.float64).reshape(3)
+        target_pos = np.asarray(target_pose[:3, 3], dtype=np.float64).reshape(3)
+        translation_delta = float(np.linalg.norm(current_pos - target_pos))
+        if translation_delta <= float(threshold_m):
+            print(
+                f"{label}: already within {translation_delta * 1000.0:.1f} mm of target, skipping reset."
+            )
+            return False
+
+    print(f"{label}: resetting to target pose.")
+    robot.reset_to_start_pose(target_pose)
+    return True
+
+
 
 def main():
     parser = argparse.ArgumentParser(description="Integrated static apple-pull system-ID collection")
@@ -1440,6 +1512,7 @@ def main():
     theta = args.theta
     phi = args.phi
     is_baseline = (mode == "baseline")
+    manual_setup_enabled = _effective_manual_setup(mode, bool(args.manual_setup))
 
     if (mode != "collect") and (mode != "baseline"):
         print("Invalid mode command. Should be 'collect' or 'baseline'")
@@ -1567,7 +1640,22 @@ def main():
     pull_surface_pose_name = dynamic_pull_surface_pose_name
     # Keep the metadata field defined for both manual and dynamic setup flows.
     approach_offset_m = float(DYNAMIC_PULL_APPROACH_CLEARANCE_M)
-    if args.manual_setup:
+    approach_clearance_m = float(DYNAMIC_PULL_APPROACH_CLEARANCE_M)
+    if is_baseline:
+        print("\nBaseline mode selected.")
+        print("Using the live apple position, the apple radius, and the normal orientation.")
+        approach_offset_m = 0.0
+        approach_clearance_m = 0.0
+        dynamic_pull_stage_pose_4x4, dynamic_pull_stage_pose_name, dynamic_pull_apple_radius_m, dynamic_pull_surface_pose_4x4 = _load_baseline_front_of_apple_pose(
+            run_metadata,
+            apple_pose_4x4,
+        )
+        dynamic_pull_surface_pose_name = dynamic_pull_stage_pose_name
+        pull_start_pose_4x4 = dynamic_pull_stage_pose_4x4
+        pull_surface_pose_4x4 = dynamic_pull_surface_pose_4x4
+        pull_start_pose_name = dynamic_pull_stage_pose_name
+        pull_surface_pose_name = dynamic_pull_surface_pose_name
+    elif manual_setup_enabled:
         print("\nManual setup mode selected.")
         print("The robot will stay where you place it and torque mode will remain off.")
         print("Move the arm to the desired manual pull-start pose and make the apple/structure visible.")
@@ -1639,7 +1727,7 @@ def main():
         )
 
     # 6. Move to home and wait for user
-    if not args.manual_setup:
+    if not manual_setup_enabled:
         print("\nMoving to home position...")
         robot.reset_to_start_pose(home_pose_4x4)
         snap = robot.get_state_snapshot()
@@ -1665,12 +1753,12 @@ def main():
         angles = [(theta, phi)]
         run_arguments = dict(vars(args))
         run_arguments.update({
-            "manual_setup": bool(args.manual_setup),
+            "manual_setup": bool(manual_setup_enabled),
             "pull_start_pose_name": pull_start_pose_name,
             "pull_surface_pose_name": pull_surface_pose_name,
             "dynamic_apple_radius_m": None if dynamic_pull_apple_radius_m is None else float(dynamic_pull_apple_radius_m),
             "approach_offset_m": float(approach_offset_m),
-            "approach_clearance_m": float(DYNAMIC_PULL_APPROACH_CLEARANCE_M),
+            "approach_clearance_m": float(approach_clearance_m),
             "dynamic_pull_local_z_twist_deg": float(DYNAMIC_PULL_LOCAL_Z_TWIST_DEG),
             "apple_pose_4x4": apple_pose_4x4.tolist(),
             "dynamic_pull_pose_4x4": dynamic_pull_stage_pose_4x4.tolist(),

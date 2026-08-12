@@ -7,7 +7,7 @@ import numpy as np
 import math
 import torch
 
-from real_robot_exps.apple_pullto_static import _load_dynamic_pull_start_pose, pull_test
+from real_robot_exps.apple_pullto_static import _load_dynamic_pull_start_pose, _reset_to_pose_if_needed, pull_test
 
 
 class DynamicPullPoseTest(unittest.TestCase):
@@ -176,6 +176,29 @@ class DynamicPullPoseTest(unittest.TestCase):
         self.assertEqual(fake_robot.reset_calls, [])
         self.assertFalse(fake_robot.started_torque)
         self.assertTrue(fake_robot.ended_control)
+
+    def test_initial_alignment_skip_helper_does_not_reset_when_already_close(self):
+        class FakeRobot:
+            def __init__(self):
+                self.reset_calls = []
+                self.snapshot = SimpleNamespace(
+                    ee_pos=torch.tensor([0.101, 0.201, 0.299], dtype=torch.float32),
+                )
+
+            def get_state_snapshot(self):
+                return self.snapshot
+
+            def reset_to_start_pose(self, pose):
+                self.reset_calls.append(np.asarray(pose, dtype=np.float64).copy())
+
+        fake_robot = FakeRobot()
+        target = np.eye(4, dtype=np.float64)
+        target[:3, 3] = np.array([0.10, 0.20, 0.30], dtype=np.float64)
+
+        did_reset = _reset_to_pose_if_needed(fake_robot, target, label="Pull-start reset")
+
+        self.assertFalse(did_reset)
+        self.assertEqual(fake_robot.reset_calls, [])
 
 
 if __name__ == "__main__":

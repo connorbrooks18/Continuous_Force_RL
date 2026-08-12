@@ -71,7 +71,7 @@ For a normal `collect` run, the runner does this:
 4. writes that measured pre-grasp geometry to `metadata_cache.json` under `--output-dir`,
 5. reuses that cache on later runs with the same structure so it can skip the camera prompts,
 6. checks for missing baseline files for that structure and direction,
-7. if needed, asks you to remove the apple and runs those baselines,
+7. if needed, asks you to remove the apple and runs those baselines, using the same manual setup path when `--manual-setup` is enabled,
 8. runs the tracked collection,
 9. after grasp closure, requests a fresh camera snapshot from the running detector,
 10. compiles the unified Parquet and saves a PNG.

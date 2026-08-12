@@ -67,11 +67,11 @@ SPUR_RADIUS_BY_STIFFNESS_LEVEL = {
     2: 0.0030,
 }
 APPLE_RADIUS_BY_NUMBER = {
-    1: 0.0325,
+    1: 0.035,
     2: 0.0350,
-    3: 0.0375,
-    4: 0.0400,
-    5: 0.0425,
+    3: 0.035,
+    4: 0.035,
+    5: 0.035,
 }
 STEM_ANGLE_CHOICES = {0, 30, 45, 60}
 SPUR_ANGLE_CHOICES = {45, 60, 75, 90}
