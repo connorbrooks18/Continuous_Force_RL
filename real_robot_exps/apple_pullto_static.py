@@ -84,6 +84,19 @@ def _pose_4x4_with_translation(template_pose_4x4: np.ndarray, translation: np.nd
     return pose
 
 
+def _pose_4x4_translated_along_direction(
+    origin_pose_4x4: np.ndarray,
+    direction: np.ndarray,
+    distance_m: float,
+) -> np.ndarray:
+    """Translate a pose from its current position along a unit direction."""
+    origin_pose_4x4 = np.asarray(origin_pose_4x4, dtype=np.float64).reshape(4, 4)
+    direction = np.asarray(direction, dtype=np.float64).reshape(3)
+    pose = origin_pose_4x4.copy()
+    pose[:3, 3] = pose[:3, 3] + direction * float(distance_m)
+    return pose
+
+
 def _rotmat_wxyz_from_matrix(R: np.ndarray) -> np.ndarray:
     """Convert a 3x3 rotation matrix to a normalized wxyz quaternion."""
     R = np.asarray(R, dtype=np.float64).reshape(3, 3)
@@ -141,34 +154,15 @@ def _look_at_rotation_toward_apple(
     *,
     local_z_twist_deg: float = DYNAMIC_PULL_LOCAL_Z_TWIST_DEG,
 ) -> np.ndarray:
-    """Build a rotation whose local +Z axis points toward the apple center.
+    """Return the fixed apple-facing reference rotation for dynamic lineup.
 
-    The twist about that +Z axis is fixed so the dynamic lining-up pose is
-    deterministic instead of being chosen implicitly by the up-vector fallback.
+    The dynamic lineup path used to point the tool's local +Z axis at the pull
+    direction. We now keep the apple-facing orientation from the reference
+    pose so the arm stays face-on to the apple regardless of the requested
+    pull vector.
     """
-    position = np.asarray(position, dtype=np.float64).reshape(3)
-    apple_center = np.asarray(apple_center, dtype=np.float64).reshape(3)
-    forward = apple_center - position
-    forward_norm = float(np.linalg.norm(forward))
-    if forward_norm < 1e-12:
-        return np.asarray(fallback_rotation, dtype=np.float64).reshape(3, 3)
-    z_axis = forward / forward_norm
-    up_hint = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-    if abs(float(np.dot(z_axis, up_hint))) > 0.95:
-        up_hint = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-    x_axis = np.cross(up_hint, z_axis)
-    x_norm = float(np.linalg.norm(x_axis))
-    if x_norm < 1e-12:
-        return np.asarray(fallback_rotation, dtype=np.float64).reshape(3, 3)
-    x_axis /= x_norm
-    y_axis = np.cross(z_axis, x_axis)
-    y_norm = float(np.linalg.norm(y_axis))
-    if y_norm < 1e-12:
-        return np.asarray(fallback_rotation, dtype=np.float64).reshape(3, 3)
-    y_axis /= y_norm
-    base_rotation = np.column_stack([x_axis, y_axis, z_axis])
-    twist = _rotation_about_local_z(math.radians(float(local_z_twist_deg)))
-    return base_rotation @ twist
+    _ = position, apple_center, local_z_twist_deg
+    return np.asarray(fallback_rotation, dtype=np.float64).reshape(3, 3)
 
 
 def _pull_direction_vector(theta: float, phi: float) -> np.ndarray:
@@ -268,17 +262,13 @@ def _load_dynamic_pull_start_pose(
     if apple_radius_m is None:
         fallback_pose = np.asarray(fallback_pose_4x4, dtype=np.float64)
         return fallback_pose, "apple_pose_4x4", None, fallback_pose
-    if theta is None or phi is None:
-        fallback_pose = np.asarray(fallback_pose_4x4, dtype=np.float64)
-        return fallback_pose, "apple_pose_4x4", float(apple_radius_m), fallback_pose
     apple_radius_m = float(apple_radius_m)
 
-    pull_direction = _pull_direction_vector(theta, phi)
     apple_center = np.asarray(apple_pos_flat, dtype=np.float64).reshape(3)
-    surface_pos = apple_center + pull_direction * apple_radius_m
-    staged_pos = surface_pos + pull_direction * float(approach_clearance_m)
-    staged_rot = _look_at_rotation_toward_apple(staged_pos, apple_center, fallback_pose_4x4[:3, :3])
-    surface_rot = _look_at_rotation_toward_apple(surface_pos, apple_center, fallback_pose_4x4[:3, :3])
+    surface_pos = apple_center + np.array([0.0, -apple_radius_m, 0.0], dtype=np.float64)
+    staged_pos = surface_pos + np.array([0.0, -float(approach_clearance_m), 0.0], dtype=np.float64)
+    staged_rot = np.asarray(fallback_pose_4x4[:3, :3], dtype=np.float64)
+    surface_rot = np.asarray(fallback_pose_4x4[:3, :3], dtype=np.float64)
     pose = _pose_4x4_with_translation(np.eye(4, dtype=np.float64), staged_pos)
     pose[:3, :3] = staged_rot
     surface_pose = _pose_4x4_with_translation(np.eye(4, dtype=np.float64), surface_pos)
@@ -1092,12 +1082,13 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
     gc.send_request(True)
     # This is the only close command. Capture post-grasp state after closure,
     # while retaining the pre-close approach snapshot above.
-    time.sleep(5.0)
+    time.sleep(4)
     snap = robot.get_state_snapshot()
+    post_grasp_pose_4x4 = _pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat)
     if not baseline:
         robot_post_grasp_geometry = _snapshot_geometry(
             snap,
-            target_pose_4x4=_pose_4x4_from_pos_quat(snap.ee_pos, snap.ee_quat),
+            target_pose_4x4=post_grasp_pose_4x4,
         )
         post_grasp_geometry = dict(robot_post_grasp_geometry)
         post_grasp_camera_snapshot = _capture_camera_snapshot(
@@ -1112,6 +1103,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
         post_grasp_geometry["pull_start_pose_name"] = str(run_args.get("pull_start_pose_name", "unspecified"))
         post_grasp_geometry["pull_surface_pose_name"] = str(run_args.get("pull_surface_pose_name", "unspecified"))
         post_grasp_geometry["pull_surface_pose_4x4"] = np.asarray(pull_surface_pose_4x4).tolist()
+        post_grasp_geometry["pull_origin_pose_4x4"] = np.asarray(post_grasp_pose_4x4).tolist()
         post_grasp_geometry["post_grasp_pose_name"] = "post_grasp_surface_pose"
 
     if only_metadata:
@@ -1144,27 +1136,27 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
         robot.start_torque_mode()
 
     if not only_metadata:
+        pull_origin_pose_4x4 = post_grasp_pose_4x4
+        pull_origin_quat = _pose_4x4_to_quat_tensor(pull_origin_pose_4x4, device=snap.ee_pos.device)
         for i in range(steps):
             if(debug):
                 print(f"Starting {i+1} of {steps}...")
             
             segment_idx = len(pull_data)
             step_target = torch.as_tensor(
-                np.asarray(pull_surface_pose_4x4[:3, 3], dtype=np.float64),
+                _pose_4x4_translated_along_direction(
+                    pull_origin_pose_4x4,
+                    pull_direction,
+                    distance * float(segment_idx + 1) / float(stops),
+                )[:3, 3],
                 device=snap.ee_pos.device,
                 dtype=snap.ee_pos.dtype,
             )
-            step_target += torch.as_tensor(
-                pull_direction * (distance * float(segment_idx + 1) / float(stops)),
-                device=snap.ee_pos.device,
-                dtype=snap.ee_pos.dtype,
-            )
-            apple_quat = _pose_4x4_to_quat_tensor(pull_surface_pose_4x4, device=snap.ee_pos.device)
             run_move(
                 robot,
                 gains,
                 step_target,
-                apple_quat,
+                pull_origin_quat,
                 default_dof_pos,
                 f"pull #{i}",
                 prnt=debug,
@@ -1190,7 +1182,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
                     robot,
                     gains,
                     step_target,
-                    apple_quat,
+                    pull_origin_quat,
                     default_dof_pos,
                     duration_sec=s,
                     device=device,
@@ -1229,6 +1221,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
 
     gc.send_request(False)
     time.sleep(1) # wait for gripper to open
+
 
     # Safely drop out of torque mode
     robot.end_control()
@@ -1698,9 +1691,9 @@ def main():
             if dynamic_pull_stage_pose_name == "apple_pose_4x4"
             else dynamic_pull_stage_pose_name.removesuffix("_plus_2cm_pull_direction_offset")
         )
-        pull_start_pose_4x4 = dynamic_pull_surface_pose_4x4
+        pull_start_pose_4x4 = dynamic_pull_stage_pose_4x4
         pull_surface_pose_4x4 = dynamic_pull_surface_pose_4x4
-        pull_start_pose_name = dynamic_pull_surface_pose_name
+        pull_start_pose_name = dynamic_pull_stage_pose_name
         pull_surface_pose_name = dynamic_pull_surface_pose_name
         if dynamic_pull_stage_pose_name == "apple_pose_4x4":
             print(
@@ -1719,8 +1712,8 @@ def main():
         if dynamic_pull_apple_radius_m is not None:
             print(f"Dynamic apple radius from structure metadata: {dynamic_pull_apple_radius_m:.5f} m")
         print(
-            "Direct surface-start mode: the first arm move goes straight to "
-            f"{pull_start_pose_name} at {_format_pos_m(pull_start_pose_4x4[:3, 3])} m"
+            "Direct staged-front mode: the first arm move goes to the front of "
+            f"the apple at {pull_start_pose_name} ({_format_pos_m(pull_start_pose_4x4[:3, 3])} m)"
         )
 
     # 6. Move to home and wait for user

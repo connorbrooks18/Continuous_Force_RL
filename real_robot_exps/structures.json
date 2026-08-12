@@ -33,83 +33,19 @@
       }
     },
     {
-      "angles_source": "lengthened_state_check",
-      "geometry_source": "catalog_entry_selected_by_structure_index",
-      "name": "apple 1 spur 5 pointed down",
-      "notes": "like default but shorter spur",
-      "parts": {
-        "apple": {
-          "density_kg_m3": 650,
-          "length_m": 0.07,
-          "radius_m": 0.04,
-          "shape": "sphere"
-        },
-        "primary": {
-          "density_kg_m3": 660,
-          "length_m": 0.827,
-          "radius_m": 0.0125,
-          "shape": "cylinder"
-        },
-        "spur": {
-          "density_kg_m3": 1200,
-          "length_m": 0.085,
-          "radius_m": 0.0025,
-          "shape": "cylinder"
-        },
-        "stem": {
-          "density_kg_m3": 1000,
-          "length_m": 0.005,
-          "radius_m": 0.0005,
-          "shape": "cylinder"
-        }
-      }
-    },
-    {
-      "angles_source": "lengthened_state_check",
-      "geometry_source": "catalog_entry_selected_by_structure_index",
-      "name": "Default 60deg",
-      "notes": "default spur and apple but spur at different 60 degree angle (not 90)",
-      "parts": {
-        "apple": {
-          "density_kg_m3": 650,
-          "length_m": 0.07,
-          "radius_m": 0.04,
-          "shape": "sphere"
-        },
-        "primary": {
-          "density_kg_m3": 660,
-          "length_m": 0.827,
-          "radius_m": 0.0125,
-          "shape": "cylinder"
-        },
-        "spur": {
-          "density_kg_m3": 1200,
-          "length_m": 0.13,
-          "radius_m": 0.0025,
-          "shape": "cylinder"
-        },
-        "stem": {
-          "density_kg_m3": 1000,
-          "length_m": 0.005,
-          "radius_m": 0.0005,
-          "shape": "cylinder"
-        }
-      }
-    },
-    {
       "angles_source": "manual_runner_entry",
       "geometry_source": "manual_runner_entry",
       "manual_selection": {
         "apple_number": 1,
-        "spur_angle_deg": 60,
-        "spur_length": "medium",
-        "spur_length_level": 1,
+        "spur_angle_deg": 90,
+        "spur_length": "long",
+        "spur_length_level": 2,
         "spur_stiffness": 0,
         "spur_stiffness_label": "low",
         "stem_angle_deg": 30
       },
-      "name": "apple 1 spur low medium stem 30 spur 60",
-      "notes": "Manual structure entry for apple #1 with spur stiffness=low, spur length=medium, stem angle=30, spur angle=60.",
+      "name": "apple 1 spur low long stem 30 spur 90",
+      "notes": "Manual structure entry for apple #1 with spur stiffness=low, spur length=long, stem angle=30, spur angle=90.",
       "parts": {
         "apple": {
           "apple_number": 1,
@@ -122,7 +58,7 @@
           "density_kg_m3": 650,
           "length_m": 0.07,
           "manual_selection": true,
-          "radius_m": 0.0325,
+          "radius_m": 0.04,
           "shape": "sphere"
         },
         "primary": {
@@ -134,15 +70,15 @@
         "spur": {
           "connection_rpy_deg": [
             0.0,
-            60.0,
+            90.0,
             0.0
           ],
           "connection_source": "manual_selection",
           "density_kg_m3": 1200,
-          "length_m": 0.13,
+          "length_m": 0.12,
           "manual_selection": true,
-          "manual_spur_angle_deg": 60,
-          "radius_m": 0.002,
+          "manual_spur_angle_deg": 90,
+          "radius_m": 0.0025,
           "shape": "cylinder",
           "stiffness_label": "low",
           "stiffness_level": 0
@@ -189,7 +125,7 @@
           "density_kg_m3": 650,
           "length_m": 0.07,
           "manual_selection": true,
-          "radius_m": 0.0325,
+          "radius_m": 0.04,
           "shape": "sphere"
         },
         "primary": {
@@ -206,10 +142,10 @@
           ],
           "connection_source": "manual_selection",
           "density_kg_m3": 1200,
-          "length_m": 0.175,
+          "length_m": 0.12,
           "manual_selection": true,
           "manual_spur_angle_deg": 90,
-          "radius_m": 0.002,
+          "radius_m": 0.0025,
           "shape": "cylinder",
           "stiffness_label": "low",
           "stiffness_level": 0
@@ -225,6 +161,140 @@
           "length_m": 0.005,
           "manual_selection": true,
           "manual_stem_angle_deg": 45,
+          "radius_m": 0.0005,
+          "shape": "cylinder"
+        }
+      }
+    },
+    {
+      "angles_source": "manual_runner_entry",
+      "geometry_source": "manual_runner_entry",
+      "manual_selection": {
+        "apple_number": 1,
+        "spur_angle_deg": 90,
+        "spur_length": "long",
+        "spur_length_level": 2,
+        "spur_stiffness": 0,
+        "spur_stiffness_label": "low",
+        "stem_angle_deg": 60
+      },
+      "name": "apple 1 spur low long stem 60 spur 90",
+      "notes": "Manual structure entry for apple #1 with spur stiffness=low, spur length=long, stem angle=60, spur angle=90.",
+      "parts": {
+        "apple": {
+          "apple_number": 1,
+          "connection_rpy_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 650,
+          "length_m": 0.07,
+          "manual_selection": true,
+          "radius_m": 0.04,
+          "shape": "sphere"
+        },
+        "primary": {
+          "density_kg_m3": 660,
+          "length_m": 0.827,
+          "radius_m": 0.0125,
+          "shape": "cylinder"
+        },
+        "spur": {
+          "connection_rpy_deg": [
+            0.0,
+            90.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1200,
+          "length_m": 0.12,
+          "manual_selection": true,
+          "manual_spur_angle_deg": 90,
+          "radius_m": 0.0025,
+          "shape": "cylinder",
+          "stiffness_label": "low",
+          "stiffness_level": 0
+        },
+        "stem": {
+          "connection_rpy_deg": [
+            0.0,
+            60.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1000,
+          "length_m": 0.005,
+          "manual_selection": true,
+          "manual_stem_angle_deg": 60,
+          "radius_m": 0.0005,
+          "shape": "cylinder"
+        }
+      }
+    },
+    {
+      "angles_source": "manual_runner_entry",
+      "geometry_source": "manual_runner_entry",
+      "manual_selection": {
+        "apple_number": 1,
+        "spur_angle_deg": 90,
+        "spur_length": "long",
+        "spur_length_level": 2,
+        "spur_stiffness": 0,
+        "spur_stiffness_label": "low",
+        "stem_angle_deg": 0
+      },
+      "name": "apple 1 spur low long stem 0 spur 90",
+      "notes": "Manual structure entry for apple #1 with spur stiffness=low, spur length=long, stem angle=0, spur angle=90.",
+      "parts": {
+        "apple": {
+          "apple_number": 1,
+          "connection_rpy_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 650,
+          "length_m": 0.07,
+          "manual_selection": true,
+          "radius_m": 0.04,
+          "shape": "sphere"
+        },
+        "primary": {
+          "density_kg_m3": 660,
+          "length_m": 0.827,
+          "radius_m": 0.0125,
+          "shape": "cylinder"
+        },
+        "spur": {
+          "connection_rpy_deg": [
+            0.0,
+            90.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1200,
+          "length_m": 0.12,
+          "manual_selection": true,
+          "manual_spur_angle_deg": 90,
+          "radius_m": 0.0025,
+          "shape": "cylinder",
+          "stiffness_label": "low",
+          "stiffness_level": 0
+        },
+        "stem": {
+          "connection_rpy_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1000,
+          "length_m": 0.005,
+          "manual_selection": true,
+          "manual_stem_angle_deg": 0,
           "radius_m": 0.0005,
           "shape": "cylinder"
         }

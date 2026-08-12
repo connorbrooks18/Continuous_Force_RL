@@ -961,9 +961,11 @@ class FrankaInterface:
                 or start_torque_mode first).
         """
         if not self._state_ready.is_set():
+            comm_alive = self._comm_process is not None and self._comm_process.is_alive()
             raise RuntimeError(
                 "No state available. Call reset_to_start_pose() or "
-                "start_torque_mode() first."
+                "start_torque_mode() first. "
+                f"Comm process alive: {comm_alive}."
             )
         return _build_snapshot_from_shm(self._state_shm, self._device)
 
@@ -1045,8 +1047,19 @@ class FrankaInterface:
 
         # Signal comm process to exit 1kHz loop
         self._stop_torque.set()
-        resp = self._response_queue.get(timeout=10.0)  # increased for large trajectory data
+        try:
+            resp = self._response_queue.get(timeout=10.0)  # increased for large trajectory data
+        except Exception as e:
+            comm_alive = self._comm_process is not None and self._comm_process.is_alive()
+            self._state_ready.clear()
+            self._last_send_time = None
+            raise RuntimeError(
+                "End control failed while waiting for comm process response "
+                f"(comm process alive: {comm_alive}): {e}"
+            ) from e
         if resp[0] != "torque_stopped":
+            self._state_ready.clear()
+            self._last_send_time = None
             raise RuntimeError(f"End control failed: {resp}")
 
         self._last_trajectory = resp[1]  # None or dict of numpy arrays
@@ -1244,7 +1257,17 @@ class FrankaInterface:
 
     def shutdown(self):
         """End control, stop both processes, and close robot connection."""
-        self.end_control()
+        try:
+            self.end_control()
+        except RuntimeError as e:
+            # If the comm process already died, teardown should still continue.
+            comm_alive = self._comm_process is not None and self._comm_process.is_alive()
+            if comm_alive:
+                raise
+            print(f"[FrankaInterface/PRO] Ignoring end_control failure during shutdown: {e}")
+        finally:
+            self._state_ready.clear()
+            self._torque_mode_active = False
 
         # Tell comm process to exit its command loop
         self._cmd_queue.put(("shutdown",))

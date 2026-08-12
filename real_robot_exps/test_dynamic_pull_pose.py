@@ -7,13 +7,23 @@ import numpy as np
 import math
 import torch
 
-from real_robot_exps.apple_pullto_static import _load_dynamic_pull_start_pose, _reset_to_pose_if_needed, pull_test
+from real_robot_exps.apple_pullto_static import (
+    _load_dynamic_pull_start_pose,
+    _pose_4x4_translated_along_direction,
+    _reset_to_pose_if_needed,
+    pull_test,
+)
 
 
 class DynamicPullPoseTest(unittest.TestCase):
     def test_uses_settled_snapshot_and_apple_radius_from_structure_metadata(self):
         fallback = np.eye(4, dtype=np.float64)
         fallback[:3, 3] = np.array([1.0, 2.0, 3.0], dtype=np.float64)
+        fallback[:3, :3] = np.array([
+            [-0.994, -0.110, 0.0],
+            [0.0, 0.0, 1.0],
+            [-0.110, 0.991, 0.0],
+        ], dtype=np.float64)
         run_metadata = {
             "pre_grasp_geometry": {
                 "parts": {
@@ -33,11 +43,19 @@ class DynamicPullPoseTest(unittest.TestCase):
             theta=math.pi / 2.0,
             phi=math.pi / 2.0,
         )
+        pose_alt, _, _, surface_pose_alt = _load_dynamic_pull_start_pose(
+            run_metadata,
+            fallback,
+            theta=0.25,
+            phi=2.75,
+        )
 
         np.testing.assert_allclose(pose[:3, 3], np.array([0.4, 0.445, 0.6], dtype=np.float64))
         np.testing.assert_allclose(surface_pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
-        np.testing.assert_allclose(pose[:3, 2], np.array([0.0, 1.0, 0.0], dtype=np.float64), atol=1e-6)
-        np.testing.assert_allclose(surface_pose[:3, 2], np.array([0.0, 1.0, 0.0], dtype=np.float64), atol=1e-6)
+        np.testing.assert_allclose(pose_alt[:3, 3], pose[:3, 3])
+        np.testing.assert_allclose(surface_pose_alt[:3, 3], surface_pose[:3, 3])
+        np.testing.assert_allclose(pose[:3, :3], fallback[:3, :3])
+        np.testing.assert_allclose(surface_pose[:3, :3], fallback[:3, :3])
         self.assertEqual(name, "settled_snapshot_apple_surface_plus_2cm_pull_direction_offset")
         self.assertEqual(radius_m, 0.035)
 
@@ -63,9 +81,19 @@ class DynamicPullPoseTest(unittest.TestCase):
             theta=math.pi / 2.0,
             phi=math.pi / 2.0,
         )
+        pose_alt, _, _, surface_pose_alt = _load_dynamic_pull_start_pose(
+            run_metadata,
+            fallback,
+            theta=1.2,
+            phi=0.3,
+        )
 
         np.testing.assert_allclose(pose[:3, 3], np.array([0.4, 0.445, 0.6], dtype=np.float64))
         np.testing.assert_allclose(surface_pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
+        np.testing.assert_allclose(pose_alt[:3, 3], pose[:3, 3])
+        np.testing.assert_allclose(surface_pose_alt[:3, 3], surface_pose[:3, 3])
+        np.testing.assert_allclose(pose[:3, :3], fallback[:3, :3])
+        np.testing.assert_allclose(surface_pose[:3, :3], fallback[:3, :3])
         self.assertEqual(name, "lengthened_snapshot_apple_surface_plus_2cm_pull_direction_offset")
         self.assertEqual(radius_m, 0.035)
 
@@ -199,6 +227,19 @@ class DynamicPullPoseTest(unittest.TestCase):
 
         self.assertFalse(did_reset)
         self.assertEqual(fake_robot.reset_calls, [])
+
+    def test_pull_translation_is_applied_from_the_post_grasp_origin(self):
+        origin = np.eye(4, dtype=np.float64)
+        origin[:3, 3] = np.array([0.4, 0.465, 0.6], dtype=np.float64)
+        direction = np.array([0.0, -1.0, 0.0], dtype=np.float64)
+
+        first_step = _pose_4x4_translated_along_direction(origin, direction, 0.01)
+        second_step = _pose_4x4_translated_along_direction(origin, direction, 0.03)
+
+        np.testing.assert_allclose(first_step[:3, 3], np.array([0.4, 0.455, 0.6], dtype=np.float64))
+        np.testing.assert_allclose(second_step[:3, 3], np.array([0.4, 0.435, 0.6], dtype=np.float64))
+        np.testing.assert_allclose(first_step[:3, :3], origin[:3, :3])
+        np.testing.assert_allclose(second_step[:3, :3], origin[:3, :3])
 
 if __name__ == "__main__":
     unittest.main()

@@ -57,23 +57,23 @@ SPUR_LENGTH_ALIASES = {
     "long": (2, "long"),
 }
 SPUR_LENGTH_TO_METERS = {
-    0: 0.085,
-    1: 0.13,
-    2: 0.175,
+    0: 0.08,
+    1: 0.10,
+    2: 0.12,
 }
 SPUR_RADIUS_BY_STIFFNESS_LEVEL = {
-    0: 0.0020,
-    1: 0.0025,
-    2: 0.0030,
+    0: 0.0025,
+    1: 0.0059,
+    2: 0.0059,
 }
 APPLE_RADIUS_BY_NUMBER = {
-    1: 0.035,
-    2: 0.0350,
-    3: 0.035,
-    4: 0.035,
-    5: 0.035,
+    1: 0.04,
+    2: 0.04,
+    3: 0.04,
+    4: 0.04,
+    5: 0.04,
 }
-STEM_ANGLE_CHOICES = {0, 30, 45, 60}
+STEM_ANGLE_CHOICES = {0, 30, 45, 60, 90}
 SPUR_ANGLE_CHOICES = {45, 60, 75, 90}
 
 
@@ -280,7 +280,7 @@ def prompt_for_structure(
                 print_fn=print_fn,
             )
             stem_angle_deg = _prompt_until_valid(
-                "Stem pitch (0, 30, 45, 60): ",
+                "Stem pitch (0, 30, 45, 60, 90): ",
                 lambda raw: _parse_int_choice(raw, valid=STEM_ANGLE_CHOICES, label="stem angle"),
                 input_fn=input_fn,
                 print_fn=print_fn,
