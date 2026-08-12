@@ -73,8 +73,16 @@ APPLE_RADIUS_BY_NUMBER = {
     4: 0.04,
     5: 0.04,
 }
+APPLE_DENSITY_BY_NUMBER = {
+    2: 749.7689897219757,
+    4: 1059.3750899554282,
+}
 STEM_ANGLE_CHOICES = {0, 30, 45, 60, 90}
 SPUR_ANGLE_CHOICES = {45, 60, 75, 90}
+STEM_LENGTH_BY_APPLE_NUMBER = {
+    2: 0.015,
+    4: 0.015,
+}
 
 
 def load_structure_catalog(path: Path) -> list[dict[str, Any]]:
@@ -164,6 +172,14 @@ def _apple_radius_from_number(apple_number: int) -> float:
     return APPLE_RADIUS_BY_NUMBER[apple_number]
 
 
+def _apple_density_from_number(apple_number: int) -> float:
+    return APPLE_DENSITY_BY_NUMBER.get(apple_number, DEFAULT_APPLE_PART["density_kg_m3"])
+
+
+def _stem_length_from_number(apple_number: int) -> float:
+    return STEM_LENGTH_BY_APPLE_NUMBER.get(apple_number, DEFAULT_STEM_PART["length_m"])
+
+
 def _build_manual_structure(
     *,
     apple_number: int,
@@ -193,6 +209,7 @@ def _build_manual_structure(
     stem_part = dict(DEFAULT_STEM_PART)
     stem_part.update(
         {
+            "length_m": _stem_length_from_number(apple_number),
             "manual_selection": True,
             "manual_stem_angle_deg": stem_angle_deg,
             "connection_rpy_deg": [0.0, float(stem_angle_deg), 0.0],
@@ -203,6 +220,7 @@ def _build_manual_structure(
     apple_part = dict(DEFAULT_APPLE_PART)
     apple_part.update(
         {
+            "density_kg_m3": _apple_density_from_number(apple_number),
             "radius_m": apple_radius_m,
             "manual_selection": True,
             "apple_number": apple_number,
