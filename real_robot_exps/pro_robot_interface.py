@@ -351,8 +351,6 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                     response_queue.put(("error", str(e)))
 
             elif cmd[0] == "start_torque":
-                log_trajectory = cmd[1] if len(cmd) > 1 else False
-
                 ctrl = None
                 last_start_error = None
                 for attempt in range(3):
@@ -391,22 +389,6 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                 response_queue.put(("torque_started", None))
                 stop_torque.clear()
 
-                # --- 1kHz trajectory: pre-allocate numpy buffers ---
-                if log_trajectory:
-                    import gc as _gc
-                    _TRAJ_ALLOC = 15000  # 15s at 1kHz, generous margin
-                    _buf_time = np.empty(_TRAJ_ALLOC, dtype=np.float64)
-                    _buf_O_T_EE = np.empty((_TRAJ_ALLOC, 16), dtype=np.float64)
-                    _buf_q = np.empty((_TRAJ_ALLOC, 7), dtype=np.float64)
-                    _buf_dq = np.empty((_TRAJ_ALLOC, 7), dtype=np.float64)
-                    _buf_ft_raw = np.empty((_TRAJ_ALLOC, 6), dtype=np.float64)
-                    _buf_ft_filt = np.empty((_TRAJ_ALLOC, 6), dtype=np.float64)
-                    _buf_torques = np.empty((_TRAJ_ALLOC, 7), dtype=np.float64)
-                    _buf_wrench = np.empty((_TRAJ_ALLOC, 6), dtype=np.float64)
-                    _tidx = 0
-                    _t0 = time.time()
-                    _gc.disable()  # prevent GC pauses in 1kHz loop
-
                 # --- 1kHz TORQUE LOOP ---
                 alpha = ft_ema_alpha
                 one_minus_alpha = 1.0 - alpha
@@ -439,9 +421,6 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                         # Capture raw F/T (write to numpy BEFORE bias subtraction)
                         # O_F_ext_hat_K base frame. ref: https://frankarobotics.github.io/libfranka/0.15.0/structfranka_1_1RobotState.html#a5a830b4f9d6a3c2dc92e4a9cc6050493
                         ft = list(state.O_F_ext_hat_K)
-                        if log_trajectory and _tidx < _TRAJ_ALLOC:
-                            _buf_ft_raw[_tidx] = ft
-
                         # Subtract F/T bias from raw reading, then EMA filter
                         if ft_bias is not None:
                             for i in range(6):
@@ -454,17 +433,6 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                         # Pack state into shared memory
                         _pack_state(state, ft_ema, jac_flat, mass_flat, gravity)
 
-                        # Write 1kHz snapshot into pre-allocated numpy buffers
-                        # (no Python list objects created — data goes straight to C doubles)
-                        if log_trajectory and _tidx < _TRAJ_ALLOC:
-                            _buf_time[_tidx] = (time.time() - _t0) * 1000.0
-                            _buf_O_T_EE[_tidx] = state.O_T_EE
-                            _buf_q[_tidx] = state.q
-                            _buf_dq[_tidx] = state.dq
-                            _buf_ft_filt[_tidx] = ft_ema
-                            _buf_torques[_tidx] = cmd_torques
-                            _buf_wrench[_tidx] = torque_shm[_SHM_WRENCH[0]:_SHM_WRENCH[1]]
-                            _tidx += 1
 
                 except Exception as e:
                     import traceback
@@ -485,37 +453,117 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                 time.sleep(0.5)
                 state_ready.clear()
 
-                # Package trajectory data (safe now — robot is stopped)
-                if log_trajectory:
-                    _gc.enable()  # re-enable GC now that loop is done
+                response_queue.put(("torque_stopped", None))
 
-                    # Slice pre-allocated buffers to actual length
-                    n = _tidx
-                    O_T_EE_arr = _buf_O_T_EE[:n]              # [n, 16]
-                    ee_pos_arr = O_T_EE_arr[:, [12, 13, 14]]   # [n, 3]
-                    ee_quat_arr = np.empty((n, 4), dtype=np.float64)
-                    for i in range(n):
-                        T = O_T_EE_arr[i]
-                        R = np.array([[T[0], T[4], T[8]],
-                                      [T[1], T[5], T[9]],
-                                      [T[2], T[6], T[10]]])
-                        ee_quat_arr[i] = _rotation_matrix_to_quat_wxyz_np(R)
+            elif cmd[0] == "start_joint_velocity":
+                try:
+                    replay_velocities = None
+                    replay_rate_hz = None
+                    if len(cmd) > 1 and cmd[1] is not None:
+                        replay_velocities = np.asarray(cmd[1], dtype=np.float64)
+                        if replay_velocities.ndim != 2 or replay_velocities.shape[1] != 7:
+                            raise ValueError(
+                                f"Expected replay velocities [n, 7], got {replay_velocities.shape}"
+                            )
+                        replay_rate_hz = float(cmd[2])
+                        if not np.isfinite(replay_rate_hz) or replay_rate_hz <= 0.0:
+                            raise ValueError(f"Invalid replay rate: {replay_rate_hz}")
+                        if not np.isfinite(replay_velocities).all():
+                            raise ValueError("Replay velocities contain non-finite values")
 
-                    traj_data = {
-                        'time_ms': _buf_time[:n].copy(),
-                        'ee_pos': ee_pos_arr.copy(),
-                        'ee_quat': ee_quat_arr,
-                        'joint_pos': _buf_q[:n].copy(),
-                        'joint_vel': _buf_dq[:n].copy(),
-                        'ft_raw': _buf_ft_raw[:n].copy(),
-                        'ft_filtered': _buf_ft_filt[:n].copy(),
-                        'joint_torques_cmd': _buf_torques[:n].copy(),
-                        'task_wrench': _buf_wrench[:n].copy(),
-                    }
-                else:
-                    traj_data = None
+                    ctrl = robot.start_joint_velocity_control(ControllerMode.JointImpedance)
+                    state, _ = ctrl.readOnce()
+                    dq_cmd = list(state.dq)
+                    # Avoid an initial command toward the zero-initialized
+                    # shared target before the caller publishes frame 0.
+                    torque_shm[0:_SHM_TORQUE_SIZE] = dq_cmd
+                    jac_flat = model.zero_jacobian(state)
+                    mass_flat = model.mass(state)
+                    gravity = model.gravity(state)
+                    _pack_state(state, [0.0] * 6, jac_flat, mass_flat, gravity)
+                    state_ready.set()
+                    response_queue.put(("joint_velocity_started", None))
+                    ft_ema = [0.0] * 6
+                    alpha = ft_ema_alpha
+                    max_delta = float(robot_cfg.get("joint_velocity_max_delta_per_step", 0.05))
+                    if not np.isfinite(max_delta) or max_delta < 0.0:
+                        max_delta = 0.05
+                    control_dt = 0.001  # libfranka's joint control callback is 1 kHz
+                    max_accel = max_delta / control_dt
+                    max_jerk = float(robot_cfg.get("joint_velocity_max_jerk", 1000.0))
+                    if not np.isfinite(max_jerk) or max_jerk <= 0.0:
+                        max_jerk = 1000.0
+                    max_accel_step = max_jerk * control_dt
+                    accel_cmd = [0.0] * 7
+                    replay_position = 0.0
 
-                response_queue.put(("torque_stopped", traj_data))
+                    def _step_velocity(target_dq):
+                        """Advance velocity with bounded acceleration and jerk."""
+                        for i in range(7):
+                            error = target_dq[i] - dq_cmd[i]
+                            desired_accel = max(-max_accel, min(max_accel, error / control_dt))
+                            accel_delta = desired_accel - accel_cmd[i]
+                            accel_delta = max(-max_accel_step, min(max_accel_step, accel_delta))
+                            accel_cmd[i] += accel_delta
+                            dq_cmd[i] += accel_cmd[i] * control_dt
+
+                    ctrl.writeOnce(plf.JointVelocities(dq_cmd))
+                    while not stop_torque.is_set() and not comm_stop.is_set():
+                        state, _ = ctrl.readOnce()
+                        if replay_velocities is None:
+                            target_dq = list(torque_shm[0:_SHM_TORQUE_SIZE])
+                        else:
+                            lower = min(int(replay_position), len(replay_velocities) - 1)
+                            upper = min(lower + 1, len(replay_velocities) - 1)
+                            fraction = replay_position - lower
+                            target_dq = (
+                                (1.0 - fraction) * replay_velocities[lower]
+                                + fraction * replay_velocities[upper]
+                            ).tolist()
+                            replay_position += replay_rate_hz / 1000.0
+                        _step_velocity(target_dq)
+                        ctrl.writeOnce(plf.JointVelocities(dq_cmd))
+                        ft = list(state.O_F_ext_hat_K)
+                        if ft_bias is not None:
+                            ft = [value - bias for value, bias in zip(ft, ft_bias)]
+                        ft_ema = [alpha * value + (1.0 - alpha) * old for value, old in zip(ft, ft_ema)]
+                        _pack_state(
+                            state,
+                            ft_ema,
+                            # These model terms are not used by velocity
+                            # replay.  Recomputing them here can miss the
+                            # 1 kHz libfranka deadline and cause a velocity
+                            # discontinuity reflex.  Keep the values sampled
+                            # when the mode started.
+                            jac_flat,
+                            mass_flat,
+                            gravity,
+                        )
+
+                    # Finish velocity control with a continuous ramp to zero
+                    # instead of stopping a nonzero velocity command abruptly.
+                    while any(abs(value) > 1e-6 or abs(accel) > 1e-6
+                              for value, accel in zip(dq_cmd, accel_cmd)):
+                        state, _ = ctrl.readOnce()
+                        _step_velocity([0.0] * 7)
+                        ctrl.writeOnce(plf.JointVelocities(dq_cmd))
+                    final_cmd = plf.JointVelocities([0.0] * 7)
+                    final_cmd.motion_finished = True
+                    ctrl.writeOnce(final_cmd)
+                    ctrl = None
+                    robot.stop()
+                    time.sleep(0.5)
+                    state_ready.clear()
+                    response_queue.put(("joint_velocity_stopped", None))
+                except Exception as exc:
+                    sys.stdout.write(f"[COMM PROCESS] Joint velocity control failed: {exc}\r\n")
+                    sys.stdout.flush()
+                    try:
+                        ctrl = None
+                        robot.stop()
+                    except Exception:
+                        pass
+                    response_queue.put(("error", str(exc)))
 
             elif cmd[0] == "retract":
                 try:
@@ -879,7 +927,6 @@ class FrankaInterface:
 
         self._last_send_time = None
         self._torque_mode_active = False
-        self._last_trajectory = None
 
         # Start compute process (spawn — fresh interpreter, no fork overhead)
         self._compute_process = _ctx.Process(
@@ -1006,19 +1053,15 @@ class FrankaInterface:
         if resp[0] != "sample_state_done":
             raise RuntimeError(f"State refresh failed: {resp}")
 
-    def start_torque_mode(self, log_trajectory: bool = False):
+    def start_torque_mode(self):
         """Start torque control mode with 1kHz comm loop in comm process.
 
         Sends command to comm process, waits for confirmation, then
         activates the compute process.
 
-        Args:
-            log_trajectory: If True, the comm process accumulates per-step
-                trajectory data at 1kHz. Retrieve after end_control() via
-                get_last_trajectory().
         """
         self._torque_shm[0:_SHM_TORQUE_WRENCH_SIZE] = [0.0] * _SHM_TORQUE_WRENCH_SIZE
-        self._cmd_queue.put(("start_torque", log_trajectory))
+        self._cmd_queue.put(("start_torque",))
         resp = self._response_queue.get(timeout=10.0)
         if resp[0] != "torque_started":
             raise RuntimeError(f"Start torque failed: {resp}")
@@ -1033,9 +1076,6 @@ class FrankaInterface:
         the 1kHz loop, and waits for confirmation. Both processes stay
         alive for reuse in the next episode.
 
-        If trajectory logging was enabled via start_torque_mode(log_trajectory=True),
-        the trajectory data dict is stored and retrievable via get_last_trajectory().
-
         No-op if not in torque mode.
         """
         if not self._torque_mode_active:
@@ -1048,7 +1088,7 @@ class FrankaInterface:
         # Signal comm process to exit 1kHz loop
         self._stop_torque.set()
         try:
-            resp = self._response_queue.get(timeout=10.0)  # increased for large trajectory data
+            resp = self._response_queue.get(timeout=10.0)
         except Exception as e:
             comm_alive = self._comm_process is not None and self._comm_process.is_alive()
             self._state_ready.clear()
@@ -1057,12 +1097,11 @@ class FrankaInterface:
                 "End control failed while waiting for comm process response "
                 f"(comm process alive: {comm_alive}): {e}"
             ) from e
-        if resp[0] != "torque_stopped":
+        if resp[0] not in {"torque_stopped", "joint_velocity_stopped"}:
             self._state_ready.clear()
             self._last_send_time = None
             raise RuntimeError(f"End control failed: {resp}")
 
-        self._last_trajectory = resp[1]  # None or dict of numpy arrays
         self._last_send_time = None
 
         # Drain targets queue so stale data doesn't leak into next episode
@@ -1072,15 +1111,32 @@ class FrankaInterface:
             except _queue.Empty:
                 break
 
-    def get_last_trajectory(self):
-        """Return the 1kHz trajectory data from the last torque control session.
+    def start_joint_velocity_mode(self, replay_velocities=None, replay_rate_hz=None):
+        """Start joint-velocity control; optionally replay in the comm process."""
+        self._torque_shm[0:_SHM_TORQUE_WRENCH_SIZE] = [0.0] * _SHM_TORQUE_WRENCH_SIZE
+        self._stop_torque.clear()
+        if replay_velocities is None:
+            command = ("start_joint_velocity",)
+        else:
+            values = np.asarray(replay_velocities, dtype=np.float64)
+            if values.ndim != 2 or values.shape[1] != 7:
+                raise ValueError(f"Expected replay velocities [n, 7], got {values.shape}")
+            if replay_rate_hz is None or not np.isfinite(replay_rate_hz) or replay_rate_hz <= 0.0:
+                raise ValueError(f"Invalid replay rate: {replay_rate_hz}")
+            command = ("start_joint_velocity", values.tolist(), float(replay_rate_hz))
+        self._cmd_queue.put(command)
+        resp = self._response_queue.get(timeout=10.0)
+        if resp[0] != "joint_velocity_started":
+            raise RuntimeError(f"Start joint velocity mode failed: {resp}")
+        self._last_send_time = time.time()
+        self._torque_mode_active = True
 
-        Returns:
-            Dict of numpy arrays if trajectory logging was enabled, else None.
-            Keys: time_ms, ee_pos, ee_quat, joint_pos, joint_vel, ft_raw,
-            ft_filtered, joint_torques_cmd, task_wrench.
-        """
-        return self._last_trajectory
+    def send_joint_velocities(self, joint_velocities):
+        values = np.asarray(joint_velocities, dtype=np.float64)
+        if values.shape != (7,):
+            raise ValueError(f"Expected [7] joint velocities, got {values.shape}")
+        self._torque_shm[0:_SHM_TORQUE_SIZE] = values.tolist()
+        self._last_send_time = time.time()
 
     def error_recovery(self):
         """Clear Reflex/error state on the robot.

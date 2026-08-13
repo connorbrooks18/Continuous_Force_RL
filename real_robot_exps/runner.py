@@ -309,6 +309,24 @@ def _run_one(
     if metadata_path.exists():
         metadata_path.unlink()
 
+    if args.mode == "collect" and not args.only_metadata:
+        if not args.skip_enter:
+            input("Remove the apple/contact load, then press Enter to collect the replay baseline...")
+        baseline_cmd = [
+            sys.executable,
+            "-m",
+            "real_robot_exps.collect_joint_velocity_baseline",
+            "--actual-robot",
+            str(robot_path),
+            "--output",
+            str(baseline_path_for_collect),
+            "--config",
+            str(args.config),
+        ]
+        print(f"\n=== Running joint-velocity baseline for {run_id} ===")
+        print(" ".join(baseline_cmd))
+        subprocess.run(baseline_cmd, check=True)
+
     skip_compile = False
     if args.expect_tracking:
         try:
@@ -351,6 +369,8 @@ def _run_one(
                     str(unified_path),
                     "--camera-ema-alpha",
                     str(args.camera_ema_alpha),
+                    "--baseline",
+                    str(baseline_path_for_collect),
                 ]
                 print(" ".join(compile_cmd))
                 subprocess.run(compile_cmd, check=True)
@@ -612,16 +632,6 @@ def main() -> None:
 
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    if args.mode == "collect" and not args.only_metadata:
-        _run_missing_baselines(
-            structure_index=structure_index,
-            structure=structure,
-            directions=directions,
-            start_at=args.start_at,
-            args=args,
-            pre_grasp_geometry=pre_grasp_geometry,
-        )
 
     manifest_runs: list[dict[str, Any]] = []
     for direction_index, direction in enumerate(directions[args.start_at:], start=args.start_at):

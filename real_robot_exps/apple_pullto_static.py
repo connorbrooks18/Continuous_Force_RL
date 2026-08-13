@@ -358,6 +358,7 @@ def _append_robot_sample(
         "ft_wrist_raw": _flat_float32(snap.force_torque.cpu().numpy()),
         "tau_J_d": _flat_float32(snap.tau_J_d.cpu().numpy()),
         "joint_pos": _flat_float32(snap.joint_pos.cpu().numpy()),
+        "joint_vel": _flat_float32(snap.joint_vel.cpu().numpy()),
         "tcp_velocity": _flat_float32(np.concatenate([
             snap.ee_linvel.cpu().numpy(),
             snap.ee_angvel.cpu().numpy(),
@@ -1419,7 +1420,10 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
     saved_robot_path = save_robot_hold_parquet(robot_rows, robot_output, robot_metadata)
     print(f"Wrote robot hold data to {saved_robot_path}")
 
-    return {"episode_id": episode_id, "robot_path": saved_robot_path}
+    return {
+        "episode_id": episode_id,
+        "robot_path": saved_robot_path,
+    }
 
 
 def _prompt_or_continue(prompt: str, skip: bool) -> None:

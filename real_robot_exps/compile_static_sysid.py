@@ -360,6 +360,7 @@ def compile_static_episode(
     camera_frame_count: int = 5,
     max_camera_delta_s: float = 1.0,
     camera_ema_alpha: float = 1.0,
+    baseline_path: Path | str | None = None,
     command_argv: list[str] | None = None,
 ) -> Path:
     robot_path = Path(robot_path)
@@ -375,6 +376,30 @@ def compile_static_episode(
     robot_rows = [row for row in robot_rows_all if str(row.get("row_kind", "data")) != "metadata"]
     if not robot_rows:
         raise ValueError("Robot input contains no hold rows")
+    if baseline_path is not None:
+        baseline_rows = [
+            row for row in pq.read_table(baseline_path).to_pylist()
+            if str(row.get("row_kind", "data")) != "metadata"
+        ]
+        by_hold = {}
+        for row in baseline_rows:
+            by_hold.setdefault(int(row.get("hold_index", 0)), []).append(row)
+        for hold_idx in sorted({int(row["hold_index"]) for row in robot_rows}):
+            current = [row for row in robot_rows if int(row["hold_index"]) == hold_idx]
+            source = sorted(by_hold.get(hold_idx, []), key=lambda row: int(row.get("hold_step_idx", 0)))
+            if not source:
+                raise ValueError(f"Baseline has no rows for hold_index={hold_idx}")
+            source_ft = np.asarray([row.get("ft_wrist_raw", row["ft_wrist"]) for row in source], dtype=np.float64)
+            source_progress = np.linspace(0.0, 1.0, len(source_ft))
+            target_progress = np.linspace(0.0, 1.0, len(current))
+            for row, values in zip(current, np.column_stack([
+                np.interp(target_progress, source_progress, source_ft[:, component])
+                for component in range(6)
+            ])):
+                raw = np.asarray(row.get("ft_wrist_raw", row["ft_wrist"]), dtype=np.float32)
+                row["ft_wrist_raw"] = raw
+                row["ft_wrist_baseline"] = values.astype(np.float32)
+                row["ft_wrist"] = (raw.astype(np.float64) - values).astype(np.float32)
     required_robot_fields = {
         "timestamp", "hold_index", "ft_wrist", "tau_J_d", "joint_pos",
         "tcp_velocity", "action_wrench_ee", "tcp_pos", "tcp_pose_4x4", "target_pose_4x4",
@@ -748,6 +773,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--robot", required=True, type=Path, help="Raw robot hold Parquet")
     parser.add_argument("--tracking", required=True, type=Path, help="Raw tracking Parquet")
+    parser.add_argument("--baseline", type=Path, help="Post-run joint-velocity baseline Parquet")
     parser.add_argument("--output", required=True, type=Path, help="Unified episode Parquet")
     parser.add_argument("--camera-frames", type=int, default=5, help="Camera frames per estimate")
     parser.add_argument(
@@ -770,6 +796,7 @@ def main() -> None:
         camera_frame_count=args.camera_frames,
         max_camera_delta_s=args.max_camera_delta,
         camera_ema_alpha=args.camera_ema_alpha,
+        baseline_path=args.baseline,
         command_argv=sys.argv,
     )
     print(f"Wrote unified static system-ID episode to {output}")

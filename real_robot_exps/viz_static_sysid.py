@@ -164,10 +164,10 @@ def _shade_phase_background(ax, rows: list[dict[str, Any]]) -> None:
         if end <= start:
             end = start + 1e-9
         if phase == 0:
-            color = "#f2f2f2"  # light gray for moving
+            color = "#f4f4f4"  # light gray for moving
         else:
-            color = "#fce4ec"  # light pink for holding
-        ax.axvspan(start, end, color=color, alpha=0.35, zorder=0)
+            color = "#e8f1ff"  # pale blue for holding
+        ax.axvspan(start, end, color=color, alpha=0.22, zorder=0)
 
 
 def _delta_cm(values: np.ndarray) -> np.ndarray:
