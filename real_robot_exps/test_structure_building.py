@@ -30,7 +30,7 @@ class StructureBuildingTest(unittest.TestCase):
     def test_prompt_for_structure_builds_manual_entry(self):
         responses = iter([
             "no",
-            "3",
+            "2",
             "h",
             "long",
             "45",
@@ -60,7 +60,7 @@ class StructureBuildingTest(unittest.TestCase):
             )
 
             self.assertEqual(structure_index, 1)
-            self.assertEqual(structure["manual_selection"]["apple_number"], 3)
+            self.assertEqual(structure["manual_selection"]["apple_number"], 2)
             self.assertEqual(structure["manual_selection"]["spur_stiffness"], 2)
             self.assertEqual(structure["manual_selection"]["spur_length"], "long")
             self.assertEqual(structure["parts"]["primary"]["radius_m"], 0.0125)
@@ -120,7 +120,7 @@ class StructureBuildingTest(unittest.TestCase):
                 self.assertAlmostEqual(structure["parts"]["apple"]["density_kg_m3"], 1059.3750899554282)
             self.assertIn("n/no: build a new structure", "\n".join(printed))
 
-    def test_prompt_for_structure_keeps_default_stem_length_for_other_apples(self):
+    def test_prompt_for_structure_prompts_and_persists_missing_stem_length(self):
         responses = iter([
             "no",
             "3",
@@ -128,6 +128,7 @@ class StructureBuildingTest(unittest.TestCase):
             "short",
             "30",
             "45",
+            "0.008",
         ])
         printed = []
 
@@ -144,22 +145,37 @@ class StructureBuildingTest(unittest.TestCase):
                 json.dumps({"structures": [{"name": "default_template"}]}, indent=2),
                 encoding="utf-8",
             )
-            structures = sb.load_structure_catalog(catalog_path)
-            _, structure = sb.prompt_for_structure(
-                structures,
-                catalog_path=catalog_path,
-                input_fn=fake_input,
-                print_fn=fake_print,
-            )
+            constants_path = Path(tmp) / "structure_constants.json"
+            constants = deepcopy(sb.STRUCTURE_CONSTANTS)
+            constants["stem_length_by_apple_number"] = {}
+            constants_path.write_text(json.dumps(constants, indent=2, sort_keys=True), encoding="utf-8")
 
-        self.assertEqual(structure["parts"]["stem"]["length_m"], 0.005)
-        self.assertAlmostEqual(structure["parts"]["spur"]["mass_kg"], 0.001884955592153876)
-        self.assertIn("n/no: build a new structure", "\n".join(printed))
+            original_constants = sb.STRUCTURE_CONSTANTS
+            original_constants_path = sb.STRUCTURE_CONSTANTS_PATH
+            try:
+                sb.STRUCTURE_CONSTANTS = constants
+                sb.STRUCTURE_CONSTANTS_PATH = constants_path
+                structures = sb.load_structure_catalog(catalog_path)
+                _, structure = sb.prompt_for_structure(
+                    structures,
+                    catalog_path=catalog_path,
+                    input_fn=fake_input,
+                    print_fn=fake_print,
+                )
+            finally:
+                sb.STRUCTURE_CONSTANTS = original_constants
+                sb.STRUCTURE_CONSTANTS_PATH = original_constants_path
+
+            self.assertAlmostEqual(structure["parts"]["stem"]["length_m"], 0.008)
+            self.assertIn("Missing stem length entry", "\n".join(printed))
+
+            updated = json.loads(constants_path.read_text(encoding="utf-8"))
+            self.assertEqual(updated["stem_length_by_apple_number"]["3"], 0.008)
 
     def test_prompt_for_structure_prompts_and_persists_missing_spur_mass(self):
         responses = iter([
             "no",
-            "3",
+            "2",
             "h",
             "long",
             "45",

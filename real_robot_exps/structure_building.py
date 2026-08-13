@@ -167,6 +167,42 @@ def _stem_length_from_number(apple_number: int) -> float:
     return STEM_LENGTH_BY_APPLE_NUMBER.get(apple_number, DEFAULT_STEM_PART["length_m"])
 
 
+def _stem_length_table() -> dict[str, Any]:
+    length_table = STRUCTURE_CONSTANTS.get("stem_length_by_apple_number")
+    if not isinstance(length_table, dict):
+        length_table = {}
+        STRUCTURE_CONSTANTS["stem_length_by_apple_number"] = length_table
+    return length_table
+
+
+def _stem_length_from_apple_number(
+    apple_number: int,
+    *,
+    input_fn: InputFn,
+    print_fn: PrintFn,
+) -> float:
+    length_table = _stem_length_table()
+    apple_key = str(apple_number)
+    stored_length = length_table.get(apple_key)
+    if stored_length is not None:
+        return float(stored_length)
+
+    print_fn(f"[INFO] Missing stem length entry for apple #{apple_number}.")
+    stem_length_m = _prompt_until_valid(
+        "Measured stem length in meters: ",
+        lambda raw: float(raw),
+        input_fn=input_fn,
+        print_fn=print_fn,
+    )
+    length_table[apple_key] = float(stem_length_m)
+    _save_structure_constants()
+    print_fn(
+        f"Saved stem length {float(stem_length_m)} m to {STRUCTURE_CONSTANTS_PATH} "
+        f"for apple #{apple_number}"
+    )
+    return float(stem_length_m)
+
+
 def _spur_mass_table() -> dict[str, Any]:
     mass_table = STRUCTURE_CONSTANTS.get("spur_mass_kg_by_stiffness_and_length")
     if not isinstance(mass_table, dict):
@@ -249,7 +285,11 @@ def _build_manual_structure(
     stem_part = dict(DEFAULT_STEM_PART)
     stem_part.update(
         {
-            "length_m": _stem_length_from_number(apple_number),
+            "length_m": _stem_length_from_apple_number(
+                apple_number,
+                input_fn=input_fn,
+                print_fn=print_fn,
+            ),
             "manual_selection": True,
             "manual_stem_angle_deg": stem_angle_deg,
             "connection_rpy_deg": [0.0, float(stem_angle_deg), 0.0],
