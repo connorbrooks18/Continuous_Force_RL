@@ -11,77 +11,56 @@ InputFn = Callable[[str], str]
 PrintFn = Callable[..., None]
 
 
-DEFAULT_PRIMARY_PART = {
-    "shape": "cylinder",
-    "length_m": 0.827,
-    "radius_m": 0.0125,
-    "density_kg_m3": 660,
-}
-DEFAULT_SPUR_PART = {
-    "shape": "cylinder",
-    "length_m": 0.13,
-    "radius_m": 0.0025,
-    "density_kg_m3": 1200,
-}
-DEFAULT_STEM_PART = {
-    "shape": "cylinder",
-    "length_m": 0.005,
-    "radius_m": 0.0005,
-    "density_kg_m3": 1000,
-}
-DEFAULT_APPLE_PART = {
-    "shape": "sphere",
-    "length_m": 0.07,
-    "radius_m": 0.035,
-    "density_kg_m3": 650,
-}
+STRUCTURE_CONSTANTS_PATH = Path(__file__).with_name("structure_constants.json")
+
+
+def _load_structure_constants(path: Path = STRUCTURE_CONSTANTS_PATH) -> dict[str, Any]:
+    with path.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if not isinstance(payload, dict):
+        raise ValueError(f"{path} does not contain a JSON object")
+    return payload
+
+
+def _int_keyed_mapping(raw: dict[str, Any]) -> dict[int, Any]:
+    return {int(key): value for key, value in raw.items()}
+
+
+def _nested_int_keyed_mapping(raw: dict[str, Any]) -> dict[int, dict[int, Any]]:
+    return {int(key): _int_keyed_mapping(value) for key, value in raw.items()}
+
+
+STRUCTURE_CONSTANTS = _load_structure_constants()
+
+DEFAULT_PRIMARY_PART = dict(STRUCTURE_CONSTANTS["default_parts"]["primary"])
+DEFAULT_SPUR_PART = dict(STRUCTURE_CONSTANTS["default_parts"]["spur"])
+DEFAULT_STEM_PART = dict(STRUCTURE_CONSTANTS["default_parts"]["stem"])
+DEFAULT_APPLE_PART = dict(STRUCTURE_CONSTANTS["default_parts"]["apple"])
 
 SPUR_STIFFNESS_ALIASES = {
-    "0": (0, "low"),
-    "l": (0, "low"),
-    "low": (0, "low"),
-    "1": (1, "medium"),
-    "m": (1, "medium"),
-    "med": (1, "medium"),
-    "medium": (1, "medium"),
-    "2": (2, "high"),
-    "h": (2, "high"),
-    "high": (2, "high"),
+    key: (int(value[0]), str(value[1]))
+    for key, value in STRUCTURE_CONSTANTS["spur_stiffness_aliases"].items()
 }
 SPUR_LENGTH_ALIASES = {
-    "0": (0, "short"),
-    "short": (0, "short"),
-    "1": (1, "medium"),
-    "medium": (1, "medium"),
-    "2": (2, "long"),
-    "long": (2, "long"),
+    key: (int(value[0]), str(value[1]))
+    for key, value in STRUCTURE_CONSTANTS["spur_length_aliases"].items()
 }
 SPUR_LENGTH_TO_METERS = {
-    0: 0.08,
-    1: 0.10,
-    2: 0.12,
+    int(key): float(value) for key, value in STRUCTURE_CONSTANTS["spur_length_to_meters"].items()
 }
 SPUR_RADIUS_BY_STIFFNESS_LEVEL = {
-    0: 0.0025,
-    1: 0.0059,
-    2: 0.0059,
+    int(key): float(value) for key, value in STRUCTURE_CONSTANTS["spur_radius_by_stiffness_level"].items()
 }
 APPLE_RADIUS_BY_NUMBER = {
-    1: 0.04,
-    2: 0.04,
-    3: 0.04,
-    4: 0.04,
-    5: 0.04,
+    int(key): float(value) for key, value in STRUCTURE_CONSTANTS["apple_radius_by_number"].items()
 }
 APPLE_DENSITY_BY_NUMBER = {
-    2: 749.7689897219757,
-    4: 1059.3750899554282,
+    int(key): float(value) for key, value in STRUCTURE_CONSTANTS["apple_density_kg_m3_by_number"].items()
 }
-STEM_ANGLE_CHOICES = {0, 30, 45, 60, 90}
-SPUR_ANGLE_CHOICES = {45, 60, 75, 90}
+STEM_ANGLE_CHOICES = {int(choice) for choice in STRUCTURE_CONSTANTS["stem_angle_choices"]}
+SPUR_ANGLE_CHOICES = {int(choice) for choice in STRUCTURE_CONSTANTS["spur_angle_choices"]}
 STEM_LENGTH_BY_APPLE_NUMBER = {
-    2: 0.015,
-    4: 0.015,
+    int(key): float(value) for key, value in STRUCTURE_CONSTANTS["stem_length_by_apple_number"].items()
 }
 
 
@@ -126,6 +105,14 @@ def append_structure_to_catalog(
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, sort_keys=True)
     return len(structures) - 1
+
+
+def _save_structure_constants(path: Path | None = None) -> None:
+    if path is None:
+        path = STRUCTURE_CONSTANTS_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(STRUCTURE_CONSTANTS, f, indent=2, sort_keys=True)
 
 
 def _prompt_until_valid(
@@ -180,6 +167,49 @@ def _stem_length_from_number(apple_number: int) -> float:
     return STEM_LENGTH_BY_APPLE_NUMBER.get(apple_number, DEFAULT_STEM_PART["length_m"])
 
 
+def _spur_mass_table() -> dict[str, Any]:
+    mass_table = STRUCTURE_CONSTANTS.get("spur_mass_kg_by_stiffness_and_length")
+    if not isinstance(mass_table, dict):
+        mass_table = {}
+        STRUCTURE_CONSTANTS["spur_mass_kg_by_stiffness_and_length"] = mass_table
+    return mass_table
+
+
+def _spur_mass_from_parameters(
+    *,
+    stiffness_level: int,
+    stiffness_label: str,
+    length_level: int,
+    length_label: str,
+    input_fn: InputFn,
+    print_fn: PrintFn,
+) -> float:
+    mass_table = _spur_mass_table()
+    stiffness_key = str(stiffness_level)
+    length_key = str(length_level)
+    stored_mass = mass_table.get(stiffness_key, {}).get(length_key)
+    if stored_mass is not None:
+        return float(stored_mass)
+
+    print_fn(
+        "[INFO] Missing spur mass entry for "
+        f"stiffness={stiffness_label} ({stiffness_level}), length={length_label} ({length_level})."
+    )
+    mass_kg = _prompt_until_valid(
+        "Measured spur mass in kg: ",
+        lambda raw: float(raw),
+        input_fn=input_fn,
+        print_fn=print_fn,
+    )
+    mass_table.setdefault(stiffness_key, {})[length_key] = float(mass_kg)
+    _save_structure_constants()
+    print_fn(
+        f"Saved spur mass {float(mass_kg)} kg to {STRUCTURE_CONSTANTS_PATH} "
+        f"for stiffness={stiffness_label}, length={length_label}"
+    )
+    return float(mass_kg)
+
+
 def _build_manual_structure(
     *,
     apple_number: int,
@@ -187,6 +217,8 @@ def _build_manual_structure(
     spur_length: tuple[int, str],
     stem_angle_deg: int,
     spur_angle_deg: int,
+    input_fn: InputFn,
+    print_fn: PrintFn,
 ) -> dict[str, Any]:
     stiffness_level, stiffness_label = spur_stiffness
     spur_length_level, spur_length_label = spur_length
@@ -197,6 +229,14 @@ def _build_manual_structure(
         {
             "length_m": SPUR_LENGTH_TO_METERS[spur_length_level],
             "radius_m": SPUR_RADIUS_BY_STIFFNESS_LEVEL[stiffness_level],
+            "mass_kg": _spur_mass_from_parameters(
+                stiffness_level=stiffness_level,
+                stiffness_label=stiffness_label,
+                length_level=spur_length_level,
+                length_label=spur_length_label,
+                input_fn=input_fn,
+                print_fn=print_fn,
+            ),
             "stiffness_level": stiffness_level,
             "stiffness_label": stiffness_label,
             "manual_selection": True,
@@ -315,6 +355,8 @@ def prompt_for_structure(
                 spur_length=spur_length,
                 stem_angle_deg=stem_angle_deg,
                 spur_angle_deg=spur_angle_deg,
+                input_fn=input_fn,
+                print_fn=print_fn,
             )
             if catalog_path is not None:
                 structure_index = append_structure_to_catalog(

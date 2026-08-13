@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import signal
 import subprocess
 import sys
@@ -105,6 +106,12 @@ def _normalized_pre_grasp_geometry(structure_index: int, structure: dict[str, An
         ]
         if "mass_kg" in part and "density_kg_m3" not in part:
             part["density_kg_m3"] = part.pop("mass_kg")
+        if part_name == "spur" and "mass_kg" not in part:
+            length_m = part.get("length_m")
+            radius_m = part.get("radius_m")
+            density_kg_m3 = part.get("density_kg_m3")
+            if None not in (length_m, radius_m, density_kg_m3):
+                part["mass_kg"] = float(density_kg_m3) * math.pi * float(radius_m) ** 2 * float(length_m)
         part["connection_source"] = "catalog" if idx == 0 else "catalog_or_lengthened_state_placeholder"
         out[part_name] = part
     return {
