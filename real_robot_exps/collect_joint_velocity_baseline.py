@@ -190,6 +190,8 @@ def collect_baseline(
             "tau_J_d": trajectory["tau_J_d"][index],
             "joint_pos": trajectory["joint_pos"][index],
             "joint_vel": trajectory["joint_vel"][index],
+            "joint_vel_cmd": trajectory["joint_vel_cmd"][index],
+            "joint_vel_target": trajectory["joint_vel_target"][index],
             "tcp_pos": np.asarray(pose[12:15], dtype=np.float32),
             "tcp_pose_4x4": np.asarray(pose, dtype=np.float32),
         })
@@ -202,6 +204,7 @@ def collect_baseline(
         "baseline_replayed_frame_count": int(len(rows)),
         "baseline_rate_hz": float(config["robot"].get("control_rate_hz", 1000.0)),
         "baseline_replay_field": "joint_vel",
+        "baseline_command_field": "joint_vel_cmd",
         "baseline_replay_semantics": (
             "timestamp-interpolated actual-run joint velocities on a fixed control-rate grid "
             "with comm-side jerk limiting"

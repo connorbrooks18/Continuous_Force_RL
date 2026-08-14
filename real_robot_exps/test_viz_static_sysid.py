@@ -27,6 +27,7 @@ class VizStaticSysidTest(unittest.TestCase):
                     "hold_step_idx": idx % 2,
                     "hold_index": idx // 2,
                     "ft_wrist": np.arange(6, dtype=np.float32),
+                    "ft_wrist_baseline": np.arange(6, dtype=np.float32) + 10,
                     "tau_J_d": np.arange(7, dtype=np.float32) + 20,
                     "joint_pos": np.arange(7, dtype=np.float32) + 30,
                     "tcp_velocity": np.zeros(6, dtype=np.float32),
@@ -62,6 +63,9 @@ class VizStaticSysidTest(unittest.TestCase):
             data = _load_plot_data(path)
             fig = plot_static_sysid(data)
             self.assertEqual(len(fig.axes), 8)
+            wrench_labels = [line.get_label() for line in fig.axes[1].get_lines()]
+            self.assertIn(r"baseline $\|F\|$ [N]", wrench_labels)
+            self.assertIn(r"baseline $\|T\|$ [N m]", wrench_labels)
             header = "\n".join(text.get_text() for text in fig.texts)
             self.assertIn("episode_id: episode-test", header)
             self.assertIn("phase_name(s): hold", header)

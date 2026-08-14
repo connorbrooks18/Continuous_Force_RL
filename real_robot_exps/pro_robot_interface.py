@@ -509,6 +509,8 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                             "O_T_EE": np.empty((log_capacity, 16), dtype=np.float32),
                             "joint_pos": np.empty((log_capacity, 7), dtype=np.float32),
                             "joint_vel": np.empty((log_capacity, 7), dtype=np.float32),
+                            "joint_vel_cmd": np.empty((log_capacity, 7), dtype=np.float32),
+                            "joint_vel_target": np.empty((log_capacity, 7), dtype=np.float32),
                             "tau_J": np.empty((log_capacity, 7), dtype=np.float32),
                             "tau_ext_hat_filtered": np.empty((log_capacity, 7), dtype=np.float32),
                             "tau_J_d": np.empty((log_capacity, 7), dtype=np.float32),
@@ -552,6 +554,8 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                             trajectory_log["O_T_EE"][trajectory_index] = state.O_T_EE
                             trajectory_log["joint_pos"][trajectory_index] = state.q
                             trajectory_log["joint_vel"][trajectory_index] = state.dq
+                            trajectory_log["joint_vel_cmd"][trajectory_index] = dq_cmd
+                            trajectory_log["joint_vel_target"][trajectory_index] = target_dq
                             trajectory_log["tau_J"][trajectory_index] = state.tau_J
                             trajectory_log["tau_ext_hat_filtered"][trajectory_index] = state.tau_ext_hat_filtered
                             trajectory_log["tau_J_d"][trajectory_index] = state.tau_J_d

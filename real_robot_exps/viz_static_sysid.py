@@ -183,6 +183,9 @@ def plot_static_sysid(
     t = data.timestamps
 
     ft = _vector_columns(rows, "ft_wrist")
+    baseline_ft = None
+    if rows and rows[0].get("ft_wrist_baseline") is not None:
+        baseline_ft = _vector_columns(rows, "ft_wrist_baseline")
     tcp_pos = _vector_columns(rows, "tcp_pos")
     has_camera = data.has_camera
     if has_camera:
@@ -213,6 +216,25 @@ def plot_static_sysid(
     torque_magnitude = np.linalg.norm(ft[:, 3:], axis=1)
     axes[1].plot(t, force_magnitude, label=r"$\|F\|$ [N]", linewidth=1.5)
     axes[1].plot(t, torque_magnitude, label=r"$\|T\|$ [N m]", linewidth=1.5)
+    if baseline_ft is not None:
+        baseline_force_magnitude = np.linalg.norm(baseline_ft[:, :3], axis=1)
+        baseline_torque_magnitude = np.linalg.norm(baseline_ft[:, 3:], axis=1)
+        axes[1].plot(
+            t,
+            baseline_force_magnitude,
+            "--",
+            color="tab:green",
+            linewidth=1.4,
+            label=r"baseline $\|F\|$ [N]",
+        )
+        axes[1].plot(
+            t,
+            baseline_torque_magnitude,
+            "--",
+            color="tab:brown",
+            linewidth=1.4,
+            label=r"baseline $\|T\|$ [N m]",
+        )
     axes[1].set_title("Wrist wrench magnitudes")
     axes[1].set_ylabel("magnitude")
     axes[1].grid(True, alpha=0.25)
