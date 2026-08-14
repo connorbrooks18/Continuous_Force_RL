@@ -381,25 +381,48 @@ def compile_static_episode(
             row for row in pq.read_table(baseline_path).to_pylist()
             if str(row.get("row_kind", "data")) != "metadata"
         ]
-        by_hold = {}
+        baseline_by_part = {}
         for row in baseline_rows:
-            by_hold.setdefault(int(row.get("hold_index", 0)), []).append(row)
+            # hold_index identifies pull/hold part 1, 2, ...; numeric phase
+            # separates the moving and holding portions within that part.
+            key = (int(row.get("hold_index", 0)), int(row.get("phase", 1)))
+            baseline_by_part.setdefault(key, []).append(row)
+
         for hold_idx in sorted({int(row["hold_index"]) for row in robot_rows}):
-            current = [row for row in robot_rows if int(row["hold_index"]) == hold_idx]
-            source = sorted(by_hold.get(hold_idx, []), key=lambda row: int(row.get("hold_step_idx", 0)))
-            if not source:
-                raise ValueError(f"Baseline has no rows for hold_index={hold_idx}")
-            source_ft = np.asarray([row.get("ft_wrist_raw", row["ft_wrist"]) for row in source], dtype=np.float64)
-            source_progress = np.linspace(0.0, 1.0, len(source_ft))
-            target_progress = np.linspace(0.0, 1.0, len(current))
-            for row, values in zip(current, np.column_stack([
-                np.interp(target_progress, source_progress, source_ft[:, component])
-                for component in range(6)
-            ])):
-                raw = np.asarray(row.get("ft_wrist_raw", row["ft_wrist"]), dtype=np.float32)
-                row["ft_wrist_raw"] = raw
-                row["ft_wrist_baseline"] = values.astype(np.float32)
-                row["ft_wrist"] = (raw.astype(np.float64) - values).astype(np.float32)
+            hold_rows = [row for row in robot_rows if int(row["hold_index"]) == hold_idx]
+            phases = []
+            for row in hold_rows:
+                phase = int(row["phase"])
+                if phase not in phases:
+                    phases.append(phase)
+            for phase in phases:
+                current = [row for row in hold_rows if int(row["phase"]) == phase]
+                source = sorted(
+                    baseline_by_part.get((hold_idx, phase), []),
+                    key=lambda row: int(row.get("hold_step_idx", 0)),
+                )
+                if not source:
+                    raise ValueError(
+                        "Baseline has no rows for "
+                        f"hold_index={hold_idx}, phase={phase}"
+                    )
+                source_ft = np.asarray(
+                    [row.get("ft_wrist_raw", row["ft_wrist"]) for row in source],
+                    dtype=np.float64,
+                )
+                source_progress = np.linspace(0.0, 1.0, len(source_ft))
+                target_progress = np.linspace(0.0, 1.0, len(current))
+                matched = np.column_stack([
+                    np.interp(target_progress, source_progress, source_ft[:, component])
+                    for component in range(6)
+                ])
+                for row, values in zip(current, matched):
+                    raw = np.asarray(
+                        row.get("ft_wrist_raw", row["ft_wrist"]), dtype=np.float32
+                    )
+                    row["ft_wrist_raw"] = raw
+                    row["ft_wrist_baseline"] = values.astype(np.float32)
+                    row["ft_wrist"] = (raw.astype(np.float64) - values).astype(np.float32)
     required_robot_fields = {
         "timestamp", "hold_index", "ft_wrist", "tau_J_d", "joint_pos",
         "tcp_velocity", "action_wrench_ee", "tcp_pos", "tcp_pose_4x4", "target_pose_4x4",

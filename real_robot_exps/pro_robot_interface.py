@@ -974,6 +974,7 @@ class FrankaInterface:
         self._state_ready = _ctx.Event()
 
         self._last_send_time = None
+        self._next_policy_deadline = None
         self._last_trajectory = None
         self._torque_mode_active = False
 
@@ -1068,17 +1069,19 @@ class FrankaInterface:
     def wait_for_policy_step(self):
         """Block until 1/control_rate_hz has elapsed since the last step."""
         target_dt = 1.0 / self._control_rate_hz
-        if self._last_send_time is None:
-            time.sleep(target_dt)
-        else:
-            elapsed = time.time() - self._last_send_time
-            remaining = target_dt - elapsed
-            if remaining > 0:
-                time.sleep(remaining)
-        # Some control modes (e.g. preloaded replay) have no per-step send
-        # call. Advance the pacing reference here so repeated waits do not
-        # collapse into a tight loop.
-        self._last_send_time = time.time()
+        now = time.monotonic()
+        if self._next_policy_deadline is None:
+            self._next_policy_deadline = now + target_dt
+        remaining = self._next_policy_deadline - now
+        if remaining > 0:
+            time.sleep(remaining)
+        # Advance from the scheduled deadline, not from the time at which the
+        # previous target was queued. This prevents snapshot/serialization
+        # overhead from accumulating and stretching a nominal one-second hold.
+        self._next_policy_deadline += target_dt
+        now = time.monotonic()
+        if self._next_policy_deadline < now - target_dt:
+            self._next_policy_deadline = now + target_dt
 
     def reset_to_start_pose(self, target_pose_4x4: np.ndarray):
         """Move to target pose via Cartesian control, then stop.
@@ -1120,6 +1123,7 @@ class FrankaInterface:
             raise RuntimeError(f"Start torque failed: {resp}")
         self._compute_active.set()
         self._last_send_time = time.time()
+        self._next_policy_deadline = None
         self._torque_mode_active = True
 
     def end_control(self):
@@ -1146,6 +1150,7 @@ class FrankaInterface:
             comm_alive = self._comm_process is not None and self._comm_process.is_alive()
             self._state_ready.clear()
             self._last_send_time = None
+            self._next_policy_deadline = None
             raise RuntimeError(
                 "End control failed while waiting for comm process response "
                 f"(comm process alive: {comm_alive}): {e}"
@@ -1153,11 +1158,13 @@ class FrankaInterface:
         if resp[0] not in {"torque_stopped", "joint_velocity_stopped"}:
             self._state_ready.clear()
             self._last_send_time = None
+            self._next_policy_deadline = None
             raise RuntimeError(f"End control failed: {resp}")
 
         self._last_trajectory = resp[1] if len(resp) > 1 else None
 
         self._last_send_time = None
+        self._next_policy_deadline = None
 
         # Drain targets queue so stale data doesn't leak into next episode
         while True:
@@ -1188,6 +1195,7 @@ class FrankaInterface:
         if resp[0] != "joint_velocity_started":
             raise RuntimeError(f"Start joint velocity mode failed: {resp}")
         self._last_send_time = time.time()
+        self._next_policy_deadline = None
         self._torque_mode_active = True
 
     def send_joint_velocities(self, joint_velocities):
