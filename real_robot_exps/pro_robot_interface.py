@@ -420,7 +420,8 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
 
                         # Capture raw F/T (write to numpy BEFORE bias subtraction)
                         # O_F_ext_hat_K base frame. ref: https://frankarobotics.github.io/libfranka/0.15.0/structfranka_1_1RobotState.html#a5a830b4f9d6a3c2dc92e4a9cc6050493
-                        ft = list(state.O_F_ext_hat_K)
+                        ft_raw = list(state.O_F_ext_hat_K)
+                        ft = ft_raw.copy()
                         # Subtract F/T bias from raw reading, then EMA filter
                         if ft_bias is not None:
                             for i in range(6):
@@ -496,6 +497,24 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                     max_accel_step = max_jerk * control_dt
                     accel_cmd = [0.0] * 7
                     replay_position = 0.0
+                    trajectory_log = None
+                    trajectory_index = 0
+                    if replay_velocities is not None:
+                        log_capacity = max(
+                            2000,
+                            int(np.ceil(len(replay_velocities) * 1000.0 / replay_rate_hz)) + 2000,
+                        )
+                        trajectory_log = {
+                            "timestamp": np.empty(log_capacity, dtype=np.float64),
+                            "O_T_EE": np.empty((log_capacity, 16), dtype=np.float32),
+                            "joint_pos": np.empty((log_capacity, 7), dtype=np.float32),
+                            "joint_vel": np.empty((log_capacity, 7), dtype=np.float32),
+                            "tau_J": np.empty((log_capacity, 7), dtype=np.float32),
+                            "tau_ext_hat_filtered": np.empty((log_capacity, 7), dtype=np.float32),
+                            "tau_J_d": np.empty((log_capacity, 7), dtype=np.float32),
+                            "ft_wrist_raw": np.empty((log_capacity, 6), dtype=np.float32),
+                            "ft_wrist_filtered": np.empty((log_capacity, 6), dtype=np.float32),
+                        }
 
                     def _step_velocity(target_dq):
                         """Advance velocity with bounded acceleration and jerk."""
@@ -523,10 +542,22 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                             replay_position += replay_rate_hz / 1000.0
                         _step_velocity(target_dq)
                         ctrl.writeOnce(plf.JointVelocities(dq_cmd))
-                        ft = list(state.O_F_ext_hat_K)
+                        ft_raw = list(state.O_F_ext_hat_K)
+                        ft = ft_raw.copy()
                         if ft_bias is not None:
                             ft = [value - bias for value, bias in zip(ft, ft_bias)]
                         ft_ema = [alpha * value + (1.0 - alpha) * old for value, old in zip(ft, ft_ema)]
+                        if trajectory_log is not None and trajectory_index < len(trajectory_log["timestamp"]):
+                            trajectory_log["timestamp"][trajectory_index] = time.time()
+                            trajectory_log["O_T_EE"][trajectory_index] = state.O_T_EE
+                            trajectory_log["joint_pos"][trajectory_index] = state.q
+                            trajectory_log["joint_vel"][trajectory_index] = state.dq
+                            trajectory_log["tau_J"][trajectory_index] = state.tau_J
+                            trajectory_log["tau_ext_hat_filtered"][trajectory_index] = state.tau_ext_hat_filtered
+                            trajectory_log["tau_J_d"][trajectory_index] = state.tau_J_d
+                            trajectory_log["ft_wrist_raw"][trajectory_index] = ft_raw
+                            trajectory_log["ft_wrist_filtered"][trajectory_index] = ft_ema
+                            trajectory_index += 1
                         _pack_state(
                             state,
                             ft_ema,
@@ -550,11 +581,17 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                     final_cmd = plf.JointVelocities([0.0] * 7)
                     final_cmd.motion_finished = True
                     ctrl.writeOnce(final_cmd)
+                    trajectory_data = None
+                    if trajectory_log is not None:
+                        trajectory_data = {
+                            key: value[:trajectory_index].copy()
+                            for key, value in trajectory_log.items()
+                        }
                     ctrl = None
                     robot.stop()
                     time.sleep(0.5)
                     state_ready.clear()
-                    response_queue.put(("joint_velocity_stopped", None))
+                    response_queue.put(("joint_velocity_stopped", trajectory_data))
                 except Exception as exc:
                     sys.stdout.write(f"[COMM PROCESS] Joint velocity control failed: {exc}\r\n")
                     sys.stdout.flush()
@@ -926,6 +963,7 @@ class FrankaInterface:
         self._state_ready = _ctx.Event()
 
         self._last_send_time = None
+        self._last_trajectory = None
         self._torque_mode_active = False
 
         # Start compute process (spawn — fresh interpreter, no fork overhead)
@@ -1021,11 +1059,15 @@ class FrankaInterface:
         target_dt = 1.0 / self._control_rate_hz
         if self._last_send_time is None:
             time.sleep(target_dt)
-            return
-        elapsed = time.time() - self._last_send_time
-        remaining = target_dt - elapsed
-        if remaining > 0:
-            time.sleep(remaining)
+        else:
+            elapsed = time.time() - self._last_send_time
+            remaining = target_dt - elapsed
+            if remaining > 0:
+                time.sleep(remaining)
+        # Some control modes (e.g. preloaded replay) have no per-step send
+        # call. Advance the pacing reference here so repeated waits do not
+        # collapse into a tight loop.
+        self._last_send_time = time.time()
 
     def reset_to_start_pose(self, target_pose_4x4: np.ndarray):
         """Move to target pose via Cartesian control, then stop.
@@ -1102,6 +1144,8 @@ class FrankaInterface:
             self._last_send_time = None
             raise RuntimeError(f"End control failed: {resp}")
 
+        self._last_trajectory = resp[1] if len(resp) > 1 else None
+
         self._last_send_time = None
 
         # Drain targets queue so stale data doesn't leak into next episode
@@ -1110,6 +1154,10 @@ class FrankaInterface:
                 self._targets_queue.get_nowait()
             except _queue.Empty:
                 break
+
+    def get_last_trajectory(self):
+        """Return comm-process samples from the last preloaded replay."""
+        return self._last_trajectory
 
     def start_joint_velocity_mode(self, replay_velocities=None, replay_rate_hz=None):
         """Start joint-velocity control; optionally replay in the comm process."""

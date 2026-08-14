@@ -107,6 +107,20 @@ def load_start_pose(metadata: dict, actual_robot_path: Path) -> np.ndarray:
     return pose
 
 
+def _force_in_sim_frame(pose_flat: np.ndarray, force_base: np.ndarray) -> np.ndarray:
+    pose_flat = np.asarray(pose_flat, dtype=np.float64)
+    force_base = np.asarray(force_base, dtype=np.float64)
+    rotation = np.asarray([
+        [pose_flat[0], pose_flat[4], pose_flat[8]],
+        [pose_flat[1], pose_flat[5], pose_flat[9]],
+        [pose_flat[2], pose_flat[6], pose_flat[10]],
+    ])
+    force_body = np.zeros(6, dtype=np.float64)
+    force_body[:3] = rotation.T @ force_base[:3]
+    force_body[3:] = rotation.T @ force_base[3:]
+    return -force_body
+
+
 def collect_baseline(
     actual_robot_path: Path | str,
     output_path: Path | str,
@@ -130,7 +144,7 @@ def collect_baseline(
     start_pose_4x4 = load_start_pose(metadata, actual_robot_path)
 
     robot = FrankaInterface(config, device=device)
-    rows = []
+    trajectory = None
     try:
         print(f"Resetting baseline run to recorded start pose from {actual_robot_path.name}...")
         robot.reset_to_start_pose(start_pose_4x4)
@@ -143,28 +157,42 @@ def collect_baseline(
         robot.start_joint_velocity_mode(velocities, replay_rate_hz)
         for idx in range(len(velocities)):
             robot.wait_for_policy_step()
-            snap = robot.get_state_snapshot()
-            source = replay_rows[idx]
-            rows.append({
-                "timestamp": float(time.time()),
-                "hold_step_idx": int(source.get("hold_step_idx", idx)),
-                "hold_index": int(source.get("hold_index", 0)),
-                "phase": int(source.get("phase", 1)),
-                "phase_name": "joint_velocity_replay",
-                "sample_label": "baseline",
-                "ft_wrist": snap.force_torque.detach().cpu().numpy().astype(np.float32),
-                "ft_wrist_raw": snap.force_torque.detach().cpu().numpy().astype(np.float32),
-                "joint_pos": snap.joint_pos.detach().cpu().numpy().astype(np.float32),
-                "joint_vel": snap.joint_vel.detach().cpu().numpy().astype(np.float32),
-            })
     finally:
         try:
             robot.end_control()
         except Exception as exc:
             print(f"[BASELINE] Ignoring end_control failure after baseline replay: {exc}")
+        trajectory = robot.get_last_trajectory()
         robot.shutdown()
-    if not rows:
-        raise RuntimeError("Joint velocity replay returned no frames")
+    if trajectory is None or len(trajectory.get("timestamp", [])) == 0:
+        raise RuntimeError("Joint velocity replay returned no robot-side frames")
+
+    rows = []
+    replay_count = len(replay_rows)
+    replay_rate_hz = float(config["robot"].get("control_rate_hz", 1000.0))
+    for index, timestamp in enumerate(trajectory["timestamp"]):
+        replay_index = min(int(round(index * replay_rate_hz / 1000.0)), replay_count - 1)
+        source = replay_rows[replay_index]
+        pose = trajectory["O_T_EE"][index]
+        ft_raw = _force_in_sim_frame(pose, trajectory["ft_wrist_raw"][index])
+        ft_filtered = _force_in_sim_frame(pose, trajectory["ft_wrist_filtered"][index])
+        rows.append({
+            "timestamp": float(timestamp),
+            "hold_step_idx": int(source.get("hold_step_idx", replay_index)),
+            "hold_index": int(source.get("hold_index", 0)),
+            "phase": int(source.get("phase", 1)),
+            "phase_name": "joint_velocity_replay",
+            "sample_label": "baseline",
+            "ft_wrist": ft_filtered.astype(np.float32),
+            "ft_wrist_raw": ft_raw.astype(np.float32),
+            "tau_J": trajectory["tau_J"][index],
+            "tau_ext_hat_filtered": trajectory["tau_ext_hat_filtered"][index],
+            "tau_J_d": trajectory["tau_J_d"][index],
+            "joint_pos": trajectory["joint_pos"][index],
+            "joint_vel": trajectory["joint_vel"][index],
+            "tcp_pos": np.asarray(pose[12:15], dtype=np.float32),
+            "tcp_pose_4x4": np.asarray(pose, dtype=np.float32),
+        })
 
     baseline_metadata = {
         "collection_mode": "joint_velocity_replay_baseline",
