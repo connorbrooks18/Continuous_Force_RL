@@ -41,9 +41,9 @@ class VizStaticSysidTest(unittest.TestCase):
                     "tcp_pos": np.ones(3, dtype=np.float32),
                     "tcp_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
                     "apple_pos": np.ones(3, dtype=np.float32) * idx,
-                    "woody_part_start_pos": np.arange(9, dtype=np.float32),
-                    "woody_part_end_pos": np.arange(9, dtype=np.float32) + 1,
-                    "woody_bending_angles": np.full(3, 0.1 * idx, dtype=np.float32),
+                    "branch_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
+                    "spur_pose_4x4": (np.eye(4, dtype=np.float32) * 2.0).reshape(-1),
+                    "apple_pose_4x4": (np.eye(4, dtype=np.float32) * 3.0).reshape(-1),
                     "hold_number": np.eye(2, dtype=np.float32)[idx // 2],
                     "direction": np.eye(1, dtype=np.float32)[0],
                     "phase": 1,
@@ -72,6 +72,12 @@ class VizStaticSysidTest(unittest.TestCase):
             wrench_labels = [line.get_label() for line in fig.axes[1].get_lines()]
             self.assertIn(r"baseline $\|F\|$ [N]", wrench_labels)
             self.assertIn(r"baseline $\|T\|$ [N m]", wrench_labels)
+            branch_abs_labels = [line.get_label() for line in fig.axes[6].get_lines()]
+            self.assertIn("branch x", branch_abs_labels)
+            self.assertIn("spur z", branch_abs_labels)
+            branch_delta_labels = [line.get_label() for line in fig.axes[7].get_lines()]
+            self.assertIn("branch delta x", branch_delta_labels)
+            self.assertIn("spur delta z", branch_delta_labels)
             header = "\n".join(text.get_text() for text in fig.texts)
             self.assertIn("episode_id: episode-test", header)
             self.assertIn("phase_name(s): hold", header)
@@ -95,6 +101,10 @@ class VizStaticSysidTest(unittest.TestCase):
                     "action": np.zeros(6, dtype=np.float32),
                     "tcp_pos": np.ones(3, dtype=np.float32) * idx,
                     "tcp_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
+                    "apple_pos": np.ones(3, dtype=np.float32) * idx,
+                    "branch_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
+                    "spur_pose_4x4": (np.eye(4, dtype=np.float32) * 2.0).reshape(-1),
+                    "apple_pose_4x4": (np.eye(4, dtype=np.float32) * 3.0).reshape(-1),
                     "hold_number": np.eye(2, dtype=np.float32)[idx // 2],
                     "direction": np.eye(1, dtype=np.float32)[0],
                     "phase": 1,

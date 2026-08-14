@@ -71,9 +71,9 @@ def _load_plot_data(path: Path) -> PlotData:
     metadata = _read_dataset_metadata(path)
     required_camera_fields = {
         "apple_pos",
-        "woody_part_start_pos",
-        "woody_part_end_pos",
-        "woody_bending_angles",
+        "branch_pose_4x4",
+        "spur_pose_4x4",
+        "apple_pose_4x4",
         "camera_timestamp",
         "robot_camera_timestamp_offset_s",
         "camera_frame_count",
@@ -205,6 +205,11 @@ def _delta_cm(values: np.ndarray) -> np.ndarray:
     return (values - values[0]) * 100.0
 
 
+def _pose_positions(rows: list[dict[str, Any]], key: str) -> np.ndarray:
+    poses = _vector_columns(rows, key).reshape(len(rows), 4, 4)
+    return poses[:, :3, 3]
+
+
 def plot_static_sysid(
     data: PlotData,
     *,
@@ -225,12 +230,12 @@ def plot_static_sysid(
         robot_camera_offset = np.zeros(len(rows), dtype=np.float64)
     if has_camera:
         apple_pos = _vector_columns(rows, "apple_pos")
-        start_pos = _vector_columns(rows, "woody_part_start_pos").reshape(len(rows), 3, 3)
-        end_pos = _vector_columns(rows, "woody_part_end_pos").reshape(len(rows), 3, 3)
-        bend = _vector_columns(rows, "woody_bending_angles")
+        branch_pos = _pose_positions(rows, "branch_pose_4x4")
+        spur_pos = _pose_positions(rows, "spur_pose_4x4")
+        apple_pose_pos = _pose_positions(rows, "apple_pose_4x4")
         camera_valid = np.asarray([row["camera_data_valid"] for row in rows], dtype=bool)
     else:
-        apple_pos = start_pos = end_pos = bend = None
+        apple_pos = branch_pos = spur_pos = apple_pose_pos = None
     hold_index = np.asarray([row["hold_index"] for row in rows], dtype=int)
     episode_id = _episode_id_from_metadata(data.metadata, rows)
     phase_names = _phase_labels(rows)
@@ -295,16 +300,15 @@ def plot_static_sysid(
     if has_camera:
         tcp_pos_cm = tcp_pos * 100.0
         apple_pos_cm = apple_pos * 100.0
-        start_pos_cm = start_pos * 100.0
-        end_pos_cm = end_pos * 100.0
+        branch_pos_cm = branch_pos * 100.0
+        spur_pos_cm = spur_pos * 100.0
+        apple_pose_pos_cm = apple_pose_pos * 100.0
         tcp_pos_delta_cm = _delta_cm(tcp_pos)
         apple_pos_delta_cm = _delta_cm(apple_pos)
         apple_tcp_delta_cm = (apple_pos - tcp_pos) * 100.0
         tcp_travel_cm = np.linalg.norm(tcp_pos - tcp_pos[0], axis=1) * 100.0
         apple_travel_cm = np.linalg.norm(apple_pos - apple_pos[0], axis=1) * 100.0
         apple_tcp_dist_cm = np.linalg.norm(apple_pos - tcp_pos, axis=1) * 100.0
-        start_pos_delta_cm = _delta_cm(start_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
-        end_pos_delta_cm = _delta_cm(end_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
 
         axes[3].plot(t, tcp_pos_cm[:, 0], label="tcp x")
         axes[3].plot(t, tcp_pos_cm[:, 1], label="tcp y")
@@ -337,30 +341,29 @@ def plot_static_sysid(
         axes[5].set_title("Distances and travel")
         axes[5].set_ylabel("cm")
         axes[5].grid(True, alpha=0.25)
-        axes[5].legend(loc="upper right", ncol=2, fontsize=8)
+        axes[5].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[6].plot(t, start_pos_cm[:, 0, 0], label="Branch start x")
-        axes[6].plot(t, start_pos_cm[:, 0, 1], label="Branch start y")
-        axes[6].plot(t, start_pos_cm[:, 0, 2], label="Branch start z")
-        axes[6].plot(t, end_pos_cm[:, 0, 0], "--", label="Branch end x")
-        axes[6].plot(t, end_pos_cm[:, 0, 1], "--", label="Branch end y")
-        axes[6].plot(t, end_pos_cm[:, 0, 2], "--", label="Branch end z")
+        axes[6].plot(t, branch_pos_cm[:, 0], label="branch x")
+        axes[6].plot(t, branch_pos_cm[:, 1], label="branch y")
+        axes[6].plot(t, branch_pos_cm[:, 2], label="branch z")
+        axes[6].plot(t, spur_pos_cm[:, 0], "--", label="spur x")
+        axes[6].plot(t, spur_pos_cm[:, 1], "--", label="spur y")
+        axes[6].plot(t, spur_pos_cm[:, 2], "--", label="spur z")
         axes[6].set_title("Branch endpoint absolute positions")
         axes[6].set_ylabel("cm")
         axes[6].grid(True, alpha=0.25)
         axes[6].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[7].plot(t, start_pos_delta_cm[:, 0, 0], label="Branch start delta x")
-        axes[7].plot(t, start_pos_delta_cm[:, 0, 1], label="Branch start delta y")
-        axes[7].plot(t, start_pos_delta_cm[:, 0, 2], label="Branch start delta z")
-        axes[7].plot(t, end_pos_delta_cm[:, 0, 0], "--", label="Branch end delta x")
-        axes[7].plot(t, end_pos_delta_cm[:, 0, 1], "--", label="Branch end delta y")
-        axes[7].plot(t, end_pos_delta_cm[:, 0, 2], "--", label="Branch end delta z")
-        axes[7].plot(t, bend[:, 0], label="Branch bend", alpha=0.8)
-        axes[7].plot(t, bend[:, 1], label="Spur bend", alpha=0.8)
-        axes[7].plot(t, bend[:, 2], label="Apple bend", alpha=0.8)
-        axes[7].set_title("Branch endpoint deltas and woody bending")
-        axes[7].set_ylabel("delta cm / rad")
+        branch_pos_delta_cm = _delta_cm(branch_pos)
+        spur_pos_delta_cm = _delta_cm(spur_pos)
+        axes[7].plot(t, branch_pos_delta_cm[:, 0], label="branch delta x")
+        axes[7].plot(t, branch_pos_delta_cm[:, 1], label="branch delta y")
+        axes[7].plot(t, branch_pos_delta_cm[:, 2], label="branch delta z")
+        axes[7].plot(t, spur_pos_delta_cm[:, 0], "--", label="spur delta x")
+        axes[7].plot(t, spur_pos_delta_cm[:, 1], "--", label="spur delta y")
+        axes[7].plot(t, spur_pos_delta_cm[:, 2], "--", label="spur delta z")
+        axes[7].set_title("Branch endpoint deltas")
+        axes[7].set_ylabel("delta cm")
         axes[7].grid(True, alpha=0.25)
         axes[7].legend(loc="upper right", ncol=3, fontsize=8)
     else:
@@ -402,7 +405,7 @@ def plot_static_sysid(
             if has_camera
             else "camera valid rows: n/a"
         ),
-        "plot focus: wrench, positions, deltas, and camera-derived geometry",
+        "plot focus: wrench, pose positions, and camera-derived geometry",
     ]
     top = "\n".join(meta_lines)
     fig.suptitle(title or "Unified static system-ID viewer", fontsize=14)

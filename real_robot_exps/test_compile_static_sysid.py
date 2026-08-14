@@ -118,6 +118,9 @@ class CompileStaticSysidTest(unittest.TestCase):
             self.assertIn("task_prop_gains", output.schema.names)
             self.assertIn("task_deriv_gains", output.schema.names)
             self.assertIn("target_pose_4x4", output.schema.names)
+            self.assertIn("branch_pose_4x4", output.schema.names)
+            self.assertIn("spur_pose_4x4", output.schema.names)
+            self.assertIn("apple_pose_4x4", output.schema.names)
             self.assertIn("sample_label", output.schema.names)
 
     def test_rejects_tracking_files_not_in_base_frame(self):
