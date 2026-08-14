@@ -955,9 +955,6 @@ class FrankaInterface:
         self._device = device
         self._config = config
         self._control_rate_hz = config['robot'].get('control_rate_hz', 15.0)
-        self._policy_rate_hz = config['robot'].get(
-            'policy_rate_hz', self._control_rate_hz
-        )
         self._ft_bias = config['robot'].get('ft_bias', None)
 
         # Shared memory via spawn context
@@ -1008,7 +1005,7 @@ class FrankaInterface:
             raise RuntimeError(f"Unexpected comm process response: {resp}")
 
         print(f"[FrankaInterface/PRO] control_rate={self._control_rate_hz}Hz, "
-              f"policy_rate={self._policy_rate_hz}Hz, comm process + compute process started")
+              f"comm process + compute process started")
 
     # -------------------------------------------------------------------------
     # Core methods
@@ -1069,8 +1066,8 @@ class FrankaInterface:
         return _build_snapshot_from_shm(self._state_shm, self._device)
 
     def wait_for_policy_step(self):
-        """Block until 1/policy_rate_hz has elapsed since the last step."""
-        target_dt = 1.0 / self._policy_rate_hz
+        """Block until 1/control_rate_hz has elapsed since the last step."""
+        target_dt = 1.0 / self._control_rate_hz
         if self._last_send_time is None:
             time.sleep(target_dt)
         else:
