@@ -20,6 +20,7 @@ from typing import Any
 
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 import numpy as np
 import pyarrow.parquet as pq
 
@@ -140,34 +141,64 @@ def _hold_boundaries(rows: list[dict[str, Any]]) -> list[float]:
     return boundaries
 
 
-def _phase_spans(rows: list[dict[str, Any]]) -> list[tuple[float, float, int]]:
-    if not rows:
-        return []
-    spans: list[tuple[float, float, int]] = []
-    start = float(rows[0]["timestamp"])
-    last_phase = int(rows[0].get("phase", 0))
-    prev_t = start
-    for row in rows[1:]:
-        t = float(row["timestamp"])
-        phase = int(row.get("phase", 0))
-        if phase != last_phase:
-            spans.append((start, prev_t, last_phase))
-            start = t
-            last_phase = phase
-        prev_t = t
-    spans.append((start, float(rows[-1]["timestamp"]), last_phase))
-    return spans
+def _phase_color(row: dict[str, Any]) -> str:
+    # The numeric phase is the dataset contract.  Text labels are only a
+    # fallback for legacy files; otherwise a stale label must not repaint a
+    # moving sample as a hold sample.
+    phase_value = row.get("phase", None)
+    try:
+        phase_value = int(phase_value)
+    except (TypeError, ValueError):
+        phase_value = None
+    if phase_value == 1:
+        return "#f8dce8"  # pale pink for hold
+    if phase_value == 0:
+        return "#dfefff"  # pale blue for pull / motion
+    phase_name = str(row.get("phase_name", "")).strip().lower()
+    sample_label = str(row.get("sample_label", "")).strip().lower()
+    if "hold" in phase_name or "hold" in sample_label:
+        return "#f8dce8"
+    if "pull" in phase_name or "pull" in sample_label:
+        return "#dfefff"
+    return "#f4f4f4"
 
 
 def _shade_phase_background(ax, rows: list[dict[str, Any]]) -> None:
-    for start, end, phase in _phase_spans(rows):
-        if end <= start:
-            end = start + 1e-9
-        if phase == 0:
-            color = "#f4f4f4"  # light gray for moving
-        else:
-            color = "#e8f1ff"  # pale blue for holding
-        ax.axvspan(start, end, color=color, alpha=0.22, zorder=0)
+    if not rows:
+        return
+    span_start = float(rows[0]["timestamp"])
+    span_phase = _phase_color(rows[0])
+    prev_t = span_start
+    for row in rows[1:]:
+        t = float(row["timestamp"])
+        color = _phase_color(row)
+        if color != span_phase:
+            end = prev_t if prev_t > span_start else span_start + 1e-9
+            ax.axvspan(span_start, end, color=span_phase, alpha=0.30, zorder=0)
+            span_start = t
+            span_phase = color
+        prev_t = t
+    end = float(rows[-1]["timestamp"])
+    if end <= span_start:
+        end = span_start + 1e-9
+    ax.axvspan(span_start, end, color=span_phase, alpha=0.30, zorder=0)
+
+
+def _phase_labels(rows: list[dict[str, Any]]) -> str:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        phase_name = str(row.get("phase_name", "")).strip()
+        sample_label = str(row.get("sample_label", "")).strip()
+        label = phase_name or sample_label
+        if not label:
+            continue
+        lower = label.lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        labels.append(label)
+    return ", ".join(labels)
 
 
 def _delta_cm(values: np.ndarray) -> np.ndarray:
@@ -202,7 +233,7 @@ def plot_static_sysid(
         apple_pos = start_pos = end_pos = bend = None
     hold_index = np.asarray([row["hold_index"] for row in rows], dtype=int)
     episode_id = _episode_id_from_metadata(data.metadata, rows)
-    phase_names = _unique_string_values(rows, "phase_name")
+    phase_names = _phase_labels(rows)
     sample_labels = _unique_string_values(rows, "sample_label")
     junction_names = _junction_names_from_metadata(data.metadata)
 

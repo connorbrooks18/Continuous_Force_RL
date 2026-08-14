@@ -176,13 +176,16 @@ def collect_baseline(
         pose = trajectory["O_T_EE"][index]
         ft_raw = _force_in_sim_frame(pose, trajectory["ft_wrist_raw"][index])
         ft_filtered = _force_in_sim_frame(pose, trajectory["ft_wrist_filtered"][index])
+        phase_value = int(source.get("phase", 1))
+        phase_name = str(source.get("phase_name", "joint_velocity_replay"))
+        sample_label = str(source.get("sample_label", "baseline"))
         rows.append({
             "timestamp": float(timestamp),
             "hold_step_idx": int(source.get("hold_step_idx", replay_index)),
             "hold_index": int(source.get("hold_index", 0)),
-            "phase": int(source.get("phase", 1)),
-            "phase_name": "joint_velocity_replay",
-            "sample_label": "baseline",
+            "phase": phase_value,
+            "phase_name": phase_name,
+            "sample_label": sample_label,
             "ft_wrist": ft_filtered.astype(np.float32),
             "ft_wrist_raw": ft_raw.astype(np.float32),
             "tau_J": trajectory["tau_J"][index],

@@ -5,7 +5,8 @@
 robot:
   ip: "192.168.1.11"
   use_mock: false              # Set false for real robot
-  control_rate_hz: 1000.0      # Must match training policy_hz
+  control_rate_hz: 1000.0      # libfranka communication/state rate
+  policy_rate_hz: 15.0         # application policy/data-collection rate
   joint_velocity_max_delta_per_step: 0.003
   joint_velocity_max_jerk: 1000.0  # rad/s^3; smooths acceleration at replay start
   reset_duration_sec: 5  # Duration for Cartesian reset motion

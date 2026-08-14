@@ -648,7 +648,7 @@ def hold_and_record(
     The ndarray return value is retained for the F/T calibration caller.
     """
     targets = build_position_targets(gains, target_pos, target_quat, default_dof_pos, device)
-    steps = int(duration_sec * robot._control_rate_hz)
+    steps = int(duration_sec * robot._policy_rate_hz)
     ft_history = []
     excitation_direction = np.asarray(
         excitation_direction if excitation_direction is not None else np.zeros(3),
@@ -910,8 +910,9 @@ def hold_position(
     """Actively hold a Cartesian pose while maintaining the 15Hz safety/timing loop."""
     targets = build_position_targets(gains, target_pos, target_quat, default_dof_pos, device)
     
-    # 15Hz * duration = number of steps
-    steps = int(duration_sec * robot._control_rate_hz)
+    # Application timing uses the policy rate; the comm process still runs at
+    # control_rate_hz independently.
+    steps = int(duration_sec * robot._policy_rate_hz)
     
     for _ in range(steps):
         robot.wait_for_policy_step()
@@ -1257,6 +1258,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
         "collection_mode": "metadata_only" if only_metadata else ("baseline" if baseline else "collect"),
         "excitation_type": "quasi_static",
         "control_hz": float(robot._control_rate_hz),
+        "policy_hz": float(robot._policy_rate_hz),
         "theta_rad": float(theta),
         "phi_rad": float(phi),
         "pull_direction": excitation_direction.tolist(),

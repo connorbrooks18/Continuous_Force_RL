@@ -10,10 +10,16 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from real_robot_exps.viz_static_sysid import _load_plot_data, plot_static_sysid
+from real_robot_exps.viz_static_sysid import _load_plot_data, _phase_color, plot_static_sysid
 
 
 class VizStaticSysidTest(unittest.TestCase):
+    def test_numeric_phase_is_authoritative_over_stale_text(self):
+        self.assertNotEqual(
+            _phase_color({"phase": 0, "phase_name": "hold", "sample_label": "hold"}),
+            _phase_color({"phase": 1, "phase_name": "hold", "sample_label": "hold"}),
+        )
+
     def test_builds_figure_from_unified_parquet(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
