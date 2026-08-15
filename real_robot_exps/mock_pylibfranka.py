@@ -56,6 +56,14 @@ class JointPositions:
         self.motion_finished = False
 
 
+class JointVelocities:
+    """Mimics pylibfranka.JointVelocities command."""
+    def __init__(self, dq: list):
+        assert len(dq) == 7, f"Expected 7 elements, got {len(dq)}"
+        self.dq = list(dq)
+        self.motion_finished = False
+
+
 class Duration:
     """Mimics pylibfranka.Duration (time since last readOnce)."""
     def __init__(self, milliseconds: int = 1):
@@ -286,11 +294,13 @@ class JointActiveControl:
         self._step += 1
         return self._state, Duration(milliseconds=1)
 
-    def writeOnce(self, cmd: JointPositions):
-        """Accept joint position command. Instantly sets q."""
-        assert isinstance(cmd, JointPositions), f"Expected JointPositions, got {type(cmd)}"
-        self._state.q = list(cmd.q)
-        self._state.q_d = list(cmd.q)
+    def writeOnce(self, cmd):
+        if isinstance(cmd, JointPositions):
+            self._state.q = list(cmd.q)
+            self._state.q_d = list(cmd.q)
+        else:
+            assert isinstance(cmd, JointVelocities), f"Expected joint command, got {type(cmd)}"
+            self._state.dq = list(cmd.dq)
 
 
 class Robot:
@@ -328,6 +338,12 @@ class Robot:
         """Start joint position control mode."""
         self._active_control = JointActiveControl(RobotState())
         print("[MockRobot] Joint position control started.")
+        return self._active_control
+
+    def start_joint_velocity_control(self, controller_mode) -> JointActiveControl:
+        """Start joint velocity control for replay tests."""
+        self._active_control = JointActiveControl(RobotState())
+        print("[MockRobot] Joint velocity control started.")
         return self._active_control
 
     def stop(self):

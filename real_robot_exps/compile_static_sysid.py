@@ -331,6 +331,8 @@ def _unified_schema(n_holds: int, n_directions: int) -> pa.Schema:
         pa.field("task_deriv_gains", vector(6), metadata={b"semantics": b"pose derivative gains"}),
         pa.field("apple_pos", vector(3), metadata={b"frame": b"franka_base_o"}),
         pa.field("apple_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
+        pa.field("branch_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
+        pa.field("spur_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
         pa.field("woody_part_start_pos", vector(9), metadata={b"frame": b"franka_base_o"}),
         pa.field("woody_part_end_pos", vector(9), metadata={b"frame": b"franka_base_o"}),
         pa.field("woody_bending_angles", vector(3), metadata={b"unit": b"rad"}),
@@ -360,6 +362,7 @@ def compile_static_episode(
     camera_frame_count: int = 5,
     max_camera_delta_s: float = 1.0,
     camera_ema_alpha: float = 1.0,
+    baseline_path: Path | str | None = None,
     command_argv: list[str] | None = None,
 ) -> Path:
     robot_path = Path(robot_path)
@@ -375,6 +378,53 @@ def compile_static_episode(
     robot_rows = [row for row in robot_rows_all if str(row.get("row_kind", "data")) != "metadata"]
     if not robot_rows:
         raise ValueError("Robot input contains no hold rows")
+    if baseline_path is not None:
+        baseline_rows = [
+            row for row in pq.read_table(baseline_path).to_pylist()
+            if str(row.get("row_kind", "data")) != "metadata"
+        ]
+        baseline_by_part = {}
+        for row in baseline_rows:
+            # hold_index identifies pull/hold part 1, 2, ...; numeric phase
+            # separates the moving and holding portions within that part.
+            key = (int(row.get("hold_index", 0)), int(row.get("phase", 1)))
+            baseline_by_part.setdefault(key, []).append(row)
+
+        for hold_idx in sorted({int(row["hold_index"]) for row in robot_rows}):
+            hold_rows = [row for row in robot_rows if int(row["hold_index"]) == hold_idx]
+            phases = []
+            for row in hold_rows:
+                phase = int(row["phase"])
+                if phase not in phases:
+                    phases.append(phase)
+            for phase in phases:
+                current = [row for row in hold_rows if int(row["phase"]) == phase]
+                source = sorted(
+                    baseline_by_part.get((hold_idx, phase), []),
+                    key=lambda row: int(row.get("hold_step_idx", 0)),
+                )
+                if not source:
+                    raise ValueError(
+                        "Baseline has no rows for "
+                        f"hold_index={hold_idx}, phase={phase}"
+                    )
+                source_ft = np.asarray(
+                    [row.get("ft_wrist_raw", row["ft_wrist"]) for row in source],
+                    dtype=np.float64,
+                )
+                source_progress = np.linspace(0.0, 1.0, len(source_ft))
+                target_progress = np.linspace(0.0, 1.0, len(current))
+                matched = np.column_stack([
+                    np.interp(target_progress, source_progress, source_ft[:, component])
+                    for component in range(6)
+                ])
+                for row, values in zip(current, matched):
+                    raw = np.asarray(
+                        row.get("ft_wrist_raw", row["ft_wrist"]), dtype=np.float32
+                    )
+                    row["ft_wrist_raw"] = raw
+                    row["ft_wrist_baseline"] = values.astype(np.float32)
+                    row["ft_wrist"] = (raw.astype(np.float64) - values).astype(np.float32)
     required_robot_fields = {
         "timestamp", "hold_index", "ft_wrist", "tau_J_d", "joint_pos",
         "tcp_velocity", "action_wrench_ee", "tcp_pos", "tcp_pose_4x4", "target_pose_4x4",
@@ -524,6 +574,8 @@ def compile_static_episode(
             "task_deriv_gains": _as_list(robot_row["task_deriv_gains"]),
             "apple_pos": _as_list(positions["Apple"]),
             "apple_pose_4x4": _as_list(poses["Apple"]),
+            "branch_pose_4x4": _as_list(poses["Branch"]),
+            "spur_pose_4x4": _as_list(poses["Spur"]),
             "woody_part_start_pos": _as_list(starts.reshape(-1)),
             "woody_part_end_pos": _as_list(ends.reshape(-1)),
             "woody_bending_angles": _as_list(bending),
@@ -665,6 +717,8 @@ def compile_static_episode(
             "target_pose_4x4": {"dim": 16, "reshape": [4, 4]},
             "apple_pos": {"dim": 3, "order": ["x", "y", "z"]},
             "apple_pose_4x4": {"dim": 16, "reshape": [4, 4]},
+            "branch_pose_4x4": {"dim": 16, "reshape": [4, 4]},
+            "spur_pose_4x4": {"dim": 16, "reshape": [4, 4]},
             "woody_part_start_pos": {"dim": 9, "reshape": [3, 3]},
             "woody_part_end_pos": {"dim": 9, "reshape": [3, 3]},
             "woody_bending_angles": {"dim": 3, "part_order": list(WOODY_PART_NAMES)},
@@ -748,6 +802,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--robot", required=True, type=Path, help="Raw robot hold Parquet")
     parser.add_argument("--tracking", required=True, type=Path, help="Raw tracking Parquet")
+    parser.add_argument("--baseline", type=Path, help="Post-run joint-velocity baseline Parquet")
     parser.add_argument("--output", required=True, type=Path, help="Unified episode Parquet")
     parser.add_argument("--camera-frames", type=int, default=5, help="Camera frames per estimate")
     parser.add_argument(
@@ -770,6 +825,7 @@ def main() -> None:
         camera_frame_count=args.camera_frames,
         max_camera_delta_s=args.max_camera_delta,
         camera_ema_alpha=args.camera_ema_alpha,
+        baseline_path=args.baseline,
         command_argv=sys.argv,
     )
     print(f"Wrote unified static system-ID episode to {output}")

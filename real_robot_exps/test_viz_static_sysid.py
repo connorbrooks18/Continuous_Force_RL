@@ -10,10 +10,16 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from real_robot_exps.viz_static_sysid import _load_plot_data, plot_static_sysid
+from real_robot_exps.viz_static_sysid import _load_plot_data, _phase_color, plot_static_sysid
 
 
 class VizStaticSysidTest(unittest.TestCase):
+    def test_numeric_phase_is_authoritative_over_stale_text(self):
+        self.assertNotEqual(
+            _phase_color({"phase": 0, "phase_name": "hold", "sample_label": "hold"}),
+            _phase_color({"phase": 1, "phase_name": "hold", "sample_label": "hold"}),
+        )
+
     def test_builds_figure_from_unified_parquet(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -27,6 +33,7 @@ class VizStaticSysidTest(unittest.TestCase):
                     "hold_step_idx": idx % 2,
                     "hold_index": idx // 2,
                     "ft_wrist": np.arange(6, dtype=np.float32),
+                    "ft_wrist_baseline": np.arange(6, dtype=np.float32) + 10,
                     "tau_J_d": np.arange(7, dtype=np.float32) + 20,
                     "joint_pos": np.arange(7, dtype=np.float32) + 30,
                     "tcp_velocity": np.zeros(6, dtype=np.float32),
@@ -34,9 +41,9 @@ class VizStaticSysidTest(unittest.TestCase):
                     "tcp_pos": np.ones(3, dtype=np.float32),
                     "tcp_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
                     "apple_pos": np.ones(3, dtype=np.float32) * idx,
-                    "woody_part_start_pos": np.arange(9, dtype=np.float32),
-                    "woody_part_end_pos": np.arange(9, dtype=np.float32) + 1,
-                    "woody_bending_angles": np.full(3, 0.1 * idx, dtype=np.float32),
+                    "branch_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
+                    "spur_pose_4x4": (np.eye(4, dtype=np.float32) * 2.0).reshape(-1),
+                    "apple_pose_4x4": (np.eye(4, dtype=np.float32) * 3.0).reshape(-1),
                     "hold_number": np.eye(2, dtype=np.float32)[idx // 2],
                     "direction": np.eye(1, dtype=np.float32)[0],
                     "phase": 1,
@@ -62,6 +69,15 @@ class VizStaticSysidTest(unittest.TestCase):
             data = _load_plot_data(path)
             fig = plot_static_sysid(data)
             self.assertEqual(len(fig.axes), 8)
+            wrench_labels = [line.get_label() for line in fig.axes[1].get_lines()]
+            self.assertIn(r"baseline $\|F\|$ [N]", wrench_labels)
+            self.assertIn(r"baseline $\|T\|$ [N m]", wrench_labels)
+            branch_abs_labels = [line.get_label() for line in fig.axes[6].get_lines()]
+            self.assertIn("branch x", branch_abs_labels)
+            self.assertIn("spur z", branch_abs_labels)
+            branch_delta_labels = [line.get_label() for line in fig.axes[7].get_lines()]
+            self.assertIn("branch delta x", branch_delta_labels)
+            self.assertIn("spur delta z", branch_delta_labels)
             header = "\n".join(text.get_text() for text in fig.texts)
             self.assertIn("episode_id: episode-test", header)
             self.assertIn("phase_name(s): hold", header)
@@ -85,6 +101,10 @@ class VizStaticSysidTest(unittest.TestCase):
                     "action": np.zeros(6, dtype=np.float32),
                     "tcp_pos": np.ones(3, dtype=np.float32) * idx,
                     "tcp_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
+                    "apple_pos": np.ones(3, dtype=np.float32) * idx,
+                    "branch_pose_4x4": np.eye(4, dtype=np.float32).reshape(-1),
+                    "spur_pose_4x4": (np.eye(4, dtype=np.float32) * 2.0).reshape(-1),
+                    "apple_pose_4x4": (np.eye(4, dtype=np.float32) * 3.0).reshape(-1),
                     "hold_number": np.eye(2, dtype=np.float32)[idx // 2],
                     "direction": np.eye(1, dtype=np.float32)[0],
                     "phase": 1,

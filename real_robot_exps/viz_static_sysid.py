@@ -20,6 +20,7 @@ from typing import Any
 
 import matplotlib
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
 import numpy as np
 import pyarrow.parquet as pq
 
@@ -70,9 +71,9 @@ def _load_plot_data(path: Path) -> PlotData:
     metadata = _read_dataset_metadata(path)
     required_camera_fields = {
         "apple_pos",
-        "woody_part_start_pos",
-        "woody_part_end_pos",
-        "woody_bending_angles",
+        "branch_pose_4x4",
+        "spur_pose_4x4",
+        "apple_pose_4x4",
         "camera_timestamp",
         "robot_camera_timestamp_offset_s",
         "camera_frame_count",
@@ -140,38 +141,73 @@ def _hold_boundaries(rows: list[dict[str, Any]]) -> list[float]:
     return boundaries
 
 
-def _phase_spans(rows: list[dict[str, Any]]) -> list[tuple[float, float, int]]:
-    if not rows:
-        return []
-    spans: list[tuple[float, float, int]] = []
-    start = float(rows[0]["timestamp"])
-    last_phase = int(rows[0].get("phase", 0))
-    prev_t = start
-    for row in rows[1:]:
-        t = float(row["timestamp"])
-        phase = int(row.get("phase", 0))
-        if phase != last_phase:
-            spans.append((start, prev_t, last_phase))
-            start = t
-            last_phase = phase
-        prev_t = t
-    spans.append((start, float(rows[-1]["timestamp"]), last_phase))
-    return spans
+def _phase_color(row: dict[str, Any]) -> str:
+    # The numeric phase is the dataset contract.  Text labels are only a
+    # fallback for legacy files; otherwise a stale label must not repaint a
+    # moving sample as a hold sample.
+    phase_value = row.get("phase", None)
+    try:
+        phase_value = int(phase_value)
+    except (TypeError, ValueError):
+        phase_value = None
+    if phase_value == 1:
+        return "#f8dce8"  # pale pink for hold
+    if phase_value == 0:
+        return "#dfefff"  # pale blue for pull / motion
+    phase_name = str(row.get("phase_name", "")).strip().lower()
+    sample_label = str(row.get("sample_label", "")).strip().lower()
+    if "hold" in phase_name or "hold" in sample_label:
+        return "#f8dce8"
+    if "pull" in phase_name or "pull" in sample_label:
+        return "#dfefff"
+    return "#f4f4f4"
 
 
 def _shade_phase_background(ax, rows: list[dict[str, Any]]) -> None:
-    for start, end, phase in _phase_spans(rows):
-        if end <= start:
-            end = start + 1e-9
-        if phase == 0:
-            color = "#f2f2f2"  # light gray for moving
-        else:
-            color = "#fce4ec"  # light pink for holding
-        ax.axvspan(start, end, color=color, alpha=0.35, zorder=0)
+    if not rows:
+        return
+    span_start = float(rows[0]["timestamp"])
+    span_phase = _phase_color(rows[0])
+    prev_t = span_start
+    for row in rows[1:]:
+        t = float(row["timestamp"])
+        color = _phase_color(row)
+        if color != span_phase:
+            end = prev_t if prev_t > span_start else span_start + 1e-9
+            ax.axvspan(span_start, end, color=span_phase, alpha=0.30, zorder=0)
+            span_start = t
+            span_phase = color
+        prev_t = t
+    end = float(rows[-1]["timestamp"])
+    if end <= span_start:
+        end = span_start + 1e-9
+    ax.axvspan(span_start, end, color=span_phase, alpha=0.30, zorder=0)
+
+
+def _phase_labels(rows: list[dict[str, Any]]) -> str:
+    labels: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        phase_name = str(row.get("phase_name", "")).strip()
+        sample_label = str(row.get("sample_label", "")).strip()
+        label = phase_name or sample_label
+        if not label:
+            continue
+        lower = label.lower()
+        if lower in seen:
+            continue
+        seen.add(lower)
+        labels.append(label)
+    return ", ".join(labels)
 
 
 def _delta_cm(values: np.ndarray) -> np.ndarray:
     return (values - values[0]) * 100.0
+
+
+def _pose_positions(rows: list[dict[str, Any]], key: str) -> np.ndarray:
+    poses = _vector_columns(rows, key).reshape(len(rows), 4, 4)
+    return poses[:, :3, 3]
 
 
 def plot_static_sysid(
@@ -183,6 +219,9 @@ def plot_static_sysid(
     t = data.timestamps
 
     ft = _vector_columns(rows, "ft_wrist")
+    baseline_ft = None
+    if rows and rows[0].get("ft_wrist_baseline") is not None:
+        baseline_ft = _vector_columns(rows, "ft_wrist_baseline")
     tcp_pos = _vector_columns(rows, "tcp_pos")
     has_camera = data.has_camera
     if has_camera:
@@ -191,15 +230,15 @@ def plot_static_sysid(
         robot_camera_offset = np.zeros(len(rows), dtype=np.float64)
     if has_camera:
         apple_pos = _vector_columns(rows, "apple_pos")
-        start_pos = _vector_columns(rows, "woody_part_start_pos").reshape(len(rows), 3, 3)
-        end_pos = _vector_columns(rows, "woody_part_end_pos").reshape(len(rows), 3, 3)
-        bend = _vector_columns(rows, "woody_bending_angles")
+        branch_pos = _pose_positions(rows, "branch_pose_4x4")
+        spur_pos = _pose_positions(rows, "spur_pose_4x4")
+        apple_pose_pos = _pose_positions(rows, "apple_pose_4x4")
         camera_valid = np.asarray([row["camera_data_valid"] for row in rows], dtype=bool)
     else:
-        apple_pos = start_pos = end_pos = bend = None
+        apple_pos = branch_pos = spur_pos = apple_pose_pos = None
     hold_index = np.asarray([row["hold_index"] for row in rows], dtype=int)
     episode_id = _episode_id_from_metadata(data.metadata, rows)
-    phase_names = _unique_string_values(rows, "phase_name")
+    phase_names = _phase_labels(rows)
     sample_labels = _unique_string_values(rows, "sample_label")
     junction_names = _junction_names_from_metadata(data.metadata)
 
@@ -213,6 +252,25 @@ def plot_static_sysid(
     torque_magnitude = np.linalg.norm(ft[:, 3:], axis=1)
     axes[1].plot(t, force_magnitude, label=r"$\|F\|$ [N]", linewidth=1.5)
     axes[1].plot(t, torque_magnitude, label=r"$\|T\|$ [N m]", linewidth=1.5)
+    if baseline_ft is not None:
+        baseline_force_magnitude = np.linalg.norm(baseline_ft[:, :3], axis=1)
+        baseline_torque_magnitude = np.linalg.norm(baseline_ft[:, 3:], axis=1)
+        axes[1].plot(
+            t,
+            baseline_force_magnitude,
+            "--",
+            color="tab:green",
+            linewidth=1.4,
+            label=r"baseline $\|F\|$ [N]",
+        )
+        axes[1].plot(
+            t,
+            baseline_torque_magnitude,
+            "--",
+            color="tab:brown",
+            linewidth=1.4,
+            label=r"baseline $\|T\|$ [N m]",
+        )
     axes[1].set_title("Wrist wrench magnitudes")
     axes[1].set_ylabel("magnitude")
     axes[1].grid(True, alpha=0.25)
@@ -242,16 +300,15 @@ def plot_static_sysid(
     if has_camera:
         tcp_pos_cm = tcp_pos * 100.0
         apple_pos_cm = apple_pos * 100.0
-        start_pos_cm = start_pos * 100.0
-        end_pos_cm = end_pos * 100.0
+        branch_pos_cm = branch_pos * 100.0
+        spur_pos_cm = spur_pos * 100.0
+        apple_pose_pos_cm = apple_pose_pos * 100.0
         tcp_pos_delta_cm = _delta_cm(tcp_pos)
         apple_pos_delta_cm = _delta_cm(apple_pos)
         apple_tcp_delta_cm = (apple_pos - tcp_pos) * 100.0
         tcp_travel_cm = np.linalg.norm(tcp_pos - tcp_pos[0], axis=1) * 100.0
         apple_travel_cm = np.linalg.norm(apple_pos - apple_pos[0], axis=1) * 100.0
         apple_tcp_dist_cm = np.linalg.norm(apple_pos - tcp_pos, axis=1) * 100.0
-        start_pos_delta_cm = _delta_cm(start_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
-        end_pos_delta_cm = _delta_cm(end_pos.reshape(len(rows), -1)).reshape(len(rows), 3, 3)
 
         axes[3].plot(t, tcp_pos_cm[:, 0], label="tcp x")
         axes[3].plot(t, tcp_pos_cm[:, 1], label="tcp y")
@@ -284,30 +341,29 @@ def plot_static_sysid(
         axes[5].set_title("Distances and travel")
         axes[5].set_ylabel("cm")
         axes[5].grid(True, alpha=0.25)
-        axes[5].legend(loc="upper right", ncol=2, fontsize=8)
+        axes[5].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[6].plot(t, start_pos_cm[:, 0, 0], label="Branch start x")
-        axes[6].plot(t, start_pos_cm[:, 0, 1], label="Branch start y")
-        axes[6].plot(t, start_pos_cm[:, 0, 2], label="Branch start z")
-        axes[6].plot(t, end_pos_cm[:, 0, 0], "--", label="Branch end x")
-        axes[6].plot(t, end_pos_cm[:, 0, 1], "--", label="Branch end y")
-        axes[6].plot(t, end_pos_cm[:, 0, 2], "--", label="Branch end z")
+        axes[6].plot(t, branch_pos_cm[:, 0], label="branch x")
+        axes[6].plot(t, branch_pos_cm[:, 1], label="branch y")
+        axes[6].plot(t, branch_pos_cm[:, 2], label="branch z")
+        axes[6].plot(t, spur_pos_cm[:, 0], "--", label="spur x")
+        axes[6].plot(t, spur_pos_cm[:, 1], "--", label="spur y")
+        axes[6].plot(t, spur_pos_cm[:, 2], "--", label="spur z")
         axes[6].set_title("Branch endpoint absolute positions")
         axes[6].set_ylabel("cm")
         axes[6].grid(True, alpha=0.25)
         axes[6].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[7].plot(t, start_pos_delta_cm[:, 0, 0], label="Branch start delta x")
-        axes[7].plot(t, start_pos_delta_cm[:, 0, 1], label="Branch start delta y")
-        axes[7].plot(t, start_pos_delta_cm[:, 0, 2], label="Branch start delta z")
-        axes[7].plot(t, end_pos_delta_cm[:, 0, 0], "--", label="Branch end delta x")
-        axes[7].plot(t, end_pos_delta_cm[:, 0, 1], "--", label="Branch end delta y")
-        axes[7].plot(t, end_pos_delta_cm[:, 0, 2], "--", label="Branch end delta z")
-        axes[7].plot(t, bend[:, 0], label="Branch bend", alpha=0.8)
-        axes[7].plot(t, bend[:, 1], label="Spur bend", alpha=0.8)
-        axes[7].plot(t, bend[:, 2], label="Apple bend", alpha=0.8)
-        axes[7].set_title("Branch endpoint deltas and woody bending")
-        axes[7].set_ylabel("delta cm / rad")
+        branch_pos_delta_cm = _delta_cm(branch_pos)
+        spur_pos_delta_cm = _delta_cm(spur_pos)
+        axes[7].plot(t, branch_pos_delta_cm[:, 0], label="branch delta x")
+        axes[7].plot(t, branch_pos_delta_cm[:, 1], label="branch delta y")
+        axes[7].plot(t, branch_pos_delta_cm[:, 2], label="branch delta z")
+        axes[7].plot(t, spur_pos_delta_cm[:, 0], "--", label="spur delta x")
+        axes[7].plot(t, spur_pos_delta_cm[:, 1], "--", label="spur delta y")
+        axes[7].plot(t, spur_pos_delta_cm[:, 2], "--", label="spur delta z")
+        axes[7].set_title("Branch endpoint deltas")
+        axes[7].set_ylabel("delta cm")
         axes[7].grid(True, alpha=0.25)
         axes[7].legend(loc="upper right", ncol=3, fontsize=8)
     else:
@@ -349,7 +405,7 @@ def plot_static_sysid(
             if has_camera
             else "camera valid rows: n/a"
         ),
-        "plot focus: wrench, positions, deltas, and camera-derived geometry",
+        "plot focus: wrench, pose positions, and camera-derived geometry",
     ]
     top = "\n".join(meta_lines)
     fig.suptitle(title or "Unified static system-ID viewer", fontsize=14)

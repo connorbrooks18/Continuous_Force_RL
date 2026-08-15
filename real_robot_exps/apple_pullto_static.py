@@ -37,8 +37,11 @@ from real_robot_exps.hybrid_controller import (
 
 
 CONVERGE_THRESHOLD = 1e-4  # 0.1mm
-CONVERGE_FRAMES = 10
-MAX_STEPS = 500             # ~33s at 15Hz safety cap
+# These preserve the original 15 Hz application timing as durations.  The
+# configured control_rate_hz may be 1000 Hz, so frame-count constants would
+# otherwise make convergence happen in milliseconds.
+CONVERGE_DURATION_SEC = 10.0 / 15.0
+MAX_MOVE_DURATION_SEC = 500.0 / 15.0
 MOVE_DISTANCE = 0.02     # 5cm
 DYNAMIC_PULL_APPROACH_CLEARANCE_M = 0.02
 DYNAMIC_PULL_LOCAL_Z_TWIST_DEG = -18.5
@@ -358,6 +361,7 @@ def _append_robot_sample(
         "ft_wrist_raw": _flat_float32(snap.force_torque.cpu().numpy()),
         "tau_J_d": _flat_float32(snap.tau_J_d.cpu().numpy()),
         "joint_pos": _flat_float32(snap.joint_pos.cpu().numpy()),
+        "joint_vel": _flat_float32(snap.joint_vel.cpu().numpy()),
         "tcp_velocity": _flat_float32(np.concatenate([
             snap.ee_linvel.cpu().numpy(),
             snap.ee_angvel.cpu().numpy(),
@@ -518,7 +522,9 @@ def run_move(
     prev_pos = snap.ee_pos.clone()
     converge_count = 0
 
-    for step in range(MAX_STEPS):
+    converge_start = None
+    max_steps = max(1, int(math.ceil(MAX_MOVE_DURATION_SEC * robot._control_rate_hz)))
+    for step in range(max_steps):
         robot.wait_for_policy_step()
         snap = robot.get_state_snapshot()
         timestamp = time.time()
@@ -550,7 +556,7 @@ def run_move(
         )
 
         # Debug: replicate wrench computation from compute process for visibility
-        if step == 0 or step % 50 == 0 or converge_count == CONVERGE_FRAMES - 1:
+        if step == 0 or step % max(1, int(robot._control_rate_hz / 10.0)) == 0:
             pos_err, aa_err = compute_pose_error(
                 snap.ee_pos, snap.ee_quat, target_pos, target_quat,
             )
@@ -568,10 +574,16 @@ def run_move(
 
         if pos_delta < CONVERGE_THRESHOLD:
             converge_count += 1
+            if converge_start is None:
+                converge_start = time.monotonic()
         else:
             converge_count = 0
+            converge_start = None
 
-        if converge_count >= CONVERGE_FRAMES:
+        if (
+            converge_start is not None
+            and time.monotonic() - converge_start >= CONVERGE_DURATION_SEC
+        ):
             break
     if manage_control:
         robot.end_control()
@@ -589,7 +601,10 @@ def run_move(
     orn_error_deg = [(achieved_rpy_deg[i] - target_rpy_deg[i] + 180.0) % 360.0 - 180.0 for i in range(3)]
 
     steps_used = step + 1
-    converged = converge_count >= CONVERGE_FRAMES
+    converged = (
+        converge_start is not None
+        and time.monotonic() - converge_start >= CONVERGE_DURATION_SEC
+    )
 
     if(prnt):
         print(f"  [{label}]")
@@ -906,10 +921,9 @@ def hold_position(
     duration_sec: float,
     device: str = "cpu",
 ):
-    """Actively hold a Cartesian pose while maintaining the 15Hz safety/timing loop."""
+    """Actively hold a Cartesian pose for the requested duration."""
     targets = build_position_targets(gains, target_pos, target_quat, default_dof_pos, device)
     
-    # 15Hz * duration = number of steps
     steps = int(duration_sec * robot._control_rate_hz)
     
     for _ in range(steps):
@@ -1419,7 +1433,10 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
     saved_robot_path = save_robot_hold_parquet(robot_rows, robot_output, robot_metadata)
     print(f"Wrote robot hold data to {saved_robot_path}")
 
-    return {"episode_id": episode_id, "robot_path": saved_robot_path}
+    return {
+        "episode_id": episode_id,
+        "robot_path": saved_robot_path,
+    }
 
 
 def _prompt_or_continue(prompt: str, skip: bool) -> None:

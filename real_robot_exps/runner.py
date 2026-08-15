@@ -130,7 +130,7 @@ def _normalized_pre_grasp_geometry(structure_index: int, structure: dict[str, An
 
 def _baseline_path_for_direction(args, structure_index: int, direction: dict[str, Any]) -> Path:
     return args.output_dir / (
-        f"baselines/s{structure_index:02d}_pull_theta{direction['theta']:.2f}_phi{direction['phi']:.2f}_kp{args.kp:.0f}_baseline_robot.parquet"
+        f"s{structure_index:02d}_pull_theta{direction['theta']:.2f}_phi{direction['phi']:.2f}_kp{args.kp:.0f}_baseline_robot.parquet"
     )
 
 
@@ -309,6 +309,24 @@ def _run_one(
     if metadata_path.exists():
         metadata_path.unlink()
 
+    if args.mode == "collect" and not args.only_metadata:
+        if not args.skip_enter:
+            input("Remove the apple/contact load, then press Enter to collect the replay baseline...")
+        baseline_cmd = [
+            sys.executable,
+            "-m",
+            "real_robot_exps.collect_joint_velocity_baseline",
+            "--actual-robot",
+            str(robot_path),
+            "--output",
+            str(baseline_path_for_collect),
+            "--config",
+            str(args.config),
+        ]
+        print(f"\n=== Running joint-velocity baseline for {run_id} ===")
+        print(" ".join(baseline_cmd))
+        subprocess.run(baseline_cmd, check=True)
+
     skip_compile = False
     if args.expect_tracking:
         try:
@@ -351,6 +369,8 @@ def _run_one(
                     str(unified_path),
                     "--camera-ema-alpha",
                     str(args.camera_ema_alpha),
+                    "--baseline",
+                    str(baseline_path_for_collect),
                 ]
                 print(" ".join(compile_cmd))
                 subprocess.run(compile_cmd, check=True)
@@ -472,6 +492,15 @@ def _run_missing_baselines(
             metadata_path.unlink()
 
 
+def _default_baseline_output_from_robot(robot_path: Path) -> Path:
+    stem = robot_path.name
+    if stem.endswith("_robot.parquet"):
+        return robot_path.with_name(stem[:-len("_robot.parquet")] + "_baseline_robot.parquet")
+    if stem.endswith(".parquet"):
+        return robot_path.with_name(robot_path.stem + "_baseline.parquet")
+    return robot_path.with_name(stem + "_baseline.parquet")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Indexed runner for apple-pull system-ID collection")
     parser.add_argument("--structures", type=Path, default=Path("real_robot_exps/structures.json"))
@@ -518,6 +547,22 @@ def main() -> None:
     parser.add_argument("--detector-extra-args", nargs=argparse.REMAINDER, default=[])
     parser.add_argument("--camera-ema-alpha", type=float, default=1.0, help="EMA alpha for camera smoothing during compile; 1.0 disables smoothing")
     parser.add_argument(
+        "--baseline-only",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Skip the pull run and only collect a baseline from an existing robot parquet",
+    )
+    parser.add_argument(
+        "--baseline-actual-robot",
+        type=Path,
+        help="Existing robot parquet to use when --baseline-only is enabled",
+    )
+    parser.add_argument(
+        "--baseline-output",
+        type=Path,
+        help="Output parquet path for --baseline-only; defaults to a sibling *_baseline_robot.parquet",
+    )
+    parser.add_argument(
         "--only-metadata",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -548,6 +593,28 @@ def main() -> None:
         help="Skip Enter prompts in the runner and forwarded apple_pullto_static runs",
     )
     args = parser.parse_args()
+
+    if args.baseline_only:
+        if args.baseline_actual_robot is None:
+            raise SystemExit("--baseline-only requires --baseline-actual-robot")
+        baseline_output = args.baseline_output or _default_baseline_output_from_robot(
+            Path(args.baseline_actual_robot)
+        )
+        baseline_cmd = [
+            sys.executable,
+            "-m",
+            "real_robot_exps.collect_joint_velocity_baseline",
+            "--actual-robot",
+            str(args.baseline_actual_robot),
+            "--output",
+            str(baseline_output),
+            "--config",
+            str(args.config),
+        ]
+        print("=== Running baseline-only replay ===")
+        print(" ".join(baseline_cmd))
+        subprocess.run(baseline_cmd, check=True)
+        return
 
     structures = load_structure_catalog(args.structures)
     if not structures:
@@ -612,16 +679,6 @@ def main() -> None:
 
     output_dir = args.output_dir
     output_dir.mkdir(parents=True, exist_ok=True)
-
-    if args.mode == "collect" and not args.only_metadata:
-        _run_missing_baselines(
-            structure_index=structure_index,
-            structure=structure,
-            directions=directions,
-            start_at=args.start_at,
-            args=args,
-            pre_grasp_geometry=pre_grasp_geometry,
-        )
 
     manifest_runs: list[dict[str, Any]] = []
     for direction_index, direction in enumerate(directions[args.start_at:], start=args.start_at):
