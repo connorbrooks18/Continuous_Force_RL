@@ -43,7 +43,6 @@ CONVERGE_THRESHOLD = 1e-4  # 0.1mm
 CONVERGE_DURATION_SEC = 10.0 / 15.0
 MAX_MOVE_DURATION_SEC = 500.0 / 15.0
 MOVE_DISTANCE = 0.02     # 5cm
-DYNAMIC_PULL_APPROACH_CLEARANCE_M = 0.02
 DYNAMIC_PULL_LOCAL_Z_TWIST_DEG = -18.5
 
 MANUAL_SETUP_START_POSE_NAME = "manual_setup_current_tcp_pose"
@@ -247,7 +246,6 @@ def _load_dynamic_pull_start_pose(
     *,
     theta: float | None = None,
     phi: float | None = None,
-    approach_clearance_m: float = DYNAMIC_PULL_APPROACH_CLEARANCE_M,
 ) -> tuple[np.ndarray, str, float | None, np.ndarray]:
     pre = dict(run_metadata.get("pre_grasp_geometry", {}) or {})
     snapshot, snapshot_source = _select_pre_grasp_snapshot(pre)
@@ -269,15 +267,14 @@ def _load_dynamic_pull_start_pose(
 
     apple_center = np.asarray(apple_pos_flat, dtype=np.float64).reshape(3)
     surface_pos = apple_center + np.array([0.0, -apple_radius_m, 0.0], dtype=np.float64)
-    staged_pos = surface_pos + np.array([0.0, -float(approach_clearance_m), 0.0], dtype=np.float64)
     staged_rot = np.asarray(fallback_pose_4x4[:3, :3], dtype=np.float64)
     surface_rot = np.asarray(fallback_pose_4x4[:3, :3], dtype=np.float64)
-    pose = _pose_4x4_with_translation(np.eye(4, dtype=np.float64), staged_pos)
+    pose = _pose_4x4_with_translation(np.eye(4, dtype=np.float64), surface_pos)
     pose[:3, :3] = staged_rot
     surface_pose = _pose_4x4_with_translation(np.eye(4, dtype=np.float64), surface_pos)
     surface_pose[:3, :3] = surface_rot
     source_name = "settled_snapshot" if snapshot_source in {"settled_snapshot", "under_gravity_snapshot"} else "lengthened_snapshot"
-    return pose, f"{source_name}_apple_surface_plus_2cm_pull_direction_offset", apple_radius_m, surface_pose
+    return pose, f"{source_name}_apple_surface_pose", apple_radius_m, surface_pose
 
 
 def _load_baseline_front_of_apple_pose(
@@ -951,8 +948,6 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
     post_grasp_geometry = {}
     only_metadata = bool(run_args.get("only_metadata", False))
     manual_setup_enabled = bool(run_args.get("manual_setup", False))
-    approach_clearance_m = float(run_args.get("approach_clearance_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M))
-    approach_offset_m = float(run_args.get("approach_offset_m", approach_clearance_m))
     excitation_direction = np.zeros(3, dtype=np.float32)
     time.sleep(2.0)  # let the robot settle before recording the pull-start TCP snapshot
     
@@ -1043,8 +1038,6 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
     if debug:
         surface_target_pos = np.asarray(pull_surface_pose_4x4[:3, 3], dtype=np.float64)
         print("\n[apple alignment]")
-        print(f"  approach_clearance_m: {approach_clearance_m:.3f}")
-        print(f"  approach_offset_m: {approach_offset_m:.3f}")
         print(f"  target_base_m: {_format_pos_m(pull_start_pose_4x4[:3, 3])}")
         print(f"  pull_direction_base_m: {_format_pos_m(pull_direction)}")
 
@@ -1274,8 +1267,6 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
         "phi_rad": float(phi),
         "pull_direction": excitation_direction.tolist(),
         "distance_m": float(0.0 if only_metadata else distance),
-        "approach_offset_m": float(run_args.get("approach_offset_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M)),
-        "approach_clearance_m": float(run_args.get("approach_clearance_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M)),
         "n_holds": int(1 if only_metadata else stops),
         "hold_duration_s": 0.0 if only_metadata else 1.0,
         "hold_ranges": hold_ranges,
@@ -1318,8 +1309,6 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
         "pull_start_pose_name": str(run_args.get("pull_start_pose_name", "unspecified")),
         "pull_surface_pose_4x4": np.asarray(pull_surface_pose_4x4).tolist(),
         "pull_surface_pose_name": str(run_args.get("pull_surface_pose_name", "unspecified")),
-        "approach_offset_m": float(run_args.get("approach_offset_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M)),
-        "approach_clearance_m": float(run_args.get("approach_clearance_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M)),
         "home_pose_4x4": np.asarray(home_pose_4x4).tolist(),
         "controller_gains": {
             key: value.detach().cpu().tolist() if torch.is_tensor(value) else value
@@ -1335,8 +1324,6 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
             "theta": run_args.get("theta"),
             "phi": run_args.get("phi"),
             "distance": run_args.get("distance"),
-            "approach_offset_m": run_args.get("approach_offset_m"),
-            "approach_clearance_m": run_args.get("approach_clearance_m"),
             "stops": run_args.get("stops"),
             "direction_index": run_args.get("direction_index"),
             "num_directions": run_args.get("num_directions"),
@@ -1369,8 +1356,6 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
         "theta_rad": float(theta),
         "phi_rad": float(phi),
         "distance_m": float(distance),
-        "approach_offset_m": float(run_args.get("approach_offset_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M)),
-        "approach_clearance_m": float(run_args.get("approach_clearance_m", DYNAMIC_PULL_APPROACH_CLEARANCE_M)),
         "n_holds": int(stops),
         "pull_start_pose_name": str(run_args.get("pull_start_pose_name", "unspecified")),
         "pull_surface_pose_name": str(run_args.get("pull_surface_pose_name", "unspecified")),
@@ -1396,13 +1381,14 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
         baseline_path = Path(run_args.get("baseline_path")) if run_args.get("baseline_path") else _default_baseline_path(base_label, kp_value)
         if not baseline_path.exists():
             print(
-                f"Warning: dynamic baseline correction is enabled, but {baseline_path} does not exist. "
-                "Writing the collect run with uncorrected ft_wrist data."
+                f"Dynamic baseline will be collected after this run at {baseline_path}; "
+                "the compiled episode will apply it."
             )
             robot_metadata["dynamic_baseline"] = {
-                "role": "uncorrected_collect_run",
+                "role": "baseline_pending",
                 "applied": False,
-                "reason": "baseline file missing",
+                "reason": "baseline is collected after the robot run and applied during compilation",
+                "application_stage": "compile_static_episode",
                 "baseline_path": str(baseline_path.resolve()),
             }
         else:
@@ -1646,13 +1632,9 @@ def main():
     pull_start_pose_name = dynamic_pull_surface_pose_name
     pull_surface_pose_name = dynamic_pull_surface_pose_name
     # Keep the metadata field defined for both manual and dynamic setup flows.
-    approach_offset_m = float(DYNAMIC_PULL_APPROACH_CLEARANCE_M)
-    approach_clearance_m = float(DYNAMIC_PULL_APPROACH_CLEARANCE_M)
     if is_baseline:
         print("\nBaseline mode selected.")
         print("Using the live apple position, the apple radius, and the normal orientation.")
-        approach_offset_m = 0.0
-        approach_clearance_m = 0.0
         dynamic_pull_stage_pose_4x4, dynamic_pull_stage_pose_name, dynamic_pull_apple_radius_m, dynamic_pull_surface_pose_4x4 = _load_baseline_front_of_apple_pose(
             run_metadata,
             apple_pose_4x4,
@@ -1696,17 +1678,11 @@ def main():
             apple_pose_4x4,
             theta=theta,
             phi=phi,
-            approach_clearance_m=DYNAMIC_PULL_APPROACH_CLEARANCE_M,
-        )
-        approach_offset_m = (
-            float(dynamic_pull_apple_radius_m + DYNAMIC_PULL_APPROACH_CLEARANCE_M)
-            if dynamic_pull_apple_radius_m is not None
-            else float(DYNAMIC_PULL_APPROACH_CLEARANCE_M)
         )
         dynamic_pull_surface_pose_name = (
             "apple_pose_4x4"
             if dynamic_pull_stage_pose_name == "apple_pose_4x4"
-            else dynamic_pull_stage_pose_name.removesuffix("_plus_2cm_pull_direction_offset")
+            else dynamic_pull_stage_pose_name
         )
         pull_start_pose_4x4 = dynamic_pull_stage_pose_4x4
         pull_surface_pose_4x4 = dynamic_pull_surface_pose_4x4
@@ -1764,8 +1740,6 @@ def main():
             "pull_start_pose_name": pull_start_pose_name,
             "pull_surface_pose_name": pull_surface_pose_name,
             "dynamic_apple_radius_m": None if dynamic_pull_apple_radius_m is None else float(dynamic_pull_apple_radius_m),
-            "approach_offset_m": float(approach_offset_m),
-            "approach_clearance_m": float(approach_clearance_m),
             "dynamic_pull_local_z_twist_deg": float(DYNAMIC_PULL_LOCAL_Z_TWIST_DEG),
             "apple_pose_4x4": apple_pose_4x4.tolist(),
             "dynamic_pull_pose_4x4": dynamic_pull_stage_pose_4x4.tolist(),

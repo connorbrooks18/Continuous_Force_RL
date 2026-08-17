@@ -420,7 +420,9 @@ def compile_static_episode(
     robot_rows = [row for row in robot_rows_all if str(row.get("row_kind", "data")) != "metadata"]
     if not robot_rows:
         raise ValueError("Robot input contains no hold rows")
+    baseline_applied = False
     if baseline_path is not None:
+        baseline_path = Path(baseline_path)
         baseline_rows = [
             row for row in pq.read_table(baseline_path).to_pylist()
             if str(row.get("row_kind", "data")) != "metadata"
@@ -462,6 +464,7 @@ def compile_static_episode(
                     row["ft_wrist_raw"] = raw
                     row["ft_wrist_baseline"] = values.astype(np.float32)
                     row["ft_wrist"] = (raw.astype(np.float64) - values).astype(np.float32)
+        baseline_applied = True
     required_robot_fields = {
         "timestamp", "hold_index", "ft_wrist", "tau_J_d", "joint_pos",
         "tcp_velocity", "action_wrench_ee", "tcp_pos", "tcp_pose_4x4", "target_pose_4x4",
@@ -480,6 +483,15 @@ def compile_static_episode(
                 robot_metadata = json.loads(embedded)
             except json.JSONDecodeError:
                 pass
+    if baseline_applied:
+        robot_metadata["dynamic_baseline"] = {
+            **dict(robot_metadata.get("dynamic_baseline", {}) or {}),
+            "role": "corrected_collect_run",
+            "applied": True,
+            "application_stage": "compile_static_episode",
+            "source_path": str(baseline_path.resolve()),
+            "source_sha256": _sha256(baseline_path),
+        }
     tracking_metadata = _read_dataset_metadata(tracking_path)
     _require_tracking_frame_base(tracking_metadata, tracking_path)
     camera_to_base_4x4 = _load_camera_to_base(tracking_metadata, tracking_path)

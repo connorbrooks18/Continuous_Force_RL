@@ -50,13 +50,13 @@ class DynamicPullPoseTest(unittest.TestCase):
             phi=2.75,
         )
 
-        np.testing.assert_allclose(pose[:3, 3], np.array([0.4, 0.445, 0.6], dtype=np.float64))
+        np.testing.assert_allclose(pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
         np.testing.assert_allclose(surface_pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
         np.testing.assert_allclose(pose_alt[:3, 3], pose[:3, 3])
         np.testing.assert_allclose(surface_pose_alt[:3, 3], surface_pose[:3, 3])
         np.testing.assert_allclose(pose[:3, :3], fallback[:3, :3])
         np.testing.assert_allclose(surface_pose[:3, :3], fallback[:3, :3])
-        self.assertEqual(name, "settled_snapshot_apple_surface_plus_2cm_pull_direction_offset")
+        self.assertEqual(name, "settled_snapshot_apple_surface_pose")
         self.assertEqual(radius_m, 0.035)
 
     def test_legacy_lengthened_snapshot_is_still_accepted(self):
@@ -88,13 +88,13 @@ class DynamicPullPoseTest(unittest.TestCase):
             phi=0.3,
         )
 
-        np.testing.assert_allclose(pose[:3, 3], np.array([0.4, 0.445, 0.6], dtype=np.float64))
+        np.testing.assert_allclose(pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
         np.testing.assert_allclose(surface_pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
         np.testing.assert_allclose(pose_alt[:3, 3], pose[:3, 3])
         np.testing.assert_allclose(surface_pose_alt[:3, 3], surface_pose[:3, 3])
         np.testing.assert_allclose(pose[:3, :3], fallback[:3, :3])
         np.testing.assert_allclose(surface_pose[:3, :3], fallback[:3, :3])
-        self.assertEqual(name, "lengthened_snapshot_apple_surface_plus_2cm_pull_direction_offset")
+        self.assertEqual(name, "lengthened_snapshot_apple_surface_pose")
         self.assertEqual(radius_m, 0.035)
 
     def test_falls_back_when_snapshot_or_radius_missing(self):

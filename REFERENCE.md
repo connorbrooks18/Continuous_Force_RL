@@ -70,8 +70,6 @@ The raw robot files also keep compatibility fields such as:
 - `theta_rad`
 - `phi_rad`
 - `distance_m`
-- `approach_offset_m`
-- `approach_clearance_m`
 - `n_holds`
 - `pull_start_pose_name`
 - `pull_surface_pose_name`
@@ -145,7 +143,6 @@ Baseline and collect are compared using:
 
 - pull angles,
 - distance,
-- approach offset,
 - number of holds,
 - pull-start pose name,
 - pull-surface pose name,

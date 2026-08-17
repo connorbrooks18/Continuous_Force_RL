@@ -136,7 +136,11 @@ Important `dataset_metadata` groups are:
 - `dump`: structure catalog, direction, controller, and runner metadata.
 - `pre_grasp_geometry`: structure geometry and pre-grasp snapshots.
 - `post_grasp_geometry`: robot and camera state after grasp closure.
-- `dynamic_baseline`: whether force correction was applied.
+- `dynamic_baseline`: baseline lifecycle and whether force correction was applied.
+  A raw collect file may use `role="baseline_pending"` because the current
+  joint-velocity replay baseline is collected after the robot run. The unified
+  compiled file changes this to `role="corrected_collect_run"` with
+  `applied=true` when subtraction succeeds.
 - `field_layout`: dimensions and meanings of model-facing fields.
 - `camera_aggregation`: frame selection and smoothing settings.
 - `topology`: Branch/Spur/Apple chord ordering.
