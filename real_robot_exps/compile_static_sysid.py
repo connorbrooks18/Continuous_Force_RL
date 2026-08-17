@@ -451,7 +451,7 @@ def compile_static_episode(
                         f"hold_index={hold_idx}, phase={phase}"
                     )
                 source_ft = np.asarray(
-                    [row["ft_wrist_raw"] for row in source],
+                    [row["ft_wrist"] for row in source],
                     dtype=np.float64,
                 )
                 matched = _match_baseline_frames(source_ft, len(current), max_relative_difference=.50)
