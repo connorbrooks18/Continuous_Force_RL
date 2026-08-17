@@ -102,11 +102,17 @@ Unified camera fields:
 | --- | ---: | --- |
 | `apple_pos` | 3 | Apple position in the base frame. |
 | `apple_pose_4x4` | 16 | Apple pose in the base frame. |
-| `woody_part_start_pos` | 9 | Branch / Spur / Apple start points. |
-| `woody_part_end_pos` | 9 | Branch / Spur / Apple end points. |
-| `woody_bending_angles` | 3 | Rest-relative chord deflection per woody segment. |
+| `branch_pose_4x4` | 16 | Branch/Spur junction pose in the base frame. |
+| `spur_pose_4x4` | 16 | Stem/Spur junction pose in the base frame. |
 | `camera_timestamp` | 1 | Median camera timestamp used for the row. |
 | `robot_camera_timestamp_offset_s` | 1 | Robot time minus camera time. |
+
+The Branch, Spur, and Apple pose fields are the preferred structure geometry:
+`branch_pose_4x4` is the Branch/Spur junction, `spur_pose_4x4` is the
+stem/Spur junction, and `apple_pose_4x4` is the apple center. The metadata
+snapshot fields `woody_part_start_pos`, `woody_part_end_pos`, and
+`woody_bending_angles` are deprecated compatibility fields; they remain in
+snapshots for now but are not part of the per-row unified schema.
 
 ## Hard-coded poses
 

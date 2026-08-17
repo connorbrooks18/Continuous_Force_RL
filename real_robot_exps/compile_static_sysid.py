@@ -105,6 +105,27 @@ def _load_tracking_frames(path: Path) -> pd.DataFrame:
     return tracking.sort_values("timestamp").reset_index(drop=True)
 
 
+class _TrackingFrameIndex:
+    """Pre-grouped complete tracking frames for fast timestamp lookup."""
+
+    def __init__(self, frames: pd.DataFrame) -> None:
+        groups = frames.groupby("timestamp", sort=True)
+        timestamps: list[float] = []
+        grouped_frames: list[pd.DataFrame] = []
+        for timestamp, group in groups:
+            if set(str(name) for name in group["name"].tolist()) >= set(TRACKED_NAMES):
+                timestamps.append(float(timestamp))
+                grouped_frames.append(group.sort_values("name"))
+        self.timestamps = np.asarray(timestamps, dtype=np.float64)
+        self.frames = grouped_frames
+        if not len(self.timestamps):
+            raise ValueError("Tracking input contains no complete valid marker frames")
+
+
+def _build_tracking_index(frames: pd.DataFrame) -> _TrackingFrameIndex:
+    return _TrackingFrameIndex(frames)
+
+
 def _require_tracking_frame_base(metadata: dict[str, Any], path: Path) -> None:
     frame = str(metadata.get("coordinate_frame", "")).strip()
     if frame not in {"franka_base_o", "franka_base_o_frame"}:
@@ -129,7 +150,7 @@ def _load_camera_to_base(metadata: dict[str, Any], path: Path) -> np.ndarray:
 
 
 def _select_frames(
-    frames: pd.DataFrame,
+    frames: _TrackingFrameIndex | pd.DataFrame,
     *,
     center: float,
     count: int,
@@ -137,35 +158,38 @@ def _select_frames(
     interval: tuple[float, float] | None = None,
     prefer_before: bool = False,
 ) -> pd.DataFrame:
-    complete_timestamps = []
-    for timestamp, group in frames.groupby("timestamp", sort=True):
-        by_name = set(str(name) for name in group["name"].tolist())
-        if all(name in by_name for name in TRACKED_NAMES):
-            complete_timestamps.append(float(timestamp))
-    candidates = frames[frames["timestamp"].isin(complete_timestamps)]
+    # Keep accepting a DataFrame for compatibility with direct callers/tests,
+    # but the compiler passes the precomputed index below.
+    index = frames if isinstance(frames, _TrackingFrameIndex) else _build_tracking_index(frames)
+    candidate_indices = np.arange(len(index.timestamps), dtype=np.int64)
     if interval is not None:
         start, end = interval
-        in_interval = frames[(frames["timestamp"] >= start) & (frames["timestamp"] <= end)]
-        if not in_interval.empty:
-            in_interval_ts = [
-                float(timestamp)
-                for timestamp, group in in_interval.groupby("timestamp", sort=True)
-                if all(name in set(str(n) for n in group["name"].tolist()) for name in TRACKED_NAMES)
-            ]
-            if in_interval_ts:
-                candidates = frames[frames["timestamp"].isin(in_interval_ts)]
+        candidate_indices = candidate_indices[
+            (index.timestamps >= float(start)) & (index.timestamps <= float(end))
+        ]
     if prefer_before:
-        before_ts = sorted({float(t) for t in candidates["timestamp"].tolist() if float(t) <= center})
-        if before_ts:
-            candidates = candidates[candidates["timestamp"].isin(before_ts)]
-    timestamp_df = (
-        candidates.groupby("timestamp", as_index=False)
-        .size()
-        .assign(_abs_delta=lambda df: (df["timestamp"] - float(center)).abs())
+        before = index.timestamps[candidate_indices] <= float(center)
+        if np.any(before):
+            candidate_indices = candidate_indices[before]
+    if not len(candidate_indices):
+        raise ValueError(
+            f"No complete camera frames within {max_delta_s:.3f}s of timestamp {center:.6f}"
+        )
+
+    deltas = np.abs(index.timestamps[candidate_indices] - float(center))
+    valid = deltas <= float(max_delta_s)
+    candidate_indices = candidate_indices[valid]
+    deltas = deltas[valid]
+    if not len(candidate_indices):
+        raise ValueError(
+            f"No complete camera frames within {max_delta_s:.3f}s of timestamp {center:.6f}"
+        )
+    order = np.argsort(deltas, kind="stable")[: int(count)]
+    selected_indices = np.sort(candidate_indices[order])
+    selected = pd.concat(
+        [index.frames[int(idx)] for idx in selected_indices],
+        ignore_index=True,
     )
-    timestamp_df = timestamp_df[timestamp_df["_abs_delta"] <= float(max_delta_s)]
-    selected_ts = timestamp_df.nsmallest(int(count), "_abs_delta").sort_values("timestamp")["timestamp"].tolist()
-    selected = candidates[candidates["timestamp"].isin(selected_ts)].sort_values(["timestamp", "name"])
     if selected.empty:
         raise ValueError(
             f"No complete camera frames within {max_delta_s:.3f}s of timestamp {center:.6f}"
@@ -174,19 +198,13 @@ def _select_frames(
 
 
 def _complete_timestamps_in_interval(
-    frames: pd.DataFrame,
+    frames: _TrackingFrameIndex | pd.DataFrame,
     interval: tuple[float, float],
 ) -> np.ndarray:
+    index = frames if isinstance(frames, _TrackingFrameIndex) else _build_tracking_index(frames)
     start, end = interval
-    in_interval = frames[(frames["timestamp"] >= start) & (frames["timestamp"] <= end)]
-    if in_interval.empty:
-        return np.asarray([], dtype=np.float64)
-    complete_ts = [
-        float(timestamp)
-        for timestamp, group in in_interval.groupby("timestamp", sort=True)
-        if all(name in set(str(n) for n in group["name"].tolist()) for name in TRACKED_NAMES)
-    ]
-    return np.asarray(sorted(set(complete_ts)), dtype=np.float64)
+    mask = (index.timestamps >= float(start)) & (index.timestamps <= float(end))
+    return index.timestamps[mask].copy()
 
 
 def _nearest_timestamp(target: float, candidates: np.ndarray) -> float:
@@ -333,9 +351,6 @@ def _unified_schema(n_holds: int, n_directions: int) -> pa.Schema:
         pa.field("apple_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
         pa.field("branch_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
         pa.field("spur_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
-        pa.field("woody_part_start_pos", vector(9), metadata={b"frame": b"franka_base_o"}),
-        pa.field("woody_part_end_pos", vector(9), metadata={b"frame": b"franka_base_o"}),
-        pa.field("woody_bending_angles", vector(3), metadata={b"unit": b"rad"}),
         pa.field("hold_number", vector(n_holds), metadata={b"encoding": b"one_hot"}),
         pa.field("direction", vector(n_directions), metadata={b"encoding": b"one_hot"}),
         pa.field("phase", pa.int8(), metadata={b"encoding": b"moving=0, hold=1"}),
@@ -377,7 +392,8 @@ def _match_baseline_frames(
     )
     if relative_difference > max_relative_difference:
         raise ValueError(
-            f"Baseline and regular frame counts differ by more than {max_relative_difference}: "
+            f"Baseline and regular frame counts differ by more than "
+            f"{max_relative_difference:.0%}: "
             f"baseline={len(source_ft)}, regular={target_frame_count}"
         )
     else:
@@ -496,6 +512,7 @@ def compile_static_episode(
     _require_tracking_frame_base(tracking_metadata, tracking_path)
     camera_to_base_4x4 = _load_camera_to_base(tracking_metadata, tracking_path)
     camera_frames = _load_tracking_frames(tracking_path)
+    camera_index = _build_tracking_index(camera_frames)
 
     rest_timestamp = float(
         robot_metadata.get(
@@ -504,7 +521,7 @@ def compile_static_episode(
         )
     )
     rest_frames = _select_frames(
-        camera_frames,
+        camera_index,
         center=rest_timestamp,
         count=int(camera_frame_count),
         max_delta_s=float(max_camera_delta_s),
@@ -522,19 +539,16 @@ def compile_static_episode(
     rest_starts, rest_ends, rest_chords = _endpoints(rest_positions)
 
     hold_indices = sorted({int(row["hold_index"]) for row in robot_rows if int(row["hold_index"]) >= 0})
-    hold_geometry: dict[int, dict[str, Any]] = {}
     hold_camera_summaries: list[dict[str, Any]] = []
-    hold_complete_camera_timestamps: dict[int, np.ndarray] = {}
     for hold_idx in hold_indices:
         hold_rows = [row for row in robot_rows if int(row["hold_index"]) == hold_idx]
         timestamps = np.asarray([float(row["timestamp"]) for row in hold_rows])
         start = float(timestamps.min())
         end = float(timestamps.max())
         center = float((start + end) / 2.0)
-        hold_camera_timestamps = _complete_timestamps_in_interval(camera_frames, (start, end))
-        hold_complete_camera_timestamps[hold_idx] = hold_camera_timestamps
+        hold_camera_timestamps = _complete_timestamps_in_interval(camera_index, (start, end))
         selected = _select_frames(
-            camera_frames,
+            camera_index,
             center=center,
             count=int(camera_frame_count),
             max_delta_s=float(max_camera_delta_s),
@@ -546,27 +560,12 @@ def compile_static_episode(
             pose_rows = selected[selected["name"] == name][["qx", "qy", "qz", "qw"]].to_numpy()
             quat = np.median(pose_rows.astype(np.float64), axis=0)
             poses_tag[name] = _make_transform(positions_tag[name], quat)
-        positions, poses = _identity_tracking_geometry(
-            positions_tag, poses_tag
-        )
-        starts, ends, chords = _endpoints(positions)
+        positions, poses = _identity_tracking_geometry(positions_tag, poses_tag)
+        _, _, chords = _endpoints(positions)
         bending = _chord_deflections(chords, rest_chords)
         selected_timestamps = selected["timestamp"].astype(float).tolist()
         camera_center = float(np.median(selected_timestamps))
         unique_selected_timestamps = sorted(set(selected_timestamps))
-        geometry = {
-            "apple_pos": positions["Apple"],
-            "apple_pose_4x4": poses["Apple"],
-            "woody_part_start_pos": starts.reshape(-1),
-            "woody_part_end_pos": ends.reshape(-1),
-            "woody_bending_angles": bending,
-            "camera_selected_timestamps": selected_timestamps,
-            "camera_timestamp": camera_center,
-            "camera_window_start_timestamp": min(unique_selected_timestamps),
-            "camera_window_end_timestamp": max(unique_selected_timestamps),
-            "camera_frame_count": len(unique_selected_timestamps),
-        }
-        hold_geometry[hold_idx] = geometry
         hold_camera_summaries.append({
             "hold_index": hold_idx,
             "robot_start_timestamp": start,
@@ -585,7 +584,7 @@ def compile_static_episode(
         hold_idx = int(robot_row["hold_index"])
         timestamp = float(robot_row["timestamp"])
         selected = _select_frames(
-            camera_frames,
+            camera_index,
             center=timestamp,
             count=int(camera_frame_count),
             max_delta_s=float(max_camera_delta_s),
@@ -596,11 +595,7 @@ def compile_static_episode(
             pose_rows = selected[selected["name"] == name][["qx", "qy", "qz", "qw"]].to_numpy()
             quat = np.median(pose_rows.astype(np.float64), axis=0)
             poses_tag[name] = _make_transform(positions_tag[name], quat)
-        positions, poses = _identity_tracking_geometry(
-            positions_tag, poses_tag
-        )
-        starts, ends, chords = _endpoints(positions)
-        bending = _chord_deflections(chords, rest_chords)
+        positions, poses = _identity_tracking_geometry(positions_tag, poses_tag)
         selected_timestamps = selected["timestamp"].astype(float).tolist()
         camera_timestamp = float(np.median(selected_timestamps))
         unique_selected_timestamps = sorted(set(selected_timestamps))
@@ -625,9 +620,6 @@ def compile_static_episode(
             "apple_pose_4x4": _as_list(poses["Apple"]),
             "branch_pose_4x4": _as_list(poses["Branch"]),
             "spur_pose_4x4": _as_list(poses["Spur"]),
-            "woody_part_start_pos": _as_list(starts.reshape(-1)),
-            "woody_part_end_pos": _as_list(ends.reshape(-1)),
-            "woody_bending_angles": _as_list(bending),
             "hold_number": _as_list(robot_row["hold_number"]),
             "direction": _as_list(robot_row["direction"]),
             "phase": int(robot_row["phase"]),
@@ -650,20 +642,10 @@ def compile_static_episode(
 
     if float(camera_ema_alpha) < 1.0:
         apple_positions = np.asarray([row["apple_pos"] for row in output_rows], dtype=np.float64)
-        start_positions = np.asarray([row["woody_part_start_pos"] for row in output_rows], dtype=np.float64).reshape(len(output_rows), 3, 3)
-        end_positions = np.asarray([row["woody_part_end_pos"] for row in output_rows], dtype=np.float64).reshape(len(output_rows), 3, 3)
         smoothed_apple = _ema(apple_positions, float(camera_ema_alpha))
-        smoothed_starts = _ema(start_positions.reshape(len(output_rows), -1), float(camera_ema_alpha)).reshape(len(output_rows), 3, 3)
-        smoothed_ends = _ema(end_positions.reshape(len(output_rows), -1), float(camera_ema_alpha)).reshape(len(output_rows), 3, 3)
-        smoothed_rest_chords = smoothed_ends[0] - smoothed_starts[0]
         for idx, row in enumerate(output_rows):
             row["apple_pos"] = _as_list(smoothed_apple[idx])
             row["apple_pose_4x4"] = _update_pose_translation(row["apple_pose_4x4"], smoothed_apple[idx])
-            row["woody_part_start_pos"] = _as_list(smoothed_starts[idx].reshape(-1))
-            row["woody_part_end_pos"] = _as_list(smoothed_ends[idx].reshape(-1))
-            row["woody_bending_angles"] = _as_list(
-                _chord_deflections(smoothed_ends[idx] - smoothed_starts[idx], smoothed_rest_chords)
-            )
 
     table = pa.Table.from_pylist(
         output_rows,
@@ -684,9 +666,6 @@ def compile_static_episode(
             "tracking_target_pose_4x4": first_row["target_pose_4x4"],
             "tracking_apple_pos": first_row["apple_pos"],
             "tracking_apple_pose_4x4": first_row["apple_pose_4x4"],
-            "tracking_woody_part_start_pos": first_row["woody_part_start_pos"],
-            "tracking_woody_part_end_pos": first_row["woody_part_end_pos"],
-            "tracking_woody_bending_angles": first_row["woody_bending_angles"],
         }
         for key, value in tracking_post_geometry.items():
             post_grasp_geometry.setdefault(key, value)
@@ -768,9 +747,6 @@ def compile_static_episode(
             "apple_pose_4x4": {"dim": 16, "reshape": [4, 4]},
             "branch_pose_4x4": {"dim": 16, "reshape": [4, 4]},
             "spur_pose_4x4": {"dim": 16, "reshape": [4, 4]},
-            "woody_part_start_pos": {"dim": 9, "reshape": [3, 3]},
-            "woody_part_end_pos": {"dim": 9, "reshape": [3, 3]},
-            "woody_bending_angles": {"dim": 3, "part_order": list(WOODY_PART_NAMES)},
             "hold_number": {"dim": n_holds, "encoding": "one_hot"},
             "direction": {"dim": n_directions, "encoding": "one_hot"},
             "phase": {"dim": 1, "encoding": {"moving": 0, "hold": 1}},

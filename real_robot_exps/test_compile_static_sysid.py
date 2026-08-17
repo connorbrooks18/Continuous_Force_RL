@@ -108,15 +108,10 @@ class CompileStaticSysidTest(unittest.TestCase):
             rows = output.to_pylist()
             self.assertEqual(len(rows), 4)
             self.assertEqual(rows[0]["episode_id"], "episode-test")
-            np.testing.assert_allclose(rows[0]["woody_bending_angles"], np.zeros(3), atol=1e-7)
-            np.testing.assert_allclose(
-                rows[-1]["woody_bending_angles"], np.full(3, np.pi / 2), atol=1e-6
-            )
-
-            starts = np.asarray(rows[-1]["woody_part_start_pos"]).reshape(3, 3)
-            ends = np.asarray(rows[-1]["woody_part_end_pos"]).reshape(3, 3)
-            np.testing.assert_allclose(starts[0], starts[1])
-            np.testing.assert_allclose(ends[0], starts[2])
+            for row in rows:
+                self.assertNotIn("woody_part_start_pos", row)
+                self.assertNotIn("woody_part_end_pos", row)
+                self.assertNotIn("woody_bending_angles", row)
             self.assertEqual(rows[-1]["camera_frame_count"], 2)
 
             metadata = json.loads(
@@ -138,6 +133,9 @@ class CompileStaticSysidTest(unittest.TestCase):
             self.assertIn("branch_pose_4x4", output.schema.names)
             self.assertIn("spur_pose_4x4", output.schema.names)
             self.assertIn("apple_pose_4x4", output.schema.names)
+            self.assertNotIn("woody_part_start_pos", output.schema.names)
+            self.assertNotIn("woody_part_end_pos", output.schema.names)
+            self.assertNotIn("woody_bending_angles", output.schema.names)
             self.assertIn("sample_label", output.schema.names)
 
     def test_rejects_tracking_files_not_in_base_frame(self):
