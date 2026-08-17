@@ -7,7 +7,10 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from real_robot_exps.compile_static_sysid import compile_static_episode
+from real_robot_exps.compile_static_sysid import (
+    _match_baseline_frames,
+    compile_static_episode,
+)
 
 
 def _write_with_metadata(path, rows, metadata):
@@ -19,6 +22,20 @@ def _write_with_metadata(path, rows, metadata):
 
 
 class CompileStaticSysidTest(unittest.TestCase):
+    def test_matches_baseline_by_frame_index_without_interpolation(self):
+        source = np.arange(54, dtype=np.float64).reshape(9, 6)
+
+        matched = _match_baseline_frames(source, 10)
+
+        np.testing.assert_array_equal(matched[:9], source)
+        np.testing.assert_array_equal(matched[9], source[-1])
+
+    def test_rejects_large_baseline_frame_count_mismatch(self):
+        source = np.zeros((8, 6), dtype=np.float64)
+
+        with self.assertRaisesRegex(ValueError, "more than 10%"):
+            _match_baseline_frames(source, 10)
+
     def test_compiles_shared_endpoints_and_rest_relative_angles(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)

@@ -85,7 +85,7 @@ Robot-side fields:
 | --- | ---: | --- |
 | `ft_wrist` | 6 | Force in EE frame; torque in base frame convention used by the robot interface. |
 | `ft_wrist_raw` | 6 | Raw loaded wrench before dynamic baseline subtraction. |
-| `ft_wrist_baseline` | 6 | Interpolated unloaded baseline. |
+| `ft_wrist_baseline` | 6 | Frame-index-matched unloaded baseline. |
 | `tau_J_d` | 7 | Desired link-side joint torques without gravity. |
 | `joint_pos` | 7 | Joint positions, base-to-EE order. |
 | `tcp_velocity` | 6 | TCP linear + angular velocity. |

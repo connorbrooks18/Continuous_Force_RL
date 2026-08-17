@@ -354,6 +354,48 @@ def _unified_schema(n_holds: int, n_directions: int) -> pa.Schema:
     ])
 
 
+def _match_baseline_frames(
+    source_ft: np.ndarray,
+    target_frame_count: int,
+    *,
+    max_relative_difference: float = 0.10,
+) -> np.ndarray:
+    """Match baseline samples to regular samples by frame index.
+
+    The recordings are expected to have nearly the same frame rate. Keep
+    samples at their original indices, truncate an overlong baseline, and
+    repeat its final sample only when the regular run has a few extra frames.
+    """
+    source_ft = np.asarray(source_ft, dtype=np.float64)
+    if source_ft.ndim != 2 or source_ft.shape[1] != 6 or len(source_ft) == 0:
+        raise ValueError("Baseline wrench data must be a non-empty array of shape (n, 6)")
+    if target_frame_count < 1:
+        raise ValueError("Regular recording must contain at least one frame")
+
+    relative_difference = abs(len(source_ft) - target_frame_count) / max(
+        len(source_ft), target_frame_count
+    )
+    if relative_difference > max_relative_difference:
+        raise ValueError(
+            f"Baseline and regular frame counts differ by more than {max_relative_difference}: "
+            f"baseline={len(source_ft)}, regular={target_frame_count}"
+        )
+    else:
+        print(
+            f"Baseline and regular frame counts differ by {relative_difference}: "
+            f"baseline={len(source_ft)}, regular={target_frame_count}"
+        )
+
+    matched = source_ft[:target_frame_count]
+    if len(matched) < target_frame_count:
+        matched = np.pad(
+            matched,
+            ((0, target_frame_count - len(matched)), (0, 0)),
+            mode="edge",
+        )
+    return matched
+
+
 def compile_static_episode(
     robot_path: Path | str,
     tracking_path: Path | str,
@@ -409,15 +451,10 @@ def compile_static_episode(
                         f"hold_index={hold_idx}, phase={phase}"
                     )
                 source_ft = np.asarray(
-                    [row.get("ft_wrist_raw", row["ft_wrist"]) for row in source],
+                    [row["ft_wrist_raw"] for row in source],
                     dtype=np.float64,
                 )
-                source_progress = np.linspace(0.0, 1.0, len(source_ft))
-                target_progress = np.linspace(0.0, 1.0, len(current))
-                matched = np.column_stack([
-                    np.interp(target_progress, source_progress, source_ft[:, component])
-                    for component in range(6)
-                ])
+                matched = _match_baseline_frames(source_ft, len(current), max_relative_difference=.50)
                 for row, values in zip(current, matched):
                     raw = np.asarray(
                         row.get("ft_wrist_raw", row["ft_wrist"]), dtype=np.float32
