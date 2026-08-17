@@ -16,6 +16,15 @@ s00-d00.parquet            Unified, time-aligned robot/camera episode
 Baseline files use the raw robot format, for example:
 `s00_pull_theta1.57_phi1.57_kp100_baseline_robot.parquet`.
 
+The current baseline format is a `joint_velocity_replay_baseline`. It is
+created from an actual run's raw robot Parquet: the recorded `joint_vel`
+sequence is timestamp-interpolated onto the configured control-rate grid and
+replayed with the robot-side jerk limiter while the unloaded wrench is
+recorded. Baseline metadata identifies this with
+`collection_mode="joint_velocity_replay_baseline"`,
+`baseline_replay_field="joint_vel"`, and
+`baseline_command_field="joint_vel_cmd"`.
+
 Raw robot and unified files store the metadata object in the Parquet footer
 under `dataset_metadata`. Raw robot files also contain one first table row with
 `row_kind="metadata"` and the same metadata in `metadata_json`; remaining rows
@@ -60,13 +69,42 @@ are robot samples.
 | `tau_J_d` | 7 | Desired joint torques. |
 | `joint_pos` | 7 | Measured joint positions. |
 | `tcp_velocity` | 6 | TCP linear and angular velocity. |
+| `joint_vel` | 7 | Measured joint velocities. |
+| `joint_vel_cmd` | 7 | Joint-velocity command sent during a replay baseline, when available. |
+| `joint_vel_target` | 7 | Joint-velocity target used by the replay controller, when available. |
 | `action_wrench_ee` | 6 | Per-frame pose-control wrench `[Fx, Fy, Fz, Tx, Ty, Tz]`. |
 | `tcp_pos` | 3 | Measured TCP position. |
 | `tcp_pose_4x4` | 16 | Measured TCP pose, reshape to `[4, 4]`. |
 | `excitation_direction` | 3 | Unit pull direction. |
 
 `ft_wrist_baseline` is added to the unified schema and may be absent from old
-raw robot files.
+raw robot files. Replay-baseline files can additionally contain
+`tau_J`, `tau_ext_hat_filtered`, `joint_vel_cmd`, and `joint_vel_target`; these
+are diagnostic/controller fields and are not required in ordinary collected
+raw files.
+
+## Baseline subtraction
+
+When a baseline is supplied during compilation, baseline rows are grouped by
+`(hold_index, phase)` and ordered by `hold_step_idx`. For each corresponding
+loaded-run segment, the compiler takes the baseline `ft_wrist` samples by
+frame index, truncating an overlong baseline or repeating its final sample for
+a short overrun. The segment-length difference must be no greater than 50%.
+
+For every loaded row:
+
+```text
+ft_wrist_baseline = matched baseline ft_wrist
+ft_wrist_raw      = measured loaded-run ft_wrist_raw
+ft_wrist          = ft_wrist_raw - ft_wrist_baseline
+```
+
+The baseline `ft_wrist` field is the filtered (smoothed) unloaded wrench saved
+by the replay collector; it is the field used for the current compiler
+subtraction. `ft_wrist_raw` remains available in both baseline and collected
+files for diagnostics. A baseline must contain every `(hold_index, phase)`
+segment present in the loaded run and must pass the metadata compatibility
+checks before collection-time subtraction is allowed.
 
 ## Unified Fields
 
