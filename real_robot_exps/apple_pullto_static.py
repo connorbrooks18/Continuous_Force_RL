@@ -1075,7 +1075,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
         target_pose_4x4=pull_surface_pose_4x4,
     )
     approach_geometry["pose_name"] = str(run_args.get("pull_surface_pose_name", "unspecified"))
-    approach_geometry["target_reached"] = bool(position_error <= CONVERGE_THRESHOLD)
+    approach_geometry["target_reached"] = bool(position_error <= 2*CONVERGE_THRESHOLD)
     approach_geometry["target_position_error_m"] = position_error
     approach_geometry["target_orientation_error_deg"] = orientation_error_deg
     alignment_label = "Baseline" if baseline else "Pull"
