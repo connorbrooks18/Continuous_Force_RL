@@ -266,7 +266,7 @@ def _load_dynamic_pull_start_pose(
     apple_radius_m = float(apple_radius_m)
 
     apple_center = np.asarray(apple_pos_flat, dtype=np.float64).reshape(3)
-    surface_pos = apple_center + np.array([0.0, -apple_radius_m, 0.0], dtype=np.float64)
+    surface_pos = apple_center + np.array([0.0, -apple_radius_m - 0.01, 0.0], dtype=np.float64)
     staged_rot = np.asarray(fallback_pose_4x4[:3, :3], dtype=np.float64)
     surface_rot = np.asarray(fallback_pose_4x4[:3, :3], dtype=np.float64)
     pose = _pose_4x4_with_translation(np.eye(4, dtype=np.float64), surface_pos)

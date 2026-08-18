@@ -1,4 +1,16 @@
 {
+  "apple_density_kg_m3_by_number": {
+    "2": 820.6,
+    "4": 1059.3750899554282,
+    "9": 1081.8
+  },
+  "apple_radius_by_number": {
+    "1": 0.04,
+    "2": 0.04,
+    "3": 0.04,
+    "4": 0.04,
+    "5": 0.04
+  },
   "default_parts": {
     "apple": {
       "density_kg_m3": 650,
@@ -25,26 +37,37 @@
       "shape": "cylinder"
     }
   },
-  "apple_density_kg_m3_by_number": {
-    "2": 749.8,
-    "4": 1059.3750899554282,
-    "9": 1081.8
-  },
-  "apple_radius_by_number": {
-    "1": 0.04,
-    "2": 0.04,
-    "3": 0.04,
-    "4": 0.04,
-    "5": 0.04
-  },
-  "spur_angle_choices": [45, 60, 75, 90],
+  "spur_angle_choices": [
+    45,
+    60,
+    75,
+    90
+  ],
   "spur_length_aliases": {
-    "0": [0, "short"],
-    "1": [1, "medium"],
-    "2": [2, "long"],
-    "long": [2, "long"],
-    "medium": [1, "medium"],
-    "short": [0, "short"]
+    "0": [
+      0,
+      "short"
+    ],
+    "1": [
+      1,
+      "medium"
+    ],
+    "2": [
+      2,
+      "long"
+    ],
+    "long": [
+      2,
+      "long"
+    ],
+    "medium": [
+      1,
+      "medium"
+    ],
+    "short": [
+      0,
+      "short"
+    ]
   },
   "spur_length_to_meters": {
     "0": 0.08,
@@ -53,10 +76,14 @@
   },
   "spur_mass_kg_by_stiffness_and_length": {
     "0": {
+      "0": 0.023,
       "2": 0.026
     },
-    "1": {},
+    "1": {
+      "0": 0.027
+    },
     "2": {
+      "0": 0.024,
       "1": 0.027
     }
   },
@@ -66,18 +93,54 @@
     "2": 0.0059
   },
   "spur_stiffness_aliases": {
-    "0": [0, "low"],
-    "1": [1, "medium"],
-    "2": [2, "high"],
-    "h": [2, "high"],
-    "high": [2, "high"],
-    "l": [0, "low"],
-    "low": [0, "low"],
-    "m": [1, "medium"],
-    "med": [1, "medium"],
-    "medium": [1, "medium"]
+    "0": [
+      0,
+      "low"
+    ],
+    "1": [
+      1,
+      "medium"
+    ],
+    "2": [
+      2,
+      "high"
+    ],
+    "h": [
+      2,
+      "high"
+    ],
+    "high": [
+      2,
+      "high"
+    ],
+    "l": [
+      0,
+      "low"
+    ],
+    "low": [
+      0,
+      "low"
+    ],
+    "m": [
+      1,
+      "medium"
+    ],
+    "med": [
+      1,
+      "medium"
+    ],
+    "medium": [
+      1,
+      "medium"
+    ]
   },
-  "stem_angle_choices": [0, 30, 45, 60, 90],
+  "stem_angle_choices": [
+    0,
+    30,
+    45,
+    60,
+    90
+  ],
   "stem_length_by_apple_number": {
     "2": 0.015,
     "4": 0.015
