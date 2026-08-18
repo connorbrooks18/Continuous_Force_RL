@@ -339,6 +339,414 @@
           "shape": "cylinder"
         }
       }
+    },
+    {
+      "angles_source": "manual_runner_entry",
+      "geometry_source": "manual_runner_entry",
+      "manual_selection": {
+        "apple_number": 9,
+        "spur_angle_deg": 90,
+        "spur_length": "long",
+        "spur_length_level": 2,
+        "spur_stiffness": 0,
+        "spur_stiffness_label": "low",
+        "stem_angle_deg": 45
+      },
+      "name": "apple 9 spur low long stem 45 spur 90",
+      "notes": "Manual structure entry for apple #9 with spur stiffness=low, spur length=long, stem angle=45, spur angle=90.",
+      "parts": {
+        "apple": {
+          "apple_number": 9,
+          "connection_rpy_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1081.8,
+          "length_m": 0.07,
+          "manual_selection": true,
+          "radius_m": 0.04,
+          "shape": "sphere"
+        },
+        "primary": {
+          "density_kg_m3": 660,
+          "length_m": 0.827,
+          "radius_m": 0.0125,
+          "shape": "cylinder"
+        },
+        "spur": {
+          "connection_rpy_deg": [
+            0.0,
+            90.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 0,
+          "length_m": 0.12,
+          "manual_selection": true,
+          "manual_spur_angle_deg": 90,
+          "mass_kg": 0.026,
+          "radius_m": 0.0025,
+          "shape": "cylinder",
+          "stiffness_label": "low",
+          "stiffness_level": 0
+        },
+        "stem": {
+          "connection_rpy_deg": [
+            0.0,
+            45.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1000,
+          "length_m": 0.013,
+          "manual_selection": true,
+          "manual_stem_angle_deg": 45,
+          "radius_m": 0.0005,
+          "shape": "cylinder"
+        }
+      }
+    },
+    {
+      "angles_source": "manual_runner_entry",
+      "geometry_source": "manual_runner_entry",
+      "manual_selection": {
+        "apple_number": 9,
+        "spur_angle_deg": 90,
+        "spur_length": "long",
+        "spur_length_level": 2,
+        "spur_stiffness": 1,
+        "spur_stiffness_label": "medium",
+        "stem_angle_deg": 45
+      },
+      "name": "apple 9 spur medium long stem 45 spur 90",
+      "notes": "Manual structure entry for apple #9 with spur stiffness=medium, spur length=long, stem angle=45, spur angle=90.",
+      "parts": {
+        "apple": {
+          "apple_number": 9,
+          "connection_rpy_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1081.8,
+          "length_m": 0.07,
+          "manual_selection": true,
+          "radius_m": 0.04,
+          "shape": "sphere"
+        },
+        "primary": {
+          "density_kg_m3": 660,
+          "length_m": 0.827,
+          "radius_m": 0.0125,
+          "shape": "cylinder"
+        },
+        "spur": {
+          "connection_rpy_deg": [
+            0.0,
+            90.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 0,
+          "length_m": 0.12,
+          "manual_selection": true,
+          "manual_spur_angle_deg": 90,
+          "mass_kg": 0.032,
+          "radius_m": 0.0059,
+          "shape": "cylinder",
+          "stiffness_label": "medium",
+          "stiffness_level": 1
+        },
+        "stem": {
+          "connection_rpy_deg": [
+            0.0,
+            45.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1000,
+          "length_m": 0.013,
+          "manual_selection": true,
+          "manual_stem_angle_deg": 45,
+          "radius_m": 0.0005,
+          "shape": "cylinder"
+        }
+      }
+    },
+    {
+      "angles_source": "manual_runner_entry",
+      "geometry_source": "manual_runner_entry",
+      "manual_selection": {
+        "apple_number": 9,
+        "spur_angle_deg": 90,
+        "spur_length": "long",
+        "spur_length_level": 2,
+        "spur_stiffness": 2,
+        "spur_stiffness_label": "high",
+        "stem_angle_deg": 45
+      },
+      "name": "apple 9 spur high long stem 45 spur 90",
+      "notes": "Manual structure entry for apple #9 with spur stiffness=high, spur length=long, stem angle=45, spur angle=90.",
+      "parts": {
+        "apple": {
+          "apple_number": 9,
+          "connection_rpy_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1081.8,
+          "length_m": 0.07,
+          "manual_selection": true,
+          "radius_m": 0.04,
+          "shape": "sphere"
+        },
+        "primary": {
+          "density_kg_m3": 660,
+          "length_m": 0.827,
+          "radius_m": 0.0125,
+          "shape": "cylinder"
+        },
+        "spur": {
+          "connection_rpy_deg": [
+            0.0,
+            90.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 0,
+          "length_m": 0.12,
+          "manual_selection": true,
+          "manual_spur_angle_deg": 90,
+          "mass_kg": 0.029,
+          "radius_m": 0.0059,
+          "shape": "cylinder",
+          "stiffness_label": "high",
+          "stiffness_level": 2
+        },
+        "stem": {
+          "connection_rpy_deg": [
+            0.0,
+            45.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1000,
+          "length_m": 0.013,
+          "manual_selection": true,
+          "manual_stem_angle_deg": 45,
+          "radius_m": 0.0005,
+          "shape": "cylinder"
+        }
+      }
+    },
+    {
+      "angles_source": "manual_runner_entry",
+      "geometry_source": "manual_runner_entry",
+      "manual_selection": {
+        "apple_number": 2,
+        "spur_angle_deg": 90,
+        "spur_length": "medium",
+        "spur_length_level": 1,
+        "spur_stiffness": 0,
+        "spur_stiffness_label": "low",
+        "stem_angle_deg": 30
+      },
+      "name": "apple 2 spur low medium stem 30 spur 90",
+      "notes": "Manual structure entry for apple #2 with spur stiffness=low, spur length=medium, stem angle=30, spur angle=90.",
+      "parts": {
+        "apple": {
+          "apple_number": 2,
+          "connection_rpy_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 820.6,
+          "length_m": 0.07,
+          "manual_selection": true,
+          "radius_m": 0.04,
+          "shape": "sphere"
+        },
+        "primary": {
+          "density_kg_m3": 660,
+          "length_m": 0.827,
+          "radius_m": 0.0125,
+          "shape": "cylinder"
+        },
+        "spur": {
+          "connection_rpy_deg": [
+            0.0,
+            90.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 0,
+          "length_m": 0.1,
+          "manual_selection": true,
+          "manual_spur_angle_deg": 90,
+          "mass_kg": 0.027,
+          "radius_m": 0.0025,
+          "shape": "cylinder",
+          "stiffness_label": "low",
+          "stiffness_level": 0
+        },
+        "stem": {
+          "connection_rpy_deg": [
+            0.0,
+            30.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1000,
+          "length_m": 0.015,
+          "manual_selection": true,
+          "manual_stem_angle_deg": 30,
+          "radius_m": 0.0005,
+          "shape": "cylinder"
+        }
+      }
+    },
+    {
+      "angles_source": "manual_runner_entry",
+      "geometry_source": "manual_runner_entry",
+      "manual_selection": {
+        "apple_number": 9,
+        "spur_angle_deg": 90,
+        "spur_length": "medium",
+        "spur_length_level": 1,
+        "spur_stiffness": 1,
+        "spur_stiffness_label": "medium",
+        "stem_angle_deg": 60
+      },
+      "name": "apple 9 spur medium medium stem 60 spur 90",
+      "notes": "Manual structure entry for apple #9 with spur stiffness=medium, spur length=medium, stem angle=60, spur angle=90.",
+      "parts": {
+        "apple": {
+          "apple_number": 9,
+          "connection_rpy_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1081.8,
+          "length_m": 0.07,
+          "manual_selection": true,
+          "radius_m": 0.04,
+          "shape": "sphere"
+        },
+        "primary": {
+          "density_kg_m3": 660,
+          "length_m": 0.827,
+          "radius_m": 0.0125,
+          "shape": "cylinder"
+        },
+        "spur": {
+          "connection_rpy_deg": [
+            0.0,
+            90.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 0,
+          "length_m": 0.1,
+          "manual_selection": true,
+          "manual_spur_angle_deg": 90,
+          "mass_kg": 0.033,
+          "radius_m": 0.0059,
+          "shape": "cylinder",
+          "stiffness_label": "medium",
+          "stiffness_level": 1
+        },
+        "stem": {
+          "connection_rpy_deg": [
+            0.0,
+            60.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1000,
+          "length_m": 0.013,
+          "manual_selection": true,
+          "manual_stem_angle_deg": 60,
+          "radius_m": 0.0005,
+          "shape": "cylinder"
+        }
+      }
+    },
+    {
+      "angles_source": "manual_runner_entry",
+      "geometry_source": "manual_runner_entry",
+      "manual_selection": {
+        "apple_number": 2,
+        "spur_angle_deg": 90,
+        "spur_length": "medium",
+        "spur_length_level": 1,
+        "spur_stiffness": 2,
+        "spur_stiffness_label": "high",
+        "stem_angle_deg": 45
+      },
+      "name": "apple 2 spur high medium stem 45 spur 90",
+      "notes": "Manual structure entry for apple #2 with spur stiffness=high, spur length=medium, stem angle=45, spur angle=90.",
+      "parts": {
+        "apple": {
+          "apple_number": 2,
+          "connection_rpy_deg": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 820.6,
+          "length_m": 0.07,
+          "manual_selection": true,
+          "radius_m": 0.04,
+          "shape": "sphere"
+        },
+        "primary": {
+          "density_kg_m3": 660,
+          "length_m": 0.827,
+          "radius_m": 0.0125,
+          "shape": "cylinder"
+        },
+        "spur": {
+          "connection_rpy_deg": [
+            0.0,
+            90.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 0,
+          "length_m": 0.1,
+          "manual_selection": true,
+          "manual_spur_angle_deg": 90,
+          "mass_kg": 0.027,
+          "radius_m": 0.0059,
+          "shape": "cylinder",
+          "stiffness_label": "high",
+          "stiffness_level": 2
+        },
+        "stem": {
+          "connection_rpy_deg": [
+            0.0,
+            45.0,
+            0.0
+          ],
+          "connection_source": "manual_selection",
+          "density_kg_m3": 1000,
+          "length_m": 0.015,
+          "manual_selection": true,
+          "manual_stem_angle_deg": 45,
+          "radius_m": 0.0005,
+          "shape": "cylinder"
+        }
+      }
     }
   ]
 }
