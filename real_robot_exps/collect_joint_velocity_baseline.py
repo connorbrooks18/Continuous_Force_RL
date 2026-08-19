@@ -230,7 +230,11 @@ def main() -> None:
     metadata = {}
     if args.metadata:
         metadata = json.loads(args.metadata.read_text(encoding="utf-8"))
+    from real_robot_exps.gripper_test import GripperClient
+    gc = GripperClient()
+    gc.send_request(True)
     collect_baseline(args.actual_robot, args.output, args.config, metadata=metadata)
+    gc.send_request(False)
 
 
 if __name__ == "__main__":
