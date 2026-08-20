@@ -1610,7 +1610,7 @@ def main():
 
     # arbitrarily chosen 'home'
     home_rot = np.array([[-1, 0, 0.0], [0.0, 0.0, 1.0], [0, 1, 0]])
-    home_pos = np.array([0.01, 0.59, 0.42])
+    home_pos = np.array([0.01, 0.59, 0.40])
     home_pose_4x4 = make_ee_target_pose_from_matrix(home_pos, home_rot)
 
     apple_rot = np.array([
