@@ -110,15 +110,15 @@ def load_start_pose(metadata: dict, actual_robot_path: Path) -> np.ndarray:
 def _force_in_sim_frame(pose_flat: np.ndarray, force_base: np.ndarray) -> np.ndarray:
     pose_flat = np.asarray(pose_flat, dtype=np.float64)
     force_base = np.asarray(force_base, dtype=np.float64)
-    rotation = np.asarray([
-        [pose_flat[0], pose_flat[4], pose_flat[8]],
-        [pose_flat[1], pose_flat[5], pose_flat[9]],
-        [pose_flat[2], pose_flat[6], pose_flat[10]],
-    ])
-    force_body = np.zeros(6, dtype=np.float64)
-    force_body[:3] = rotation.T @ force_base[:3]
-    force_body[3:] = rotation.T @ force_base[3:]
-    return -force_body
+    # rotation = np.asarray([
+    #     [pose_flat[0], pose_flat[4], pose_flat[8]],
+    #     [pose_flat[1], pose_flat[5], pose_flat[9]],
+    #     [pose_flat[2], pose_flat[6], pose_flat[10]],
+    # ])
+    # force_body = np.zeros(6, dtype=np.float64)
+    # force_body[:3] = rotation.T @ force_base[:3]
+    # force_body[3:] = rotation.T @ force_base[3:]
+    return -force_base
 
 
 def collect_baseline(

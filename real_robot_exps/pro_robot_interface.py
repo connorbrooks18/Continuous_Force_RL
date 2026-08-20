@@ -151,10 +151,10 @@ def _build_snapshot_from_shm(state_shm, device):
     # so R from O_T_EE = F_T_NE directly represents the sim body orientation.
     # R^T rotates base -> body. Negation flips robot-on-env to env-on-robot.
     ft_base = torch.tensor(ft_ema, device=device, dtype=torch.float32)
-    ft_body = torch.zeros(6, device=device, dtype=torch.float32)
-    ft_body[:3] = R.T @ ft_base[:3]
-    ft_body[3:6] = R.T @ ft_base[3:6]
-    force_torque = -ft_body
+    # ft_body = torch.zeros(6, device=device, dtype=torch.float32)
+    # ft_body[:3] = R.T @ ft_base[:3]
+    # ft_body[3:6] = R.T @ ft_base[3:6]
+    force_torque = -ft_base
 
     return StateSnapshot(
         ee_pos, ee_quat, ee_linvel, ee_angvel, force_torque,
@@ -420,7 +420,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
 
                         # Capture raw F/T (write to numpy BEFORE bias subtraction)
                         # O_F_ext_hat_K base frame. ref: https://frankarobotics.github.io/libfranka/0.15.0/structfranka_1_1RobotState.html#a5a830b4f9d6a3c2dc92e4a9cc6050493
-                        ft_raw = list(state.O_F_ext_hat_K)
+                        ft_raw = list(state.K_F_ext_hat_K)
                         ft = ft_raw.copy()
                         # Subtract F/T bias from raw reading, then EMA filter
                         if ft_bias is not None:
@@ -547,7 +547,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                             replay_position += replay_rate_hz / 1000.0
                         _step_velocity(target_dq)
                         ctrl.writeOnce(plf.JointVelocities(dq_cmd))
-                        ft_raw = list(state.O_F_ext_hat_K)
+                        ft_raw = list(state.K_F_ext_hat_K)
                         ft = ft_raw.copy()
                         if ft_bias is not None:
                             ft = [value - bias for value, bias in zip(ft, ft_bias)]
