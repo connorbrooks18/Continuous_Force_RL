@@ -28,7 +28,7 @@ if str(AT_TRACKING_ROOT) not in sys.path:
 import Tracker  # noqa: E402
 
 from real_robot_exps.frame_transforms import transform_pose_to_base
-from real_robot_exps.static_constants import CAMERA_TO_BASE_4X4_DEFAULT
+from real_robot_exps.static_constants import CAMERA_TO_BASE_4X4_DEFAULT, CLIP_TAGS, clip_tag_offset
 
 
 TAG_SIZE_M = 0.0170
@@ -73,17 +73,11 @@ def _tracker_set() -> list[Any]:
         {"pos": [0, 0.0, 0.11], "rot": [[-0.7071, 0, -0.7071], [0, 1, 0], [0.7071, 0, -0.7071]]},
         {"pos": [0.085, 0.00, 0.0], "rot": [[0.7071, 0, -0.7071], [0, 1, 0], [0.7071, 0, 0.7071]]},
     ]
-    spur_offsets = [
-        {"pos": [0.0, 0.01, 0.03], "rot": np.eye(3)},
-        {"pos": [0.0, 0.01, 0.03], "rot": [[0, 0, -1], [0, 1, 0], [1, 0, 0]]},
-        {"pos": [0.0, 0.01, 0.03], "rot": [[0, 0, 1], [0, 1, 0], [-1, 0, 0]]},
+    clip_trackers = [
+        Tracker.Tracker(name, ids=(CLIP_TAGS[name]["id"],), id_offsets=[clip_tag_offset(name)])
+        for name in ("Branch", "Spur")
     ]
-    branch_offsets = [{"pos": [0, -0.03, 0.03], "rot": np.eye(3)}]
-    return [
-        Tracker.Tracker("Branch", ids=(2,), id_offsets=branch_offsets),
-        Tracker.Tracker("Spur", ids=(3, 4, 5), id_offsets=spur_offsets),
-        Tracker.Tracker("Apple", ids=(7, 0), id_offsets=apple_offsets),
-    ]
+    return clip_trackers + [Tracker.Tracker("Apple", ids=(7, 0), id_offsets=apple_offsets)]
 
 
 def _init_camera(camera_fps: int, width: int, height: int, exposure: int):
@@ -118,7 +112,7 @@ def _detect_valid_tags(detector, frame, camera_params, decision_margin: float):
         camera_params=camera_params,
         tag_size=TAG_SIZE_M,
     )
-    allowed = {0, 1, 2, 3, 4, 5, 7}
+    allowed = {0, 1, 7} | {clip["id"] for clip in CLIP_TAGS.values()}
     return {
         tag.tag_id: tag
         for tag in tags

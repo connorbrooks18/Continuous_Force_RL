@@ -16,3 +16,21 @@ CAMERA_TO_BASE_4X4_DEFAULT = np.array([
 
 # Backward-compatible alias for older code paths and metadata fields.
 REFERENCE_TAG_TO_BASE_4X4_DEFAULT = CAMERA_TO_BASE_4X4_DEFAULT
+
+# Single-tag clothespin mounts. The part position is the tag pose chained with a
+# fixed translation in the tag frame: p_part = t_tag + R_tag @ (clip_length_m * clip_dir).
+# pupil_apriltags tag frame: +x right, +y down (as printed), +z into the tag.
+# clip_length_m: tag center -> part point (e.g. branch centerline), measured along the clip.
+# clip_dir: direction the clip runs from the tag center, in the tag frame.
+CLIP_TAGS = {
+    "Branch": {"id": 2, "clip_length_m": 0.05, "clip_dir": (0.0, 1.0, 0.0)},
+    "Spur": {"id": 3, "clip_length_m": 0.05, "clip_dir": (0.0, 1.0, 0.0)},
+}
+
+
+def clip_tag_offset(name: str) -> dict:
+    """Tracker id_offsets entry for a clip-mounted tag: pure translation, identity rotation."""
+    clip = CLIP_TAGS[name]
+    direction = np.asarray(clip["clip_dir"], dtype=np.float64)
+    direction = direction / np.linalg.norm(direction)
+    return {"pos": (clip["clip_length_m"] * direction).tolist(), "rot": np.eye(3)}
