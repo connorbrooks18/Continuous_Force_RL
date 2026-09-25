@@ -984,6 +984,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--session", required=True, help="Session name, e.g. 2026-10-02_orchardA")
     parser.add_argument("--data-root", default="~/field_data")
     parser.add_argument("--apple", default=None, help="Resume/run a specific apple id, e.g. A003")
+    parser.add_argument("--redo", action="append", default=[], choices=STEPS, metavar="STEP",
+                        help=f"With --apple: mark STEP pending again so it is re-run ({', '.join(STEPS)})")
     parser.add_argument("--list", action="store_true", help="List the session's apples and their step status")
     parser.add_argument("--compile", metavar="APPLE|all", default=None, help="Offline: compile an apple (or all)")
     parser.add_argument("--overwrite", action="store_true", help="With --compile: recompile existing outputs")
@@ -1015,6 +1017,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> None:
     args = build_parser().parse_args(argv)
     field = FieldSession(args)
+    if args.redo:
+        if not args.apple or args.apple not in field.session.apple_ids():
+            raise SystemExit("--redo needs --apple with an existing apple id")
+        apple = Apple(field.session, args.apple)
+        for step in args.redo:
+            apple.mark(step, "pending", reason="--redo")
+            print(f"{args.apple}: {step} will be re-run")
     if args.list:
         field.list_apples()
         return
