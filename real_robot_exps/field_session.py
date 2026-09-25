@@ -467,6 +467,24 @@ class FieldSession:
         return overrides
 
     # --- detector -------------------------------------------------------------
+    def check_ee(self, apple: Apple, profile: str, step: str) -> None:
+        """Refuse to continue until Desk's active end effector is ``profile`` (board/gripper)."""
+        if self.settings.get("mock") or self.args.no_ee_check:
+            return
+        from real_robot_exps.ee_profiles import require_profile
+        from real_robot_exps.field_config import apply_overrides
+
+        config = yaml.safe_load((apple.dir / "config" / "robot_config.yaml").read_text(encoding="utf-8"))
+        apply_overrides(config, self.overrides())
+        result = require_profile(
+            profile, config=config, ask=self.console.ask, say=self.console.say,
+            profiles_path=Path(self.args.ee_profiles),
+        )
+        apple.data.setdefault("ee_checks", {})[step] = {"expected": profile, "utc": now_utc(), **result}
+        apple.save()
+        if result.get("skipped"):
+            apple.log(f"end-effector check for '{profile}' skipped by operator at {step}")
+
     def start_detector(self, apple: Apple) -> None:
         if self.detector is not None and self.detector.alive():
             return
@@ -562,7 +580,8 @@ class FieldSession:
                 c.say(f"!! The live view did not start; see {apple.dir / 'log.txt'} (camera_view).")
             c.enter("Camera aimed (this closes the live view)")
             view.stop()
-        c.enter("Mount the ChArUco board on the arm (Franka Desk: board end-effector settings).")
+        c.enter("Mount the ChArUco board on the arm and select the 'board' end effector in Desk")
+        self.check_ee(apple, "board", "calibrate")
 
         while True:
             launch = Proc(
@@ -658,7 +677,8 @@ class FieldSession:
 
     def step_tool_and_tags(self, apple: Apple) -> None:
         c = self.console
-        c.enter("Remove the ChArUco board and mount the gripper (Franka Desk: gripper end-effector settings)")
+        c.enter("Remove the ChArUco board, mount the gripper and select the 'gripper' end effector in Desk")
+        self.check_ee(apple, "gripper", "tool_and_tags")
         from real_robot_exps.gripper_test import GripperClient
 
         c.say("Checking the gripper service...")
@@ -698,6 +718,7 @@ class FieldSession:
 
     def step_grasp(self, apple: Apple) -> None:
         c = self.console
+        self.check_ee(apple, "gripper", "grasp")
         self.start_detector(apple)
         c.say("Put the robot in hand-guiding mode and bring the open gripper around the apple.")
         c.enter("Gripper positioned around the apple; hands off the arm")
@@ -762,6 +783,7 @@ class FieldSession:
             c.say(f"Already recorded: {sorted(done)}")
         if not c.yes("The apple is held. Start the pulls?", default=True):
             raise RuntimeError("pulls not started by operator")
+        self.check_ee(apple, "gripper", "pulls")
         self.start_detector(apple)
         plan = self._pull_plan(apple, remaining)
         plan_path = apple.dir / "pulls" / f"pull_plan_{len(list((apple.dir / 'pulls').glob('pull_plan_*.json'))):02d}.json"
@@ -803,6 +825,7 @@ class FieldSession:
         c.say("The baseline replays every pull with nothing held. The gripper closes empty")
         c.say("at the grasp pose, so the apple must be out of the gripper's path.")
         c.enter("Gripper open and clear of the apple (cut it or move it aside)")
+        self.check_ee(apple, "gripper", "baseline")
         for d, files in robots:
             if files["baseline"].exists():
                 continue
@@ -1011,6 +1034,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock-gripper", action="store_true")
     parser.add_argument("--skip-calibration", action="store_true", help="Use the static camera matrix")
     parser.add_argument("--no-detector", action="store_true", help="Run without the camera (no snapshots/tracking)")
+    parser.add_argument("--ee-profiles", default=str(REPO_ROOT / "real_robot_exps" / "ee_profiles.yaml"),
+                        help="Captured Desk end-effector profiles (board/gripper), see ee_profiles.py")
+    parser.add_argument("--no-ee-check", action="store_true", help="Do not check Desk's active end effector")
     return parser
 
 

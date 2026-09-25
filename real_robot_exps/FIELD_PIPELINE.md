@@ -35,6 +35,15 @@ stored in `session.json`, so every apple in a session is collected the same way.
 | 7 | baseline | move the apple out of the gripper's path (cut it or hold it aside) → Enter | replays every pull from the recorded start joint angles with the gripper closed on nothing |
 | 8 | measurements | enter apple diameter/height/mass, stem, spur and branch dimensions (and masses if weighed) | checks ranges, repeats the values back, computes radii and densities → `parts` |
 
+**Desk end-effector check.** Desk's end-effector profiles (EE offset, mass, CoM,
+inertia) can't be switched from code: no FCI or documented Desk API call does it.
+So you switch them in Desk, and the session checks them. Before calibrating it
+requires the `board` profile. After the tool swap, and before the grasp, pulls
+and baseline, it requires the `gripper` profile. It compares the live `RobotState`
+values (`F_T_NE`, `m_ee`, `F_x_Cee`) against `ee_profiles.yaml` and won't
+continue until they match. `s` skips the check, and the skip is recorded in
+`apple.json` (`ee_checks`). `--no-ee-check` turns the check off.
+
 A step that fails offers **retry / skip / quit**. The status is stored in
 `apple.json`, so quitting and re-running resumes at the first unfinished step.
 If the pull series aborts, the gripper is opened, the finished directions are
@@ -87,7 +96,12 @@ each tracking file (`camera_to_base_4x4_used`), and compile reads it from there.
 - [ ] `colcon build` the `easy_handeye2` packages in `~/connor/franka_ros2_ws`; `ros2 launch easy_handeye2_charuco charuco_view.launch.py` shows the board.
 - [ ] Commit the `at-tracking` changes, and set `tracking_config.yaml` sizes to the **measured** printed tag size.
 - [ ] The gripper service (`gripper_grab`) node starts on the field laptop.
-- [ ] Franka Desk has end-effector settings for both the board and the gripper.
+- [ ] Franka Desk has end-effector profiles for both the board and the gripper. Capture
+      each one once (with that profile selected in Desk, nothing else controlling the robot):
+      `python -m real_robot_exps.ee_profiles capture --name board`, then `--name gripper`
+      (writes `real_robot_exps/ee_profiles.yaml`; commit it). `... ee_profiles show` prints
+      which one is active. If you skip this, the session captures them the first time it
+      needs them.
 - [ ] Mock rehearsal: `python -m real_robot_exps.field_session --session rehearsal --mock --skip-calibration --no-detector --stops 2 --settle 1`.
 - [ ] Lab rehearsal with the real robot, camera and one apple (2 directions). Check:
   - the pull step prints `gripper TCP to apple tag … OK` when it starts;
@@ -106,6 +120,7 @@ field_session.py
 ├─ field_tf_lookup.py            camera_link → optical transform (run with /usr/bin/python3)
 ├─ calibrate_camera_to_base.py   _load_handeye_calibration (.calib → 4x4)
 ├─ gripper_test.py               GripperClient (ROS service gripper_grab)
+├─ ee_profiles.py (+ ee_profiles.yaml)  checks the active Desk end effector (board/gripper)
 ├─ at-tracking/Detecting.py      steps 4–6: tracking + snapshot requests
 │    ├─ snapshot_requests.py, tracking_config.py (+ tracking_config.yaml), Tracker.py
 │    └─ DataCollector.py, annotate.py, real_robot_exps/frame_transforms.py
