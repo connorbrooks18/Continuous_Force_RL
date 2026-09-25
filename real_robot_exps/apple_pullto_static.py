@@ -225,15 +225,14 @@ def _capture_camera_snapshot(*, request_path: str | None = None, output_path: st
 
 
 def _select_pre_grasp_snapshot(pre_grasp_geometry: dict) -> tuple[dict, str | None]:
-    """Pick the best pre-grasp snapshot for dynamic pull staging.
+    """Pick the pre-grasp snapshot for dynamic pull staging.
 
-    Settled / under-gravity snapshots are preferred because they reflect the
-    relaxed apple pose we want to line the robot up against. Older cached
-    metadata may only have a lengthened snapshot, so we keep that as a legacy
-    fallback instead of hard-failing.
+    The under-gravity snapshot is preferred because it reflects the relaxed
+    apple pose we want to line the robot up against; the lengthened snapshot is
+    the fallback.
     """
     pre = dict(pre_grasp_geometry or {})
-    for key in ("settled_snapshot", "under_gravity_snapshot", "lengthened_snapshot", "snapshot"):
+    for key in ("under_gravity_snapshot", "lengthened_snapshot"):
         snapshot = dict(pre.get(key, {}) or {})
         if snapshot:
             return snapshot, key
@@ -273,8 +272,7 @@ def _load_dynamic_pull_start_pose(
     pose[:3, :3] = staged_rot
     surface_pose = _pose_4x4_with_translation(np.eye(4, dtype=np.float64), surface_pos)
     surface_pose[:3, :3] = surface_rot
-    source_name = "settled_snapshot" if snapshot_source in {"settled_snapshot", "under_gravity_snapshot"} else "lengthened_snapshot"
-    return pose, f"{source_name}_apple_surface_pose", apple_radius_m, surface_pose
+    return pose, f"{snapshot_source}_apple_surface_pose", apple_radius_m, surface_pose
 
 
 def _load_baseline_front_of_apple_pose(
@@ -298,8 +296,7 @@ def _load_baseline_front_of_apple_pose(
     apple_center = np.asarray(apple_pos_flat, dtype=np.float64).reshape(3)
     offset = np.array([0.0, -float(apple_radius_m), 0.0], dtype=np.float64)
     pose = _pose_4x4_with_translation(fallback_pose_4x4, apple_center + offset)
-    source_name = "settled_snapshot" if snapshot_source in {"settled_snapshot", "under_gravity_snapshot"} else "lengthened_snapshot"
-    return pose, f"{source_name}_front_of_apple_pose", float(apple_radius_m), pose
+    return pose, f"{snapshot_source}_front_of_apple_pose", float(apple_radius_m), pose
 
 
 def _metadata_entry(metadata: dict) -> dict:
@@ -971,25 +968,9 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
     pull_start_snapshot["setup_mode"] = "manual" if manual_setup_enabled else "dynamic"
     pull_start_snapshot["manual_setup_enabled"] = manual_setup_enabled
     pull_start_snapshot["pull_start_pose_name"] = str(run_args.get("pull_start_pose_name", "unspecified"))
-    # `snapshot` is the compatibility field for the camera's lengthened state.
-    # The manual TCP setup snapshot must never replace it.
-    pre_geometry = dict(pre_grasp_geometry or {})
-    lengthened_snapshot = dict(
-        pre_geometry.get("snapshot", {})
-        or pre_geometry.get("lengthened_snapshot", {})
-        or pre_geometry.get("settled_snapshot", {})
-        or {}
-    )
     if bool(run_args.get("debug_pre_grasp", False)):
-        settled = dict(pre_grasp_geometry or {})
-        settled_snapshot = dict(
-            settled.get("settled_snapshot", {})
-            or settled.get("under_gravity_snapshot", {})
-            or settled.get("lengthened_snapshot", {})
-            or settled.get("snapshot", {})
-            or {}
-        )
-        apple_pos = settled_snapshot.get("apple_pos")
+        debug_snapshot, _ = _select_pre_grasp_snapshot(pre_grasp_geometry or {})
+        apple_pos = debug_snapshot.get("apple_pos")
         pull_start_target_pos = np.asarray(pull_start_pose_4x4[:3, 3], dtype=np.float64)
         tcp_pos = np.asarray(pull_start_snapshot["tcp_pos"], dtype=np.float64)
         print("\n[settled pre-grasp debug]")
@@ -1102,7 +1083,7 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
             request_path=run_args.get("post_grasp_camera_request"),
             output_path=run_args.get("post_grasp_camera_output"),
         )
-        post_grasp_geometry["snapshot"] = post_grasp_camera_snapshot
+        post_grasp_geometry["camera_snapshot"] = post_grasp_camera_snapshot
         post_grasp_geometry["robot_snapshot"] = robot_post_grasp_geometry
         post_grasp_geometry["camera_snapshot_source"] = "post_grasp_camera_capture"
         post_grasp_geometry["setup_mode"] = "manual" if manual_setup_enabled else "dynamic"
@@ -1341,12 +1322,6 @@ def pull_test(theta, phi, robot: FrankaInterface, pull_start_pose_4x4, pull_surf
         },
         "pre_grasp_geometry": {
             **(pre_grasp_geometry or {}),
-            "snapshot": dict(
-                pre_geometry.get("snapshot", {})
-                or pre_geometry.get("lengthened_snapshot", {})
-                or pre_geometry.get("settled_snapshot", {})
-                or {}
-            ),
             "pull_start_pose_name": str(run_args.get("pull_start_pose_name", "unspecified")),
             "pull_surface_pose_name": str(run_args.get("pull_surface_pose_name", "unspecified")),
             "robot_snapshot": pull_start_snapshot,
@@ -1475,11 +1450,7 @@ def main():
     parser.add_argument("--direction-index", type=int, default=0, help="Zero-based direction index for one-hot encoding")
     parser.add_argument("--num-directions", type=int, default=1, help="Width of the direction one-hot vector")
     parser.add_argument("--robot-output", default=None, help="Raw robot Parquet output path")
-    parser.add_argument("--tracking", default=None, help="Existing raw camera Parquet to compile after the robot run")
-    parser.add_argument("--camera-frames", type=int, default=5, help="Camera frames per hold when compiling")
-    parser.add_argument("--max-camera-delta", type=float, default=1.0, help="Maximum camera/robot timestamp difference when compiling")
     parser.add_argument("--baseline-path", default=None, help="Explicit dynamic baseline Parquet path to use in collect mode")
-    parser.add_argument("--unified-output", default=None, help="Compiled unified Parquet output path")
     parser.add_argument("--run-metadata-file", default=None, help="Optional JSON file containing structure/direction metadata to embed in the run output")
     parser.add_argument("--only-metadata", action=argparse.BooleanOptionalAction, default=False, help="Capture pre/post-grasp reconstruction metadata only; skip baseline correction and pull trajectory")
     parser.add_argument("--manual-setup", action=argparse.BooleanOptionalAction, default=False, help="Pause without torque mode so the arm can be manually positioned on the apple surface before the pull")
@@ -1729,7 +1700,6 @@ def main():
 
     unified_result = None
     try:
-        print(args.skip_enter)
         _prompt_or_continue(f"Press Enter to begin apple pull {mode} run...", bool(args.skip_enter))
 
         gains = update_gains(gains, [kp, kp, kp, 30, 30, 30], device)
@@ -1779,32 +1749,8 @@ def main():
         robot.shutdown()
         gc.terminate()
 
-    if unified_result is not None and args.tracking and not is_baseline:
-        try:
-            from real_robot_exps.compile_static_sysid import compile_static_episode
-            from real_robot_exps.viz_static_sysid import _load_plot_data, plot_static_sysid
-            import matplotlib.pyplot as plt
-
-            unified_output = args.unified_output or f"pull_theta{theta:.2f}_phi{phi:.2f}_unified.parquet"
-            unified_path = compile_static_episode(
-                unified_result["robot_path"],
-                args.tracking,
-                unified_output,
-                camera_frame_count=args.camera_frames,
-                max_camera_delta_s=args.max_camera_delta,
-                command_argv=sys.argv,
-            )
-            print(f"Wrote unified system-ID data to {unified_path}")
-            viz_data = _load_plot_data(unified_path)
-            fig = plot_static_sysid(viz_data, title=f"Unified system-ID viewer: {unified_path.name}")
-            try:
-                plt.show()
-            except BaseException as exc:
-                fallback_png = unified_path.with_suffix(".png")
-                fig.savefig(fallback_png, dpi=200)
-                print(f"Matplotlib GUI unavailable ({exc}); saved visualization to {fallback_png}")
-        except BaseException as exc:
-            print(f"Could not compile/open unified parquet visualizer: {exc}")
+    # Compilation is offline: run compile_static_sysid (or field_session --compile)
+    # after the baseline has been collected and the parts measured.
 
 if __name__ == "__main__":
     main()

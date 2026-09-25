@@ -44,8 +44,6 @@ class MetadataCacheTest(unittest.TestCase):
                     "connection_source": "lengthened_snapshot",
                 },
             },
-            "snapshot": {"apple_pos": [1.0, 2.0, 3.0]},
-            "settled_snapshot": {},
             "under_gravity_snapshot": {},
             "lengthened_snapshot": {"apple_pos": [1.0, 2.0, 3.0]},
         }
@@ -104,8 +102,6 @@ class MetadataCacheTest(unittest.TestCase):
                     "connection_source": "catalog",
                 },
             },
-            "snapshot": {},
-            "settled_snapshot": {},
             "under_gravity_snapshot": {},
             "lengthened_snapshot": {},
         }

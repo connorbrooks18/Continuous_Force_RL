@@ -48,7 +48,7 @@ class DynamicBaselineTest(unittest.TestCase):
             "robot_start_pose_4x4": np.eye(4, dtype=np.float64).tolist(),
             "dump": {"robot_info": {"kp": 100.0}},
             "pre_grasp_geometry": {
-                "snapshot": {"apple_pos": [0.10, 0.20, 0.30]},
+                "lengthened_snapshot": {"apple_pos": [0.10, 0.20, 0.30]},
                 "structure_index": 0,
                 "structure_name": "structure_a",
             },
@@ -63,7 +63,7 @@ class DynamicBaselineTest(unittest.TestCase):
             "robot_start_pose_4x4": (np.eye(4, dtype=np.float64) * 2.0).tolist(),
             "dump": {"robot_info": {"kp": 100.0}},
             "pre_grasp_geometry": {
-                "snapshot": {"apple_pos": [0.10, 0.20, 0.30]},
+                "lengthened_snapshot": {"apple_pos": [0.10, 0.20, 0.30]},
                 "structure_index": 99,
                 "structure_name": "structure_b",
             },
@@ -104,7 +104,7 @@ class DynamicBaselineTest(unittest.TestCase):
         run_metadata = {
             "pre_grasp_geometry": {
                 "parts": {"apple": {"radius_m": 0.035}},
-                "settled_snapshot": {"apple_pos": [0.4, 0.5, 0.6]},
+                "under_gravity_snapshot": {"apple_pos": [0.4, 0.5, 0.6]},
             }
         }
 
@@ -113,7 +113,7 @@ class DynamicBaselineTest(unittest.TestCase):
         np.testing.assert_allclose(pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
         np.testing.assert_allclose(surface_pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
         np.testing.assert_allclose(pose[:3, :3], fallback[:3, :3])
-        self.assertEqual(name, "settled_snapshot_front_of_apple_pose")
+        self.assertEqual(name, "under_gravity_snapshot_front_of_apple_pose")
         self.assertEqual(radius_m, 0.035)
 
 

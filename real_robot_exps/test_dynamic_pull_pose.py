@@ -16,7 +16,7 @@ from real_robot_exps.apple_pullto_static import (
 
 
 class DynamicPullPoseTest(unittest.TestCase):
-    def test_uses_settled_snapshot_and_apple_radius_from_structure_metadata(self):
+    def test_uses_under_gravity_snapshot_and_apple_radius_from_structure_metadata(self):
         fallback = np.eye(4, dtype=np.float64)
         fallback[:3, 3] = np.array([1.0, 2.0, 3.0], dtype=np.float64)
         fallback[:3, :3] = np.array([
@@ -31,7 +31,7 @@ class DynamicPullPoseTest(unittest.TestCase):
                         "radius_m": 0.035,
                     }
                 },
-                "settled_snapshot": {
+                "under_gravity_snapshot": {
                     "apple_pos": [0.4, 0.5, 0.6],
                 },
             }
@@ -50,13 +50,13 @@ class DynamicPullPoseTest(unittest.TestCase):
             phi=2.75,
         )
 
-        np.testing.assert_allclose(pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
-        np.testing.assert_allclose(surface_pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
+        np.testing.assert_allclose(pose[:3, 3], np.array([0.4, 0.455, 0.6], dtype=np.float64))
+        np.testing.assert_allclose(surface_pose[:3, 3], np.array([0.4, 0.455, 0.6], dtype=np.float64))
         np.testing.assert_allclose(pose_alt[:3, 3], pose[:3, 3])
         np.testing.assert_allclose(surface_pose_alt[:3, 3], surface_pose[:3, 3])
         np.testing.assert_allclose(pose[:3, :3], fallback[:3, :3])
         np.testing.assert_allclose(surface_pose[:3, :3], fallback[:3, :3])
-        self.assertEqual(name, "settled_snapshot_apple_surface_pose")
+        self.assertEqual(name, "under_gravity_snapshot_apple_surface_pose")
         self.assertEqual(radius_m, 0.035)
 
     def test_legacy_lengthened_snapshot_is_still_accepted(self):
@@ -88,8 +88,8 @@ class DynamicPullPoseTest(unittest.TestCase):
             phi=0.3,
         )
 
-        np.testing.assert_allclose(pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
-        np.testing.assert_allclose(surface_pose[:3, 3], np.array([0.4, 0.465, 0.6], dtype=np.float64))
+        np.testing.assert_allclose(pose[:3, 3], np.array([0.4, 0.455, 0.6], dtype=np.float64))
+        np.testing.assert_allclose(surface_pose[:3, 3], np.array([0.4, 0.455, 0.6], dtype=np.float64))
         np.testing.assert_allclose(pose_alt[:3, 3], pose[:3, 3])
         np.testing.assert_allclose(surface_pose_alt[:3, 3], surface_pose[:3, 3])
         np.testing.assert_allclose(pose[:3, :3], fallback[:3, :3])
@@ -123,6 +123,7 @@ class DynamicPullPoseTest(unittest.TestCase):
                     force_torque=torch.zeros(6, dtype=torch.float32),
                     tau_J_d=torch.zeros(7, dtype=torch.float32),
                     joint_pos=torch.zeros(7, dtype=torch.float32),
+                    joint_vel=torch.zeros(7, dtype=torch.float32),
                 )
 
             def refresh_state_snapshot(self):
@@ -178,9 +179,7 @@ class DynamicPullPoseTest(unittest.TestCase):
             "config_path": "real_robot_exps/config.yaml",
         }
         pre_grasp_geometry = {
-            "snapshot": {},
             "lengthened_snapshot": {},
-            "settled_snapshot": {},
             "parts": {"apple": {"radius_m": 0.035}},
         }
 

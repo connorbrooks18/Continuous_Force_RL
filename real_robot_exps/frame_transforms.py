@@ -30,6 +30,23 @@ def transform_pose_to_base(
     return camera_to_base @ pose_dict_to_transform(pose)
 
 
+def load_camera_to_base(path) -> np.ndarray:
+    """Read a camera(optical)->base 4x4 from JSON: a bare 4x4 list or {"camera_to_base_4x4": ...}."""
+    import json
+    from pathlib import Path
+
+    payload = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(payload, dict):
+        payload = payload["camera_to_base_4x4"]
+    matrix = np.asarray(payload, dtype=np.float64)
+    if matrix.shape != (4, 4) or not np.isfinite(matrix).all():
+        raise ValueError(f"{path}: expected a finite 4x4 camera_to_base matrix")
+    rotation_error = float(np.abs(matrix[:3, :3].T @ matrix[:3, :3] - np.eye(3)).max())
+    if rotation_error > 1e-3 or np.linalg.det(matrix[:3, :3]) < 0.0:
+        raise ValueError(f"{path}: camera_to_base rotation is not a proper rotation")
+    return matrix
+
+
 def median_pose_4x4(samples: list[np.ndarray]) -> np.ndarray | None:
     """Return a robust 4x4 pose estimate from a list of homogeneous transforms."""
     if not samples:

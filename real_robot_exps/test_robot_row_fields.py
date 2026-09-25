@@ -13,6 +13,7 @@ class RobotRowFieldTest(unittest.TestCase):
             force_torque=torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0, 6.0], dtype=torch.float32),
             tau_J_d=torch.tensor([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7], dtype=torch.float32),
             joint_pos=torch.tensor([0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6], dtype=torch.float32),
+            joint_vel=torch.tensor([0.0, -0.1, 0.2, -0.3, 0.4, -0.5, 0.6], dtype=torch.float32),
             ee_linvel=torch.tensor([0.01, 0.02, 0.03], dtype=torch.float32),
             ee_angvel=torch.tensor([0.04, 0.05, 0.06], dtype=torch.float32),
             ee_pos=torch.tensor([0.4, 0.5, 0.6], dtype=torch.float32),

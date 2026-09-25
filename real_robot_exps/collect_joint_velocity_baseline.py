@@ -128,11 +128,15 @@ def collect_baseline(
     *,
     device: str = "cpu",
     metadata: dict | None = None,
+    gripper_state: str = "closed",
 ) -> Path:
     actual_robot_path = Path(actual_robot_path)
     output_path = Path(output_path)
     with Path(config_path).open("r", encoding="utf-8") as stream:
         config = yaml.safe_load(stream)
+    extra_metadata = metadata
+    # The baseline file carries the actual run's metadata (theta/phi, structure,
+    # ...) so downstream tools can match baselines to runs by metadata alone.
     metadata = load_episode_metadata(actual_robot_path)
     actual_rows, source_velocities, source_timestamps = load_joint_velocity_frames(actual_robot_path)
     replay_rows, velocities, replay_timestamps = resample_joint_velocity_frames(
@@ -143,11 +147,19 @@ def collect_baseline(
     )
     start_pose_4x4 = load_start_pose(metadata, actual_robot_path)
 
+    start_joint_pos = metadata.get("robot_start_joint_pos")
     robot = FrankaInterface(config, device=device)
     trajectory = None
     try:
-        print(f"Resetting baseline run to recorded start pose from {actual_robot_path.name}...")
-        robot.reset_to_start_pose(start_pose_4x4)
+        if start_joint_pos is not None and len(start_joint_pos) == 7:
+            # Same joint configuration as the actual run, so replaying its joint
+            # velocities retraces the same Cartesian path (a Cartesian reset can
+            # land in a different elbow configuration).
+            print(f"Moving baseline run to recorded start joints from {actual_robot_path.name}...")
+            robot.move_to_joint_positions(np.asarray(start_joint_pos, dtype=np.float64), duration_sec=5.0)
+        else:
+            print(f"Resetting baseline run to recorded start pose from {actual_robot_path.name}...")
+            robot.reset_to_start_pose(start_pose_4x4)
         replay_rate_hz = float(config["robot"].get("control_rate_hz", 1000.0))
         print(f"Replaying {len(velocities)} timestamp-interpolated joint-velocity frames at "
               f"{replay_rate_hz:g} Hz...")
@@ -169,9 +181,14 @@ def collect_baseline(
 
     rows = []
     replay_count = len(replay_rows)
-    replay_rate_hz = float(config["robot"].get("control_rate_hz", 1000.0))
+    # Label each robot-side sample with the source row at the same elapsed time
+    # into the replay. Counting samples instead assumes an exact 1 kHz loop and
+    # drifts (truncating the last hold) whenever the loop runs slower.
+    trajectory_t = np.asarray(trajectory["timestamp"], dtype=np.float64)
+    elapsed = trajectory_t - trajectory_t[0]
+    replay_indices = (np.searchsorted(np.asarray(replay_timestamps), elapsed, side="right") - 1).clip(0, replay_count - 1)
     for index, timestamp in enumerate(trajectory["timestamp"]):
-        replay_index = min(int(round(index * replay_rate_hz / 1000.0)), replay_count - 1)
+        replay_index = int(replay_indices[index])
         source = replay_rows[replay_index]
         pose = trajectory["O_T_EE"][index]
         ft_raw = _force_in_sim_frame(pose, trajectory["ft_wrist_raw"][index])
@@ -213,7 +230,10 @@ def collect_baseline(
             "with comm-side jerk limiting"
         ),
         "baseline_start_pose_4x4": np.asarray(start_pose_4x4, dtype=np.float64).tolist(),
+        "baseline_start_method": "joint_positions" if start_joint_pos is not None else "cartesian_reset",
+        "baseline_gripper_state": gripper_state,
         **(metadata or {}),
+        **(extra_metadata or {}),
     }
     save_robot_hold_parquet(rows, output_path, baseline_metadata)
     print(f"Wrote joint-velocity baseline to {output_path}")
@@ -226,15 +246,50 @@ def main() -> None:
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--config", type=Path, default=Path("real_robot_exps/config.yaml"))
     parser.add_argument("--metadata", type=Path)
+    parser.add_argument(
+        "--gripper",
+        choices=("closed", "open"),
+        default="closed",
+        help="Gripper state during the replay; 'closed' matches a run that held the apple",
+    )
+    parser.add_argument("--mock-gripper", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--override", action="append", default=[],
+        help="Config override key.path=value (e.g. robot.use_mock=true)",
+    )
     args = parser.parse_args()
     metadata = {}
     if args.metadata:
         metadata = json.loads(args.metadata.read_text(encoding="utf-8"))
+    config_path = args.config
+    if args.override:
+        config_path = _config_with_overrides(args.config, args.override, args.output)
     from real_robot_exps.gripper_test import GripperClient
-    gc = GripperClient()
-    gc.send_request(True)
-    collect_baseline(args.actual_robot, args.output, args.config, metadata=metadata)
-    gc.send_request(False)
+    gc = GripperClient(mock=bool(args.mock_gripper), timeout_s=30.0)
+    try:
+        if args.gripper == "closed":
+            gc.send_request(True)
+        collect_baseline(
+            args.actual_robot, args.output, config_path,
+            metadata=metadata, gripper_state=args.gripper,
+        )
+    finally:
+        try:
+            gc.send_request(False)
+        finally:
+            gc.terminate()
+
+
+def _config_with_overrides(config_path: Path, overrides: list[str], output: Path) -> Path:
+    from real_robot_exps.field_config import apply_overrides
+
+    with Path(config_path).open("r", encoding="utf-8") as stream:
+        config = yaml.safe_load(stream)
+    apply_overrides(config, overrides)
+    resolved = Path(output).with_suffix(".config.yaml")
+    resolved.parent.mkdir(parents=True, exist_ok=True)
+    resolved.write_text(yaml.safe_dump(config, sort_keys=False), encoding="utf-8")
+    return resolved
 
 
 if __name__ == "__main__":

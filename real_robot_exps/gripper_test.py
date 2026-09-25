@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import sys
+import time
 
 
 class GripperClient:
     """Connect to the gripper service, or act as a no-op mock."""
 
-    def __init__(self, mock: bool = False):
+    def __init__(self, mock: bool = False, timeout_s: float | None = None):
+        """``timeout_s``: give up waiting for the gripper_grab service (None = wait forever)."""
         self._mock = bool(mock)
         self._rclpy = None
         self._node = None
@@ -28,7 +30,14 @@ class GripperClient:
         rclpy.init()
         self._node = Node("gripper_grab_client")
         self._client = self._node.create_client(SetBool, "gripper_grab")
+        deadline = None if timeout_s is None else time.monotonic() + float(timeout_s)
         while not self._client.wait_for_service(timeout_sec=1.0):
+            if deadline is not None and time.monotonic() > deadline:
+                self.terminate()
+                raise TimeoutError(
+                    f"gripper_grab service not available after {timeout_s:.0f} s; "
+                    "is the gripper node running?"
+                )
             self._node.get_logger().info("Service not available, waiting...")
 
     def send_request(self, grab: bool):
@@ -39,7 +48,9 @@ class GripperClient:
         req = self._setbool.Request()
         req.data = grab
         future = self._client.call_async(req)
-        self._rclpy.spin_until_future_complete(self._node, future)
+        self._rclpy.spin_until_future_complete(self._node, future, timeout_sec=15.0)
+        if not future.done():
+            raise TimeoutError(f"gripper_grab({'close' if grab else 'open'}) got no response in 15 s")
         return future.result()
 
     def terminate(self):

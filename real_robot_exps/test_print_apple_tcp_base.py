@@ -26,7 +26,7 @@ class PrintAppleTcpBaseTest(unittest.TestCase):
             metadata = {
                 "schema_name": "real_static_sysid_robot_raw",
                 "pre_grasp_geometry": {
-                    "snapshot": {
+                    "lengthened_snapshot": {
                         "apple_pose_4x4": _pose_4x4(3.0, 4.0, 5.0),
                         "branch_pose_4x4": _pose_4x4(1.0, 2.0, 3.0),
                         "spur_pose_4x4": _pose_4x4(2.0, 3.0, 4.0),
@@ -58,7 +58,7 @@ class PrintAppleTcpBaseTest(unittest.TestCase):
             self.assertIn("Legacy diagnostics:", output)
             self.assertIn("pre_grasp_tcp_apple_distance_m:", output)
             self.assertIn("source: pre_grasp_geometry.robot_snapshot", output)
-            self.assertIn("source: pre_grasp_geometry.snapshot", output)
+            self.assertIn("source: pre_grasp_geometry camera snapshot", output)
             self.assertIn("[6. 7. 8.]", output)
             self.assertIn("[3. 4. 5.]", output)
 

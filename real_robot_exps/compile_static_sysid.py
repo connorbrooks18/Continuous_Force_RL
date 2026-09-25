@@ -31,6 +31,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from real_robot_exps.snapshot_geometry import update_pre_grasp_geometry_with_snapshots
 from real_robot_exps.static_constants import CAMERA_TO_BASE_4X4_DEFAULT
 
 SCHEMA_NAME = "real_static_sysid_episode"
@@ -281,11 +282,106 @@ def _make_transform(pos: np.ndarray, quat_xyzw: np.ndarray) -> np.ndarray:
     return T
 
 
+# Tracker name -> structure part whose measured radius separates the tag (on the
+# surface) from the part's centre (apple) or woody axis (spur, branch).
+TRACKER_PART_NAMES = {"Branch": "primary", "Spur": "spur", "Apple": "apple"}
+# AprilTag pose convention (apriltag_pose / pupil_apriltags): the tag frame's +z
+# points into the tag, away from the camera, i.e. into the object it is stuck on.
+TAG_INTO_SURFACE_SIGN = 1.0
+
+
 def _identity_tracking_geometry(
     positions: dict[str, np.ndarray],
     poses: dict[str, np.ndarray],
 ) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
     return positions, poses
+
+
+def _tag_to_part_geometry(
+    positions: dict[str, np.ndarray],
+    poses: dict[str, np.ndarray],
+    radii_m: dict[str, float] | None,
+    sign: float = TAG_INTO_SURFACE_SIGN,
+) -> tuple[dict[str, np.ndarray], dict[str, np.ndarray]]:
+    """Move each tracked point from the tag on the surface to the part centre/axis.
+
+    ``pos_part = pos_tag + sign * r_part * z_tag`` (tag z in base frame). The
+    rotation is kept, so poses stay tag-aligned. Without radii this is a no-op.
+    """
+    if not radii_m:
+        return positions, poses
+    out_positions: dict[str, np.ndarray] = {}
+    out_poses: dict[str, np.ndarray] = {}
+    for name, pos in positions.items():
+        pose = np.asarray(poses[name], dtype=np.float64).reshape(4, 4).copy()
+        radius = float(radii_m.get(name, 0.0))
+        shifted = np.asarray(pos, dtype=np.float64) + float(sign) * radius * pose[:3, 2]
+        pose[:3, 3] = shifted
+        out_positions[name] = shifted
+        out_poses[name] = pose
+    return out_positions, out_poses
+
+
+def _merge_measured_parts(stored: dict[str, Any], measured: dict[str, Any]) -> dict[str, Any]:
+    """Measured values win; collection-time fields (e.g. connection angles) are kept."""
+    merged = json.loads(json.dumps(stored))
+    for name, values in measured.items():
+        entry = merged.setdefault(name, {})
+        entry.update(values)
+        entry["geometry_source"] = "measured"
+    return merged
+
+
+def _part_radii_from_parts(parts: dict[str, Any]) -> dict[str, float]:
+    radii = {}
+    missing = []
+    for tracker, part in TRACKER_PART_NAMES.items():
+        radius = (parts.get(part) or {}).get("radius_m")
+        if radius is None or not np.isfinite(float(radius)) or float(radius) < 0.0:
+            missing.append(f"{part}.radius_m")
+            continue
+        radii[tracker] = float(radius)
+    if missing:
+        raise ValueError(f"Measured parts are missing {', '.join(missing)}")
+    return radii
+
+
+def _require_zero_tag_offsets(tracking_metadata: dict[str, Any], path: Path) -> None:
+    """The radius shift assumes tag->object offsets are identity-translation."""
+    objects = ((tracking_metadata.get("tracking_config") or {}).get("objects") or {})
+    for name, tags in objects.items():
+        for tag_id, spec in (tags or {}).items():
+            offset = np.asarray(spec.get("offset_4x4"), dtype=np.float64).reshape(4, 4)
+            if np.linalg.norm(offset[:3, 3]) > 1e-9:
+                raise ValueError(
+                    f"{path}: tag {tag_id} of {name} has a non-zero offset in tracking_config; "
+                    "the measured-radius correction would double count it"
+                )
+
+
+def _correct_snapshot(snapshot: dict[str, Any], radii_m: dict[str, float], sign: float) -> dict[str, Any]:
+    """Apply the tag->part shift to a stored snapshot, keeping raw values as *_tag."""
+    if not snapshot or not all(f"{key}_pose_4x4" in snapshot for key in ("apple", "branch", "spur")):
+        return snapshot
+    out = dict(snapshot)
+    positions, poses = {}, {}
+    for tracker in TRACKED_NAMES:
+        key = tracker.lower()
+        pose = np.asarray(snapshot[f"{key}_pose_4x4"], dtype=np.float64).reshape(4, 4)
+        poses[tracker] = pose
+        positions[tracker] = pose[:3, 3].copy()
+        out[f"{key}_pos_tag"] = pose[:3, 3].tolist()
+        out[f"{key}_pose_4x4_tag"] = pose.reshape(-1).tolist()
+    positions, poses = _tag_to_part_geometry(positions, poses, radii_m, sign)
+    for tracker in TRACKED_NAMES:
+        key = tracker.lower()
+        out[f"{key}_pos"] = positions[tracker].tolist()
+        out[f"{key}_pose_4x4"] = poses[tracker].reshape(-1).tolist()
+    starts, ends, _ = _endpoints(positions)
+    out["woody_part_start_pos"] = starts.reshape(-1).tolist()
+    out["woody_part_end_pos"] = ends.reshape(-1).tolist()
+    out["tag_to_part_corrected"] = True
+    return out
 
 
 def _endpoints(positions: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -351,6 +447,10 @@ def _unified_schema(n_holds: int, n_directions: int) -> pa.Schema:
         pa.field("apple_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
         pa.field("branch_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
         pa.field("spur_pose_4x4", vector(16), metadata={b"frame": b"franka_base_o"}),
+        pa.field("apple_pos_tag", vector(3), metadata={b"frame": b"franka_base_o", b"semantics": b"raw tag centre"}),
+        pa.field("apple_pose_4x4_tag", vector(16), metadata={b"frame": b"franka_base_o", b"semantics": b"raw tag pose"}),
+        pa.field("branch_pose_4x4_tag", vector(16), metadata={b"frame": b"franka_base_o", b"semantics": b"raw tag pose"}),
+        pa.field("spur_pose_4x4_tag", vector(16), metadata={b"frame": b"franka_base_o", b"semantics": b"raw tag pose"}),
         pa.field("hold_number", vector(n_holds), metadata={b"encoding": b"one_hot"}),
         pa.field("direction", vector(n_directions), metadata={b"encoding": b"one_hot"}),
         pa.field("phase", pa.int8(), metadata={b"encoding": b"moving=0, hold=1"}),
@@ -421,8 +521,18 @@ def compile_static_episode(
     max_camera_delta_s: float = 1.0,
     camera_ema_alpha: float = 1.0,
     baseline_path: Path | str | None = None,
+    parts: dict[str, Any] | None = None,
+    tag_to_part_sign: float = TAG_INTO_SURFACE_SIGN,
     command_argv: list[str] | None = None,
 ) -> Path:
+    """Align robot rows with camera frames and write one unified episode.
+
+    ``parts`` are the measured structure parts (``primary``/``spur``/``stem``/
+    ``apple`` with ``radius_m`` etc.). When given, they replace the parts stored
+    at collection time, and every tracked tag position is moved by the part
+    radius to the part centre/axis (see ``_tag_to_part_geometry``). Without
+    ``parts`` tag positions are used as recorded (old lab data).
+    """
     robot_path = Path(robot_path)
     tracking_path = Path(tracking_path)
     output_path = Path(output_path)
@@ -509,6 +619,10 @@ def compile_static_episode(
             "source_sha256": _sha256(baseline_path),
         }
     tracking_metadata = _read_dataset_metadata(tracking_path)
+    part_radii = None
+    if parts is not None:
+        _require_zero_tag_offsets(tracking_metadata, tracking_path)
+        part_radii = _part_radii_from_parts(parts)
     _require_tracking_frame_base(tracking_metadata, tracking_path)
     camera_to_base_4x4 = _load_camera_to_base(tracking_metadata, tracking_path)
     camera_frames = _load_tracking_frames(tracking_path)
@@ -533,8 +647,8 @@ def compile_static_episode(
         pose_rows = rest_frames[rest_frames["name"] == name][["qx", "qy", "qz", "qw"]].to_numpy()
         quat = np.median(pose_rows.astype(np.float64), axis=0)
         rest_poses_tag[name] = _make_transform(rest_positions_tag[name], quat)
-    rest_positions, rest_poses = _identity_tracking_geometry(
-        rest_positions_tag, rest_poses_tag
+    rest_positions, rest_poses = _tag_to_part_geometry(
+        rest_positions_tag, rest_poses_tag, part_radii, tag_to_part_sign
     )
     rest_starts, rest_ends, rest_chords = _endpoints(rest_positions)
 
@@ -560,7 +674,7 @@ def compile_static_episode(
             pose_rows = selected[selected["name"] == name][["qx", "qy", "qz", "qw"]].to_numpy()
             quat = np.median(pose_rows.astype(np.float64), axis=0)
             poses_tag[name] = _make_transform(positions_tag[name], quat)
-        positions, poses = _identity_tracking_geometry(positions_tag, poses_tag)
+        positions, poses = _tag_to_part_geometry(positions_tag, poses_tag, part_radii, tag_to_part_sign)
         _, _, chords = _endpoints(positions)
         bending = _chord_deflections(chords, rest_chords)
         selected_timestamps = selected["timestamp"].astype(float).tolist()
@@ -595,7 +709,7 @@ def compile_static_episode(
             pose_rows = selected[selected["name"] == name][["qx", "qy", "qz", "qw"]].to_numpy()
             quat = np.median(pose_rows.astype(np.float64), axis=0)
             poses_tag[name] = _make_transform(positions_tag[name], quat)
-        positions, poses = _identity_tracking_geometry(positions_tag, poses_tag)
+        positions, poses = _tag_to_part_geometry(positions_tag, poses_tag, part_radii, tag_to_part_sign)
         selected_timestamps = selected["timestamp"].astype(float).tolist()
         camera_timestamp = float(np.median(selected_timestamps))
         unique_selected_timestamps = sorted(set(selected_timestamps))
@@ -620,6 +734,10 @@ def compile_static_episode(
             "apple_pose_4x4": _as_list(poses["Apple"]),
             "branch_pose_4x4": _as_list(poses["Branch"]),
             "spur_pose_4x4": _as_list(poses["Spur"]),
+            "apple_pos_tag": _as_list(positions_tag["Apple"]),
+            "apple_pose_4x4_tag": _as_list(poses_tag["Apple"]),
+            "branch_pose_4x4_tag": _as_list(poses_tag["Branch"]),
+            "spur_pose_4x4_tag": _as_list(poses_tag["Spur"]),
             "hold_number": _as_list(robot_row["hold_number"]),
             "direction": _as_list(robot_row["direction"]),
             "phase": int(robot_row["phase"]),
@@ -651,24 +769,20 @@ def compile_static_episode(
         output_rows,
         schema=_unified_schema(n_holds, n_directions),
     )
-    # Preserve the robot-side post-grasp snapshot, including the camera
-    # snapshot captured after closure. Tracking data is only a fallback for
-    # fields that the robot metadata does not contain.
+    # post_grasp_geometry is what the robot recorded after the grasp settled
+    # (robot state + camera_snapshot); it is never synthesised from pull rows.
     post_grasp_geometry = dict(robot_metadata.get("post_grasp_geometry", {}) or {})
-    if output_rows:
-        first_row = output_rows[0]
-        tracking_post_geometry = {
-            "tracking_timestamp": first_row["timestamp"],
-            "tracking_hold_index": first_row["hold_index"],
-            "tracking_hold_step_idx": first_row["hold_step_idx"],
-            "tracking_tcp_pos": first_row["tcp_pos"],
-            "tracking_tcp_pose_4x4": first_row["tcp_pose_4x4"],
-            "tracking_target_pose_4x4": first_row["target_pose_4x4"],
-            "tracking_apple_pos": first_row["apple_pos"],
-            "tracking_apple_pose_4x4": first_row["apple_pose_4x4"],
-        }
-        for key, value in tracking_post_geometry.items():
-            post_grasp_geometry.setdefault(key, value)
+    first_row = output_rows[0]
+    pull_start_tracking = {
+        "timestamp": first_row["timestamp"],
+        "hold_index": first_row["hold_index"],
+        "hold_step_idx": first_row["hold_step_idx"],
+        "tcp_pos": first_row["tcp_pos"],
+        "tcp_pose_4x4": first_row["tcp_pose_4x4"],
+        "target_pose_4x4": first_row["target_pose_4x4"],
+        "apple_pos": first_row["apple_pos"],
+        "apple_pose_4x4": first_row["apple_pose_4x4"],
+    }
     rest_snapshot_during_run = {
         "timestamp": rest_timestamp,
         "tcp_pos": robot_rows[0]["tcp_pos"],
@@ -683,16 +797,29 @@ def compile_static_episode(
         "camera_frame_count": len(rest_frames),
     }
     pre_grasp_geometry = dict(robot_metadata.get("pre_grasp_geometry", {}) or {})
-    if not pre_grasp_geometry.get("snapshot"):
-        pre_grasp_geometry["snapshot"] = (
-            pre_grasp_geometry.get("lengthened_snapshot")
-            or pre_grasp_geometry.get("settled_snapshot")
-            or rest_snapshot_during_run
-        )
-    pre_grasp_geometry.setdefault(
-        "under_gravity_snapshot",
-        pre_grasp_geometry.get("settled_snapshot", {}),
-    )
+    tag_to_part_correction: dict[str, Any] = {"applied": False}
+    if parts is not None:
+        pre_grasp_geometry["parts"] = _merge_measured_parts(pre_grasp_geometry.get("parts") or {}, parts)
+        for key in ("under_gravity_snapshot", "lengthened_snapshot"):
+            pre_grasp_geometry[key] = _correct_snapshot(
+                dict(pre_grasp_geometry.get(key) or {}), part_radii, tag_to_part_sign
+            )
+        if post_grasp_geometry.get("camera_snapshot"):
+            post_grasp_geometry["camera_snapshot"] = _correct_snapshot(
+                dict(post_grasp_geometry["camera_snapshot"]), part_radii, tag_to_part_sign
+            )
+        # Connection angles were computed from raw tag positions at collection
+        # time; recompute them from the corrected lengthened snapshot.
+        pre_grasp_geometry = update_pre_grasp_geometry_with_snapshots(pre_grasp_geometry)
+        tag_to_part_correction = {
+            "applied": True,
+            "formula": "pos_part = pos_tag + sign * radius_m * z_tag (tag z in base frame)",
+            "sign": float(tag_to_part_sign),
+            "sign_convention": "+1: AprilTag +z points into the tag, i.e. into the part",
+            "radius_m": {name: part_radii[name] for name in TRACKED_NAMES},
+            "part_for_tracker": dict(TRACKER_PART_NAMES),
+            "raw_fields": ["apple_pos_tag", "apple_pose_4x4_tag", "branch_pose_4x4_tag", "spur_pose_4x4_tag"],
+        }
     pre_grasp_geometry["rest_snapshot_during_run"] = rest_snapshot_during_run
     metadata_dump = {
         **robot_metadata,
@@ -756,6 +883,8 @@ def compile_static_episode(
             **pre_grasp_geometry,
         },
         "post_grasp_geometry": post_grasp_geometry,
+        "pull_start_tracking": pull_start_tracking,
+        "tag_to_part_correction": tag_to_part_correction,
         "row_count": len(output_rows),
         "hold_count": len(hold_indices),
         "compiler": {
@@ -842,7 +971,18 @@ def main() -> None:
         default=1.0,
         help="EMA alpha for smoothing camera geometry; 1.0 disables smoothing",
     )
+    parser.add_argument(
+        "--parts-json",
+        type=Path,
+        default=None,
+        help="Measured parts JSON ({primary,spur,stem,apple: {radius_m, length_m, mass_kg, ...}} "
+        "or a field apple.json with a 'parts' key); enables the tag->part radius correction",
+    )
     args = parser.parse_args()
+    parts = None
+    if args.parts_json is not None:
+        payload = json.loads(args.parts_json.read_text(encoding="utf-8"))
+        parts = payload.get("parts", payload)
     output = compile_static_episode(
         args.robot,
         args.tracking,
@@ -851,6 +991,7 @@ def main() -> None:
         max_camera_delta_s=args.max_camera_delta,
         camera_ema_alpha=args.camera_ema_alpha,
         baseline_path=args.baseline,
+        parts=parts,
         command_argv=sys.argv,
     )
     print(f"Wrote unified static system-ID episode to {output}")

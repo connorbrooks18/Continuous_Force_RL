@@ -26,7 +26,7 @@ from typing import Any
 
 import pyarrow.parquet as pq
 
-from real_robot_exps.camera_snapshot import update_pre_grasp_geometry_with_snapshots
+from real_robot_exps.snapshot_geometry import update_pre_grasp_geometry_with_snapshots
 from real_robot_exps.metadata_cache import (
     load_pre_grasp_metadata_cache,
     write_pre_grasp_metadata_cache,
@@ -121,8 +121,6 @@ def _normalized_pre_grasp_geometry(structure_index: int, structure: dict[str, An
         "geometry_source": structure.get("geometry_source", ""),
         "note": "Manual structure catalog plus a lengthened camera snapshot for angle/length estimation.",
         "parts": out,
-        "snapshot": {},
-        "settled_snapshot": {},
         "under_gravity_snapshot": {},
         "lengthened_snapshot": {},
     }
@@ -327,71 +325,8 @@ def _run_one(
         print(" ".join(baseline_cmd))
         subprocess.run(baseline_cmd, check=True)
 
-    skip_compile = False
-    if args.expect_tracking:
-        try:
-            robot_rows = pq.read_table(robot_path, columns=["timestamp"]).to_pylist()
-            robot_times = [float(row["timestamp"]) for row in robot_rows if "timestamp" in row and row["timestamp"] is not None]
-            tracking_rows = pq.read_table(tracking_path, columns=["timestamp"]).to_pylist() if tracking_path.exists() else []
-            tracking_times = [float(row["timestamp"]) for row in tracking_rows if "timestamp" in row and row["timestamp"] is not None]
-            if robot_times and tracking_times:
-                robot_min, robot_max = min(robot_times), max(robot_times)
-                tracking_min, tracking_max = min(tracking_times), max(tracking_times)
-                latest_start = max(robot_min, tracking_min)
-                earliest_end = min(robot_max, tracking_max)
-                # Inclusive overlap is the right rule here. Metadata-only runs
-                # can have exactly one robot timestamp that still lies inside
-                # the camera interval even though the overlap length is zero.
-                if latest_start > earliest_end:
-                    print(
-                        "[WARN] Robot and tracking timestamps do not overlap:\n"
-                        f"       robot   {robot_min:.3f} -> {robot_max:.3f}\n"
-                        f"       camera  {tracking_min:.3f} -> {tracking_max:.3f}\n"
-                        "       Skipping unified compile for this run."
-                    )
-                    skip_compile = True
-        except Exception as exc:
-            print(f"[WARN] Could not check timestamp overlap before compile: {exc}")
-        if (not skip_compile):
-            deadline = time.time() + 300.0
-            while time.time() < deadline and not tracking_path.exists():
-                time.sleep(1.0)
-            if tracking_path.exists():
-                compile_cmd = [
-                    sys.executable,
-                    "-m",
-                    "real_robot_exps.compile_static_sysid",
-                    "--robot",
-                    str(robot_path),
-                    "--tracking",
-                    str(tracking_path),
-                    "--output",
-                    str(unified_path),
-                    "--camera-ema-alpha",
-                    str(args.camera_ema_alpha),
-                    "--baseline",
-                    str(baseline_path_for_collect),
-                ]
-                print(" ".join(compile_cmd))
-                subprocess.run(compile_cmd, check=True)
-                viz_png = unified_path.with_suffix(".png")
-                viz_cmd = [
-                    sys.executable,
-                    "-m",
-                    "real_robot_exps.viz_static_sysid",
-                    "--input",
-                    str(unified_path),
-                    "--save",
-                    str(viz_png),
-                    "--no-show"
-                ]
-                print(" ".join(viz_cmd))
-                try:
-                    subprocess.run(viz_cmd, check=True)
-                except subprocess.CalledProcessError as exc:
-                    print(f"[WARN] Visualization failed for {unified_path}: {exc}")
-            else:
-                print(f"[WARN] Expected tracking file not found within timeout: {tracking_path}")
+    # Compilation is offline (compile_static_sysid / recompile_static_sysid_batch)
+    # so it can include the baseline and measured parts.
     run_record = {
         "run_id": run_id,
         "direction_index": direction_index,
@@ -666,7 +601,6 @@ def main() -> None:
         pre_grasp_geometry = update_pre_grasp_geometry_with_snapshots(
             pre_grasp_geometry,
             lengthened_snapshot=lengthened_snapshot,
-            settled_snapshot=under_gravity_snapshot,
             under_gravity_snapshot=under_gravity_snapshot,
         )
         write_pre_grasp_metadata_cache(

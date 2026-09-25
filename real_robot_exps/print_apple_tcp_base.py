@@ -135,6 +135,16 @@ def _vector_distance(a, b) -> tuple[np.ndarray, float]:
     return delta, float(np.linalg.norm(delta))
 
 
+def _phase_camera_snapshot(phase_geometry: dict) -> dict:
+    """Camera snapshot of a phase: post-grasp -> camera_snapshot, pre-grasp -> under-gravity/lengthened."""
+    return dict(
+        phase_geometry.get("camera_snapshot", {})
+        or phase_geometry.get("under_gravity_snapshot", {})
+        or phase_geometry.get("lengthened_snapshot", {})
+        or {}
+    )
+
+
 def _extract_grasp_distance(
     metadata: dict,
     *,
@@ -142,12 +152,7 @@ def _extract_grasp_distance(
     fallback_apple_pos=None,
 ) -> tuple[np.ndarray | None, float | None, dict | None]:
     phase_geometry = dict(metadata.get(f"{phase}_grasp_geometry", {}) or {})
-    snapshot = dict(
-        phase_geometry.get("snapshot", {})
-        or phase_geometry.get("lengthened_snapshot", {})
-        or phase_geometry.get("settled_snapshot", {})
-        or {}
-    )
+    snapshot = _phase_camera_snapshot(phase_geometry)
     robot_snapshot = dict(phase_geometry.get("robot_snapshot", {}) or {})
 
     # The pre-grasp camera snapshot is intentionally taken before the arm
@@ -167,13 +172,7 @@ def _extract_grasp_distance(
 
 def _snapshot_from_metadata(metadata: dict, *, phase: str) -> dict:
     phase_geometry = dict(metadata.get(f"{phase}_grasp_geometry", {}) or {})
-    snapshot = dict(
-        phase_geometry.get("snapshot", {})
-        or phase_geometry.get("lengthened_snapshot", {})
-        or phase_geometry.get("settled_snapshot", {})
-        or phase_geometry.get("under_gravity_snapshot", {})
-        or {}
-    )
+    snapshot = _phase_camera_snapshot(phase_geometry)
     robot_snapshot = dict(phase_geometry.get("robot_snapshot", {}) or {})
     return {
         "snapshot": snapshot,
@@ -228,8 +227,8 @@ def _print_parquet_pose_report(parquet_path: Path) -> None:
     pose_sources = [
         ("pre_grasp_geometry.robot_snapshot", pre["robot_snapshot"]),
         ("post_grasp_geometry.robot_snapshot", post["robot_snapshot"]),
-        ("pre_grasp_geometry.snapshot", pre["snapshot"]),
-        ("post_grasp_geometry.snapshot", post["snapshot"]),
+        ("pre_grasp_geometry camera snapshot", pre["snapshot"]),
+        ("post_grasp_geometry.camera_snapshot", post["snapshot"]),
         ("first_data_row", first_row),
     ]
 
@@ -255,12 +254,7 @@ def _print_parquet_pose_report(parquet_path: Path) -> None:
     pre_delta, pre_distance, pre_geo = _extract_grasp_distance(metadata, phase="pre")
     fallback_apple = None
     if pre_geo is not None:
-        pre_snapshot = dict(pre_geo.get("snapshot", {}) or pre_geo.get("lengthened_snapshot", {}) or {})
-        pre_settled = dict(pre_geo.get("settled_snapshot", {}) or {})
-        fallback_apple = pre_geo.get(
-            "apple_pos",
-            pre_snapshot.get("apple_pos", pre_settled.get("apple_pos")),
-        )
+        fallback_apple = pre_geo.get("apple_pos", _phase_camera_snapshot(pre_geo).get("apple_pos"))
     post_delta, post_distance, post_geo = _extract_grasp_distance(
         metadata,
         phase="post",
