@@ -2,7 +2,7 @@
 
 For every apple it walks the operator through:
 
-    notes -> calibrate camera -> swap tool + place tags -> snapshots -> grasp
+    notes -> calibrate camera (board held by suction) -> place tags -> snapshots -> grasp
           -> pulls (all directions, one grasp) -> release -> baseline -> measurements
 
 and stores everything for that apple in its own folder. Compilation (baseline
@@ -59,7 +59,7 @@ HANDEYE_DIR = Path.home() / ".ros2" / "easy_handeye2"
 STEPS = (
     "notes",
     "calibrate",
-    "tool_and_tags",
+    "tags",
     "snapshots",
     "grasp",
     "pulls",
@@ -69,7 +69,7 @@ STEPS = (
 STEP_TITLES = {
     "notes": "Notes about this fruiting system",
     "calibrate": "Camera calibration (ChArUco hand-eye)",
-    "tool_and_tags": "Swap board for gripper, place tags",
+    "tags": "Place the tags",
     "snapshots": "Structure snapshots (under gravity, stretched)",
     "grasp": "Hand-guide the gripper onto the apple and grasp",
     "pulls": "Pull in every direction (one grasp)",
@@ -580,9 +580,17 @@ class FieldSession:
                 c.say(f"!! The live view did not start; see {apple.dir / 'log.txt'} (camera_view).")
             c.enter("Camera aimed (this closes the live view)")
             view.stop()
-        c.enter("Mount the ChArUco board on the arm and select the 'board' end effector in Desk")
-        self.check_ee(apple, "board", "calibrate")
+        self.check_ee(apple, "gripper", "calibrate")
+        self._hold_board()
+        try:
+            self._run_calibration(apple, name, calib_dir)
+        finally:
+            self._release_board()
+        apple.data["calibration"]["board_mount"] = "suction (air on, fingers in), gripper end-effector profile"
+        apple.save()
 
+    def _run_calibration(self, apple: Apple, name: str, calib_dir: Path) -> None:
+        c = self.console
         while True:
             launch = Proc(
                 "calib_launch",
@@ -602,7 +610,8 @@ class FieldSession:
                     "ros2 run easy_handeye2_franka_auto handeye_auto_calibrate "
                     f"--robot-config {robot_config} --name {name} "
                     "--robot-base-frame fr3_link0 --robot-effector-frame handeye_ee "
-                    f"--n-poses {int(self.args.calib_poses)} --seed 0 --return-home",
+                    f"--n-poses {int(self.args.calib_poses)} "
+                    f"--rotation-delta-degrees {float(self.args.calib_rotation_deg):g} --seed 0 --return-home",
                     self.ros_ws,
                 ), env=ros_env())
                 if code != 0:
@@ -647,6 +656,57 @@ class FieldSession:
                 apple.save()
                 break
 
+    # --- gripper air (valve only; fingers untouched) -------------------------------
+    def _gripper_call(self, service: str, value: bool, what: str) -> None:
+        from real_robot_exps.gripper_test import GripperClient
+
+        gripper = GripperClient(
+            mock=bool(self.settings.get("mock") or self.args.mock_gripper), timeout_s=30.0, service=service
+        )
+        try:
+            response = gripper.send_request(value)
+        finally:
+            gripper.terminate()
+        if response is not None and not response.success:
+            raise RuntimeError(f"{what} rejected by the gripper: {response.message}")
+
+    def air_on(self) -> None:
+        from real_robot_exps.gripper_test import VALVE_SERVICE
+
+        self._gripper_call(VALVE_SERVICE, True, "air on")
+
+    def air_off(self) -> None:
+        from real_robot_exps.gripper_test import VALVE_SERVICE
+
+        self._gripper_call(VALVE_SERVICE, False, "air off")
+
+    def _hold_board(self) -> None:
+        """Operator presses the ChArUco board to the gripper; suction holds it for the calibration."""
+        c = self.console
+        while True:
+            c.enter("Hold the ChArUco board flat against the gripper (fingers in)")
+            try:
+                self.air_on()
+            except Exception as exc:
+                c.say(f"!! Air on failed: {exc}")
+                if c.yes("Retry?", default=True):
+                    continue
+                raise
+            if c.yes("Let go gently: does suction hold the board without slipping?", default=True):
+                return
+            c.enter("Hold the board again; Enter turns the air off so you can reposition it")
+            self.air_off()
+
+    def _release_board(self) -> None:
+        c = self.console
+        try:
+            c.enter("Hold the ChArUco board; Enter turns the air off and releases it")
+        except (KeyboardInterrupt, EOFError):
+            c.say("!! Air left ON (board still held). Release it with: python -m real_robot_exps.gripper_test air-off")
+            raise
+        self.air_off()
+        c.say("Air off, board released.")
+
     def _write_camera_to_base(self, apple: Apple, calib_path: Path, optical_path: Path, verdict: str) -> None:
         from real_robot_exps.calibrate_camera_to_base import _load_handeye_calibration
 
@@ -675,12 +735,12 @@ class FieldSession:
             "(check against a tape measure)"
         )
 
-    def step_tool_and_tags(self, apple: Apple) -> None:
+    def step_tags(self, apple: Apple) -> None:
         c = self.console
-        c.enter("Remove the ChArUco board, mount the gripper and select the 'gripper' end effector in Desk")
-        self.check_ee(apple, "gripper", "tool_and_tags")
+        self.check_ee(apple, "gripper", "tags")
         from real_robot_exps.gripper_test import GripperClient
 
+        # Grasp starts from a known state: fingers in, air off (also checks gripper_grab is up).
         c.say("Checking the gripper service...")
         gripper = GripperClient(mock=bool(self.settings.get("mock") or self.args.mock_gripper), timeout_s=30.0)
         try:
@@ -1027,6 +1087,8 @@ def build_parser() -> argparse.ArgumentParser:
     # run options
     parser.add_argument("--confirm-each", action="store_true", help="Pause (apple held) between directions")
     parser.add_argument("--calib-poses", type=int, default=15)
+    parser.add_argument("--calib-rotation-deg", type=float, default=25.0,
+                        help="Board tilt of the calibration poses; lower it if the suction-held board slips")
     parser.add_argument("--record-video", action="store_true", help="Also record the detector camera feed")
     parser.add_argument("--ros-ws", default=str(DEFAULT_ROS_WS))
     # testing without hardware
@@ -1035,7 +1097,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--skip-calibration", action="store_true", help="Use the static camera matrix")
     parser.add_argument("--no-detector", action="store_true", help="Run without the camera (no snapshots/tracking)")
     parser.add_argument("--ee-profiles", default=str(REPO_ROOT / "real_robot_exps" / "ee_profiles.yaml"),
-                        help="Captured Desk end-effector profiles (board/gripper), see ee_profiles.py")
+                        help="Captured Desk end-effector profiles (only 'gripper' is used), see ee_profiles.py")
     parser.add_argument("--no-ee-check", action="store_true", help="Do not check Desk's active end effector")
     return parser
 

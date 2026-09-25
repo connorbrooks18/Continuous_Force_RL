@@ -186,6 +186,38 @@ class WorkflowTest(unittest.TestCase):
             self.assertTrue(reloaded.complete())
             self.assertEqual(reloaded.step("pulls")["error"], "RuntimeError: tag hidden")
 
+    def test_calibration_releases_the_board_even_when_it_fails(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # no live view, hold board, suction holds, release
+            field = self._field(tmp, ["n", "", "", ""])
+            field.args.skip_calibration = False
+            field.session.data["mock"] = True
+            events = []
+            field.air_on = lambda: events.append("air_on")
+            field.air_off = lambda: events.append("air_off")
+
+            def failing_calibration(apple, name, calib_dir):
+                events.append("calibrate")
+                raise RuntimeError("handeye_auto_calibrate exited with 1")
+
+            field._run_calibration = failing_calibration
+            apple = Apple(field.session, "A001")
+            with self.assertRaisesRegex(RuntimeError, "exited with 1"):
+                field.step_calibrate(apple)
+            self.assertEqual(events, ["air_on", "calibrate", "air_off"])
+            prompts = [line for line in field.console.output if "Enter" in line]
+            self.assertIn("releases it", prompts[-1])  # released only after the operator confirms
+
+    def test_board_is_repositioned_when_suction_does_not_hold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # hold, "n" = slipping, reposition (air off), hold again, "y" = holds
+            field = self._field(tmp, ["", "n", "", "", "y"])
+            events = []
+            field.air_on = lambda: events.append("air_on")
+            field.air_off = lambda: events.append("air_off")
+            field._hold_board()
+            self.assertEqual(events, ["air_on", "air_off", "air_on"])
+
     def test_resume_starts_at_first_unfinished_step(self):
         with tempfile.TemporaryDirectory() as tmp:
             field = self._field(tmp, [])
