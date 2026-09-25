@@ -1,0 +1,39 @@
+# Franka Desk end-effector profiles, captured from RobotState with
+#   python -m real_robot_exps.ee_profiles capture --name <name>
+# F_T_NE is row-major (flange -> nominal EE). Used to check that Desk has the
+# right profile selected before the robot moves.
+profiles:
+  gripper:
+    F_T_NE:
+    - - 1.0
+      - 0.0
+      - 0.0
+      - 0.0
+    - - 0.0
+      - 1.0
+      - 0.0
+      - 0.0
+    - - 0.0
+      - 0.0
+      - 1.0
+      - 0.0
+    - - 0.0
+      - 0.0
+      - 0.0
+      - 1.0
+    F_x_Cee:
+    - 0.0
+    - 0.0
+    - 0.0
+    I_ee:
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    - 0.0
+    captured_utc: '2026-09-25T22:10:10+00:00'
+    m_ee: 0.0

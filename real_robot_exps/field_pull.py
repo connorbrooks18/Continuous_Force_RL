@@ -89,6 +89,27 @@ def _read_ee_config(config: dict) -> dict:
         robot.stop()
 
 
+def _open_gripper_with_retries(gripper, *, attempts: int = 3, delay_s: float = 2.0) -> None:
+    """Retry a gripper release a few times before giving up.
+
+    A fast robot move (this series just finished pulling, or is aborting mid-move)
+    can drop the ESP32's Wi-Fi link for a moment, so one failed attempt does not
+    mean the gripper is stuck -- but this call must not give up silently, since it
+    is what actually releases the apple/board.
+    """
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            gripper.send_request(False)
+            return
+        except (TimeoutError, RuntimeError) as exc:
+            last_exc = exc
+            print(f"[field_pull] gripper release attempt {attempt + 1}/{attempts} failed: {exc}")
+            if attempt < attempts - 1:
+                time.sleep(delay_s)
+    raise last_exc
+
+
 def _apple_offset_from_tcp(camera_snapshot: dict | None, tcp_pos: np.ndarray) -> np.ndarray | None:
     if not camera_snapshot or "apple_pos" not in camera_snapshot:
         return None
@@ -438,7 +459,7 @@ class PullSeries:
     def _finish(self) -> None:
         print("\n[field_pull] series done: holding, then opening the gripper")
         self._hold_start(1.0)
-        self.gripper.send_request(False)
+        _open_gripper_with_retries(self.gripper)
         time.sleep(1.0)
         self.robot.end_control()
         self.robot.shutdown()
@@ -455,10 +476,10 @@ class PullSeries:
                 print(f"[field_pull] hold before release failed: {hold_exc}")
         if gripper is not None:
             try:
-                gripper.send_request(False)
+                _open_gripper_with_retries(gripper)
                 print("[field_pull] gripper opened")
             except BaseException as grip_exc:
-                print(f"[field_pull] COULD NOT OPEN THE GRIPPER: {grip_exc}")
+                print(f"[field_pull] COULD NOT OPEN THE GRIPPER after retries: {grip_exc}")
         if rows and direction is not None:
             try:
                 self._save_direction(

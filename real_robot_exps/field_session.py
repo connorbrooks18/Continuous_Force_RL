@@ -82,6 +82,16 @@ STEP_TITLES = {
 # small utilities
 # =============================================================================
 
+from real_robot_exps.gripper_stack import (
+    DEFAULT_PASSWORD,
+    DEFAULT_SSID,
+    gripper_stack_ready,
+    kill_stray_gripper_processes,
+    launch_gripper_stack,
+)
+from real_robot_exps.gripper_test import GRAB_SERVICE
+
+
 def now_utc() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -454,6 +464,7 @@ class FieldSession:
         self.session = Session(Path(args.data_root).expanduser(), args.session)
         self.detector: Proc | None = None
         self.ros_ws = Path(args.ros_ws).expanduser()
+        self._gripper_stack_proc: Proc | None = None
 
     # --- settings -------------------------------------------------------------
     @property
@@ -656,19 +667,68 @@ class FieldSession:
                 apple.save()
                 break
 
-    # --- gripper air (valve only; fingers untouched) -------------------------------
+    # --- gripper stack (Wi-Fi hotspot + micro-ROS agent + automatic_gripper node) ---
+    def _gripper_mock(self) -> bool:
+        return bool(self.settings.get("mock") or self.args.mock_gripper)
+
+    def ensure_gripper_stack(self, *, force_restart: bool = False) -> None:
+        """Kill any stray gripper-controller processes and start one clean instance.
+
+        A process left running from an earlier launch (closed terminal, crashed run)
+        shows up as a second automatic_gripper node and, worse, a second
+        micro_ros_agent fighting the first one over the same UDP port -- the most
+        likely cause of the gripper "sometimes just not responding". Always kill
+        first, then relaunch, rather than trusting whatever is already running.
+        """
+        if self._gripper_mock() or self.args.no_gripper_stack:
+            return
+        c = self.console
+        if not force_restart and self._gripper_stack_proc is not None and self._gripper_stack_proc.alive():
+            ready, _ = gripper_stack_ready(timeout_s=2.0)
+            if ready:
+                return
+        c.say(
+            "Restarting the gripper controller (stops any stray lfd_automatic_gripper / "
+            "micro_ros_agent processes first, then relaunches lfd_gripper.launch.py)..."
+        )
+        kill_stray_gripper_processes()
+        if self._gripper_stack_proc is not None:
+            self._gripper_stack_proc.stop()
+        log_path = self.session.dir / "gripper_stack.log"
+        self._gripper_stack_proc = launch_gripper_stack(
+            self.ros_ws, log_path, ssid=self.args.gripper_ssid, password=self.args.gripper_password,
+            env=ros_env(),
+        )
+        ready, error = gripper_stack_ready(timeout_s=45.0)
+        if ready:
+            c.say("Gripper controller is up (gripper_grab responding).")
+        else:
+            c.say(f"!! Gripper controller did not come up: {error}. See {log_path}")
+
     def _gripper_call(self, service: str, value: bool, what: str) -> None:
         from real_robot_exps.gripper_test import GripperClient
 
-        gripper = GripperClient(
-            mock=bool(self.settings.get("mock") or self.args.mock_gripper), timeout_s=30.0, service=service
-        )
-        try:
-            response = gripper.send_request(value)
-        finally:
-            gripper.terminate()
-        if response is not None and not response.success:
-            raise RuntimeError(f"{what} rejected by the gripper: {response.message}")
+        for attempt in range(2):
+            try:
+                gripper = GripperClient(mock=self._gripper_mock(), timeout_s=30.0, service=service)
+                try:
+                    response = gripper.send_request(value)
+                finally:
+                    gripper.terminate()
+                if response is not None and not response.success:
+                    raise RuntimeError(f"{what} rejected by the gripper: {response.message}")
+                return
+            except (TimeoutError, RuntimeError) as exc:
+                can_restart = not (self._gripper_mock() or self.args.no_gripper_stack)
+                if attempt == 0 and can_restart:
+                    self.console.say(
+                        f"!! {what} got no response ({exc}). The gripper's Wi-Fi link can drop from "
+                        "fast robot motion, or a leftover process may be fighting over the same port."
+                    )
+                    if self.console.yes("Restart the gripper controller and retry?", default=True):
+                        self.ensure_gripper_stack(force_restart=True)
+                        continue
+                raise
 
     def air_on(self) -> None:
         from real_robot_exps.gripper_test import VALVE_SERVICE
@@ -738,15 +798,9 @@ class FieldSession:
     def step_tags(self, apple: Apple) -> None:
         c = self.console
         self.check_ee(apple, "gripper", "tags")
-        from real_robot_exps.gripper_test import GripperClient
-
         # Grasp starts from a known state: fingers in, air off (also checks gripper_grab is up).
         c.say("Checking the gripper service...")
-        gripper = GripperClient(mock=bool(self.settings.get("mock") or self.args.mock_gripper), timeout_s=30.0)
-        try:
-            gripper.send_request(False)
-        finally:
-            gripper.terminate()
+        self._gripper_call(GRAB_SERVICE, False, "open gripper")
         c.say("Gripper open.")
         c.say("Place the tags, each facing the camera:  Branch = tag 0,  Spur = tag 1,  Apple = tag 2")
         c.say("(tags sit on the surface; compile moves them inward by the measured radius).")
@@ -782,13 +836,7 @@ class FieldSession:
         self.start_detector(apple)
         c.say("Put the robot in hand-guiding mode and bring the open gripper around the apple.")
         c.enter("Gripper positioned around the apple; hands off the arm")
-        from real_robot_exps.gripper_test import GripperClient
-
-        gripper = GripperClient(mock=bool(self.settings.get("mock") or self.args.mock_gripper), timeout_s=30.0)
-        try:
-            gripper.send_request(True)
-        finally:
-            gripper.terminate()
+        self._gripper_call(GRAB_SERVICE, True, "close gripper")
         time.sleep(2.0)
         if not c.yes("Is the apple held firmly?", default=True):
             raise RuntimeError("grasp not accepted; open the gripper and repeat the grasp step")
@@ -973,6 +1021,7 @@ class FieldSession:
             c.say(f"New session {self.session.name} at {self.session.dir} ({len(directions)} directions)")
         else:
             c.say(f"Session {self.session.name}: {len(self.session.apple_ids())} apple(s) so far")
+        self.ensure_gripper_stack()
         apple_id = self.args.apple
         if apple_id is None:
             unfinished = [a for a in self.session.apple_ids() if not Apple(self.session, a).complete()]
@@ -1096,6 +1145,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock-gripper", action="store_true")
     parser.add_argument("--skip-calibration", action="store_true", help="Use the static camera matrix")
     parser.add_argument("--no-detector", action="store_true", help="Run without the camera (no snapshots/tracking)")
+    parser.add_argument("--gripper-ssid", default=DEFAULT_SSID, help="Wi-Fi hotspot SSID for the ESP32 gripper controller")
+    parser.add_argument("--gripper-password", default=DEFAULT_PASSWORD, help="Wi-Fi hotspot password")
+    parser.add_argument("--no-gripper-stack", action="store_true",
+                        help="Do not kill/restart the lfd_apples gripper controller automatically")
     parser.add_argument("--ee-profiles", default=str(REPO_ROOT / "real_robot_exps" / "ee_profiles.yaml"),
                         help="Captured Desk end-effector profiles (only 'gripper' is used), see ee_profiles.py")
     parser.add_argument("--no-ee-check", action="store_true", help="Do not check Desk's active end effector")

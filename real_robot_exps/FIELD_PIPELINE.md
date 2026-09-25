@@ -46,6 +46,33 @@ tags, grasp, pulls and baseline. It compares the live `RobotState` values
 they match. `s` skips the check, and the skip is recorded in
 `apple.json` (`ee_checks`). `--no-ee-check` turns the check off.
 
+**The gripper is finicky: here's why, and what the session now does about it.**
+The valve and finger stepper are on an ESP32 that talks to ROS over a Wi-Fi hotspot
+this laptop hosts (`lfd_apples_ws/src/lfd_apples/launch/lfd_gripper.launch.py`). Two
+things cause the flakiness:
+1. Fast robot motion (`handeye_auto_calibrate`'s free-drive-to-pose moves in
+   particular) can jostle the ESP32 enough to drop the Wi-Fi link for a moment, so
+   whatever call was in flight gets no reply.
+2. A launch that was never cleanly stopped (closed terminal, crashed run) leaves its
+   processes running. The next launch then runs *alongside* the old one: two
+   `automatic_gripper` nodes, and worse, two `micro_ros_agent` processes bound to the
+   same UDP port, splitting the ESP32's traffic between them — this was observed
+   directly (two agents, one from a completely different workspace) and is the most
+   likely cause of "sometimes it just doesn't respond".
+
+`field_session` now handles both: it kills any stray `lfd_automatic_gripper` /
+`micro_ros_agent` process and runs `ros2 launch lfd_apples lfd_gripper.launch.py
+ssid:=<--gripper-ssid> password:=<--gripper-password>` fresh, once at the start of
+the session (`--gripper-ssid`/`--gripper-password` default to `alejos`/`harvesting`,
+matching the launch file's defaults). Every gripper call (`close`/`open`/`air-on`/
+`air-off`, and the calibration's board release) goes through one place
+(`FieldSession._gripper_call`); on a timeout or rejection it tells you and offers to
+restart the controller and retry, before giving up. `field_pull` (the pull series,
+which runs as its own process) retries its final release a few times on its own,
+without the interactive restart, since it isn't attached to a console.
+`--no-gripper-stack` turns this management off if you'd rather run the launch
+yourself.
+
 A step that fails offers **retry / skip / quit**. The status is stored in
 `apple.json`, so quitting and re-running resumes at the first unfinished step.
 If the pull series aborts, the gripper is opened, the finished directions are
@@ -97,7 +124,11 @@ each tracking file (`camera_to_base_4x4_used`), and compile reads it from there.
 
 - [ ] `colcon build` the `easy_handeye2` packages in `~/connor/franka_ros2_ws`; `ros2 launch easy_handeye2_charuco charuco_view.launch.py` shows the board.
 - [ ] Commit the `at-tracking` changes, and set `tracking_config.yaml` sizes to the **measured** printed tag size.
-- [ ] The gripper service (`gripper_grab`) node starts on the field laptop.
+- [ ] The gripper controller stack (Wi-Fi hotspot + micro-ROS agent + `automatic_gripper`
+      node, from `lfd_apples`) starts on the field laptop. `field_session` now kills any
+      stray processes and relaunches this stack itself, once at the start of the session
+      and again automatically if a gripper call gets no reply (see "The gripper is finicky"
+      below); this only needs manual attention if you see repeated failures.
 - [ ] Capture the Desk `gripper` end-effector profile once (gripper profile selected in Desk,
       nothing else controlling the robot): `python -m real_robot_exps.ee_profiles capture --name gripper`
       (writes `real_robot_exps/ee_profiles.yaml`; commit it). `... ee_profiles show` prints
@@ -126,6 +157,7 @@ field_session.py
 ├─ calibrate_camera_to_base.py   _load_handeye_calibration (.calib → 4x4)
 ├─ gripper_test.py               GripperClient: gripper_grab (air + fingers), /microROS/toggle_valve (air only)
 ├─ ee_profiles.py (+ ee_profiles.yaml)  checks the active Desk end effector (gripper)
+├─ gripper_stack.py              kills stray lfd_automatic_gripper/micro_ros_agent, relaunches lfd_gripper.launch.py
 ├─ at-tracking/Detecting.py      steps 4–6: tracking + snapshot requests
 │    ├─ snapshot_requests.py, tracking_config.py (+ tracking_config.yaml), Tracker.py
 │    └─ DataCollector.py, annotate.py, real_robot_exps/frame_transforms.py

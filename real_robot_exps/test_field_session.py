@@ -6,6 +6,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 
@@ -245,6 +246,88 @@ class RosEnvTest(unittest.TestCase):
             self.assertNotIn(key, env)
         self.assertEqual(env["DISPLAY"], ":1")
         self.assertEqual(env["ROS_DOMAIN_ID"], "7")
+
+
+class GripperCallRetryTest(unittest.TestCase):
+    """_gripper_call is the single choke point close/open/air-on/air-off all go
+    through, so testing it here covers the retry-with-restart behaviour for all of
+    them without duplicating it per call site."""
+
+    def _field(self, tmp, answers):
+        args = argparse.Namespace(
+            session="s", data_root=tmp, no_detector=True, ros_ws=tmp, record_video=False,
+            mock_gripper=False, skip_calibration=True, confirm_each=False, calib_poses=3,
+            no_gripper_stack=False, gripper_ssid="alejos", gripper_password="harvesting",
+        )
+        field = FieldSession(args, ScriptedConsole(answers))
+        field.session.dir.mkdir(parents=True)
+        field.session.data = {"config_path": str(REPO / "real_robot_exps" / "config.yaml"),
+                              "tracking_config_path": str(REPO / "at-tracking" / "tracking_config.yaml")}
+        return field
+
+    def test_retries_once_after_the_operator_confirms_a_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, ["y"])  # "Restart the gripper controller and retry?"
+            restarts = []
+            field.ensure_gripper_stack = lambda force_restart=False: restarts.append(force_restart)
+            attempts = {"n": 0}
+
+            class FlakyClient:
+                def __init__(self, **kwargs):
+                    pass
+
+                def send_request(self, value):
+                    attempts["n"] += 1
+                    if attempts["n"] == 1:
+                        raise TimeoutError("no reply")
+                    return type("Response", (), {"success": True, "message": ""})()
+
+                def terminate(self):
+                    pass
+
+            with patch("real_robot_exps.gripper_test.GripperClient", FlakyClient):
+                field._gripper_call("gripper_grab", True, "close gripper")
+            self.assertEqual(restarts, [True])
+            self.assertEqual(attempts["n"], 2)
+
+    def test_declining_the_restart_re_raises_immediately(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, ["n"])
+            field.ensure_gripper_stack = lambda force_restart=False: self.fail("should not restart")
+
+            class AlwaysFailsClient:
+                def __init__(self, **kwargs):
+                    pass
+
+                def send_request(self, value):
+                    raise TimeoutError("no reply")
+
+                def terminate(self):
+                    pass
+
+            with patch("real_robot_exps.gripper_test.GripperClient", AlwaysFailsClient):
+                with self.assertRaises(TimeoutError):
+                    field._gripper_call("gripper_grab", True, "close gripper")
+
+    def test_ensure_gripper_stack_is_a_noop_in_mock_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, [])
+            field.args.mock_gripper = True
+            with patch("real_robot_exps.field_session.kill_stray_gripper_processes") as kill:
+                field.ensure_gripper_stack()
+            kill.assert_not_called()
+
+    def test_ensure_gripper_stack_kills_before_relaunching(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, [])
+            order = []
+            with patch("real_robot_exps.field_session.kill_stray_gripper_processes",
+                       side_effect=lambda: order.append("kill")), \
+                 patch("real_robot_exps.field_session.launch_gripper_stack",
+                       side_effect=lambda *a, **k: order.append("launch") or object()), \
+                 patch("real_robot_exps.field_session.gripper_stack_ready", return_value=(True, None)):
+                field.ensure_gripper_stack()
+            self.assertEqual(order, ["kill", "launch"])
 
 
 class TrackingSelectionTest(unittest.TestCase):
