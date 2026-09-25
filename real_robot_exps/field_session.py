@@ -480,7 +480,7 @@ class FieldSession:
     # --- detector -------------------------------------------------------------
     def check_ee(self, apple: Apple, profile: str, step: str) -> None:
         """Refuse to continue until Desk's active end effector is ``profile`` (board/gripper)."""
-        if self.settings.get("mock") or self.args.no_ee_check:
+        if self.settings.get("mock") or not self.args.ee_check:
             return
         from real_robot_exps.ee_profiles import require_profile
         from real_robot_exps.field_config import apply_overrides
@@ -700,10 +700,33 @@ class FieldSession:
             env=ros_env(),
         )
         ready, error = gripper_stack_ready(timeout_s=45.0)
-        if ready:
-            c.say("Gripper controller is up (gripper_grab responding).")
-        else:
+        if not ready:
             c.say(f"!! Gripper controller did not come up: {error}. See {log_path}")
+            return
+        c.say("Gripper controller is up (gripper_grab responding).")
+        self._open_after_restart()
+
+    def _open_after_restart(self) -> None:
+        """Start every (re)started controller from a known state: fingers in, air off.
+
+        Deliberately not routed through _gripper_call: a failure here must not
+        trigger another restart (which would open again, and so on).
+        """
+        from real_robot_exps.gripper_test import GripperClient
+
+        try:
+            gripper = GripperClient(timeout_s=15.0)
+            try:
+                response = gripper.send_request(False)
+            finally:
+                gripper.terminate()
+        except Exception as exc:
+            self.console.say(f"!! Could not open the gripper after the restart: {exc}")
+            return
+        if response is not None and not response.success:
+            self.console.say(f"!! Gripper rejected open after the restart: {response.message}")
+            return
+        self.console.say("Gripper open (fingers in, air off).")
 
     def _gripper_call(self, service: str, value: bool, what: str) -> None:
         from real_robot_exps.gripper_test import GripperClient
@@ -1151,7 +1174,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Do not kill/restart the lfd_apples gripper controller automatically")
     parser.add_argument("--ee-profiles", default=str(REPO_ROOT / "real_robot_exps" / "ee_profiles.yaml"),
                         help="Captured Desk end-effector profiles (only 'gripper' is used), see ee_profiles.py")
-    parser.add_argument("--no-ee-check", action="store_true", help="Do not check Desk's active end effector")
+    parser.add_argument("--ee-check", action=argparse.BooleanOptionalAction, default=False,
+                        help="Check Desk's active end effector before robot steps (off by default)")
     return parser
 
 

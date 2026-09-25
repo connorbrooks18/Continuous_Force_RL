@@ -317,17 +317,45 @@ class GripperCallRetryTest(unittest.TestCase):
                 field.ensure_gripper_stack()
             kill.assert_not_called()
 
-    def test_ensure_gripper_stack_kills_before_relaunching(self):
+    def test_ensure_gripper_stack_kills_relaunches_then_opens(self):
         with tempfile.TemporaryDirectory() as tmp:
             field = self._field(tmp, [])
             order = []
+            field._open_after_restart = lambda: order.append("open")
             with patch("real_robot_exps.field_session.kill_stray_gripper_processes",
                        side_effect=lambda: order.append("kill")), \
                  patch("real_robot_exps.field_session.launch_gripper_stack",
                        side_effect=lambda *a, **k: order.append("launch") or object()), \
                  patch("real_robot_exps.field_session.gripper_stack_ready", return_value=(True, None)):
                 field.ensure_gripper_stack()
-            self.assertEqual(order, ["kill", "launch"])
+            self.assertEqual(order, ["kill", "launch", "open"])
+
+    def test_no_open_when_the_controller_does_not_come_up(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, [])
+            field._open_after_restart = lambda: self.fail("must not open a controller that isn't up")
+            with patch("real_robot_exps.field_session.kill_stray_gripper_processes"), \
+                 patch("real_robot_exps.field_session.launch_gripper_stack", return_value=object()), \
+                 patch("real_robot_exps.field_session.gripper_stack_ready", return_value=(False, "timeout")):
+                field.ensure_gripper_stack()
+
+    def test_failed_open_after_restart_only_warns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, [])
+            with patch("real_robot_exps.gripper_test.GripperClient", side_effect=TimeoutError("no reply")):
+                field._open_after_restart()  # must not raise (and must not restart again)
+            self.assertTrue(any("Could not open the gripper" in line for line in field.console.output))
+
+    def test_end_effector_check_is_off_by_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, [])
+            field.args.ee_check = False
+            with patch("real_robot_exps.ee_profiles.require_profile") as require:
+                field.check_ee(Apple(field.session, "A001"), "gripper", "grasp")
+            require.assert_not_called()
+            from real_robot_exps.field_session import build_parser
+            self.assertFalse(build_parser().parse_args(["--session", "x"]).ee_check)
+            self.assertTrue(build_parser().parse_args(["--session", "x", "--ee-check"]).ee_check)
 
 
 class TrackingSelectionTest(unittest.TestCase):

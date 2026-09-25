@@ -44,7 +44,7 @@ session only checks that the `gripper` profile is active, before calibration,
 tags, grasp, pulls and baseline. It compares the live `RobotState` values
 (`F_T_NE`, `m_ee`, `F_x_Cee`) against `ee_profiles.yaml` and won't continue until
 they match. `s` skips the check, and the skip is recorded in
-`apple.json` (`ee_checks`). `--no-ee-check` turns the check off.
+`apple.json` (`ee_checks`). The check is **off by default**; `--ee-check` turns it on.
 
 **The gripper is finicky: here's why, and what the session now does about it.**
 The valve and finger stepper are on an ESP32 that talks to ROS over a Wi-Fi hotspot
@@ -62,8 +62,8 @@ things cause the flakiness:
 
 `field_session` now handles both: it kills any stray `lfd_automatic_gripper` /
 `micro_ros_agent` process and runs `ros2 launch lfd_apples lfd_gripper.launch.py
-ssid:=<--gripper-ssid> password:=<--gripper-password>` fresh, once at the start of
-the session (`--gripper-ssid`/`--gripper-password` default to `alejos`/`harvesting`,
+ssid:=<--gripper-ssid> password:=<--gripper-password>` fresh and opens the gripper
+(fingers in, air off), once at the start of the session and after every restart (`--gripper-ssid`/`--gripper-password` default to `alejos`/`harvesting`,
 matching the launch file's defaults). Every gripper call (`close`/`open`/`air-on`/
 `air-off`, and the calibration's board release) goes through one place
 (`FieldSession._gripper_call`); on a timeout or rejection it tells you and offers to
