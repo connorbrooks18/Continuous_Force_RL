@@ -321,7 +321,7 @@ class GripperCallRetryTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             field = self._field(tmp, [])
             order = []
-            field._open_after_restart = lambda: order.append("open")
+            field.open_and_confirm = lambda: order.append("open")
             with patch("real_robot_exps.field_session.kill_stray_gripper_processes",
                        side_effect=lambda: order.append("kill")), \
                  patch("real_robot_exps.field_session.launch_gripper_stack",
@@ -333,18 +333,70 @@ class GripperCallRetryTest(unittest.TestCase):
     def test_no_open_when_the_controller_does_not_come_up(self):
         with tempfile.TemporaryDirectory() as tmp:
             field = self._field(tmp, [])
-            field._open_after_restart = lambda: self.fail("must not open a controller that isn't up")
+            field.open_and_confirm = lambda: self.fail("must not open a controller that isn't up")
             with patch("real_robot_exps.field_session.kill_stray_gripper_processes"), \
                  patch("real_robot_exps.field_session.launch_gripper_stack", return_value=object()), \
                  patch("real_robot_exps.field_session.gripper_stack_ready", return_value=(False, "timeout")):
                 field.ensure_gripper_stack()
 
-    def test_failed_open_after_restart_only_warns(self):
+    def _client(self, calls, fail=False):
+        class Client:
+            def __init__(self, **kwargs):
+                pass
+
+            def send_request(self, value):
+                calls.append(value)
+                if fail:
+                    raise TimeoutError("no reply")
+                return type("Response", (), {"success": True, "message": ""})()
+
+            def terminate(self):
+                pass
+
+        return Client
+
+    def test_open_then_operator_confirms_release(self):
         with tempfile.TemporaryDirectory() as tmp:
-            field = self._field(tmp, [])
-            with patch("real_robot_exps.gripper_test.GripperClient", side_effect=TimeoutError("no reply")):
-                field._open_after_restart()  # must not raise (and must not restart again)
-            self.assertTrue(any("Could not open the gripper" in line for line in field.console.output))
+            field = self._field(tmp, ["y"])  # "Is the gripper released?"
+            calls = []
+            with patch("real_robot_exps.gripper_test.GripperClient", self._client(calls)):
+                field.open_and_confirm()
+            self.assertEqual(calls, [False])  # one open (False = release)
+            self.assertIn("released", field.console.output[-1])
+
+    def test_not_released_retries_the_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, ["n", "r", "y"])  # not released -> retry -> released
+            calls = []
+            with patch("real_robot_exps.gripper_test.GripperClient", self._client(calls)):
+                field.open_and_confirm()
+            self.assertEqual(calls, [False, False])
+
+    def test_failed_open_asks_and_can_continue_without_restarting(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, ["", "c"])  # default answer is "no" after a failure -> continue
+            field.ensure_gripper_stack = lambda force_restart=False: self.fail("must not restart on its own")
+            calls = []
+            with patch("real_robot_exps.gripper_test.GripperClient", self._client(calls, fail=True)):
+                field.open_and_confirm()
+            self.assertTrue(any("Opening the gripper failed" in line for line in field.console.output))
+            self.assertIn("continued with the gripper not confirmed",
+                          (Path(tmp) / "s" / "gripper_stack.log").read_text())
+
+    def test_operator_can_ask_for_a_controller_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, ["n", "s"])
+            restarts = []
+            field.ensure_gripper_stack = lambda force_restart=False: restarts.append(force_restart)
+            with patch("real_robot_exps.gripper_test.GripperClient", self._client([])):
+                field.open_and_confirm()
+            self.assertEqual(restarts, [True])
+
+    def test_open_and_confirm_is_skipped_in_mock_mode(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, [])  # no answers: any prompt would raise EOFError
+            field.args.mock_gripper = True
+            field.open_and_confirm()
 
     def test_end_effector_check_is_off_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:

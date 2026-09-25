@@ -62,8 +62,10 @@ things cause the flakiness:
 
 `field_session` now handles both: it kills any stray `lfd_automatic_gripper` /
 `micro_ros_agent` process and runs `ros2 launch lfd_apples lfd_gripper.launch.py
-ssid:=<--gripper-ssid> password:=<--gripper-password>` fresh and opens the gripper
-(fingers in, air off), once at the start of the session and after every restart (`--gripper-ssid`/`--gripper-password` default to `alejos`/`harvesting`,
+ssid:=<--gripper-ssid> password:=<--gripper-password>` fresh, once at the start of the session. At the start and after every restart it opens
+the gripper (fingers in, air off) and asks **"Is the gripper released?"**; if not, you can
+retry the open, restart the controller, or continue anyway (logged in `gripper_stack.log`).
+With `--no-gripper-stack` it still opens and asks at the start (`--gripper-ssid`/`--gripper-password` default to `alejos`/`harvesting`,
 matching the launch file's defaults). Every gripper call (`close`/`open`/`air-on`/
 `air-off`, and the calibration's board release) goes through one place
 (`FieldSession._gripper_call`); on a timeout or rejection it tells you and offers to

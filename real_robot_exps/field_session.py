@@ -704,29 +704,57 @@ class FieldSession:
             c.say(f"!! Gripper controller did not come up: {error}. See {log_path}")
             return
         c.say("Gripper controller is up (gripper_grab responding).")
-        self._open_after_restart()
+        self.open_and_confirm()
 
-    def _open_after_restart(self) -> None:
-        """Start every (re)started controller from a known state: fingers in, air off.
+    def _gripper_log(self, text: str) -> None:
+        self.session.dir.mkdir(parents=True, exist_ok=True)
+        with (self.session.dir / "gripper_stack.log").open("a", encoding="utf-8") as stream:
+            stream.write(f"--- {now_utc()} {text}\n")
 
-        Deliberately not routed through _gripper_call: a failure here must not
-        trigger another restart (which would open again, and so on).
+    def open_and_confirm(self) -> None:
+        """Open the gripper (fingers in, air off) and ask the operator whether it released.
+
+        Runs at session start and after every controller restart, so each run
+        begins from a known state. It talks to GripperClient directly rather than
+        through _gripper_call, so a failed open never restarts on its own; the
+        operator decides: retry the open, restart the controller, or continue.
         """
+        if self._gripper_mock():
+            return
         from real_robot_exps.gripper_test import GripperClient
 
-        try:
-            gripper = GripperClient(timeout_s=15.0)
+        c = self.console
+        while True:
+            error = None
             try:
-                response = gripper.send_request(False)
-            finally:
-                gripper.terminate()
-        except Exception as exc:
-            self.console.say(f"!! Could not open the gripper after the restart: {exc}")
-            return
-        if response is not None and not response.success:
-            self.console.say(f"!! Gripper rejected open after the restart: {response.message}")
-            return
-        self.console.say("Gripper open (fingers in, air off).")
+                gripper = GripperClient(timeout_s=15.0)
+                try:
+                    response = gripper.send_request(False)
+                finally:
+                    gripper.terminate()
+                if response is not None and not response.success:
+                    error = f"rejected: {response.message}"
+            except Exception as exc:
+                error = str(exc)
+            if error:
+                c.say(f"!! Opening the gripper failed: {error}")
+            if c.yes("Is the gripper released (fingers in, air off)?", default=error is None):
+                self._gripper_log(f"gripper released (confirmed by operator){'' if error is None else ' despite: ' + error}")
+                return
+            choice = c.choose(
+                "Gripper not released.",
+                {"r": "retry the open", "s": "restart the gripper controller", "c": "continue anyway"},
+                default="r",
+            )
+            if choice == "c":
+                self._gripper_log("operator continued with the gripper not confirmed released")
+                return
+            if choice == "s":
+                if self.args.no_gripper_stack:
+                    c.say("--no-gripper-stack is set: restart lfd_gripper.launch.py yourself, then retry.")
+                    continue
+                self.ensure_gripper_stack(force_restart=True)  # opens and asks again
+                return
 
     def _gripper_call(self, service: str, value: bool, what: str) -> None:
         from real_robot_exps.gripper_test import GripperClient
@@ -1045,6 +1073,8 @@ class FieldSession:
         else:
             c.say(f"Session {self.session.name}: {len(self.session.apple_ids())} apple(s) so far")
         self.ensure_gripper_stack()
+        if self.args.no_gripper_stack:
+            self.open_and_confirm()
         apple_id = self.args.apple
         if apple_id is None:
             unfinished = [a for a in self.session.apple_ids() if not Apple(self.session, a).complete()]
