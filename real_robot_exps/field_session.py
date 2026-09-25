@@ -457,6 +457,15 @@ class Apple:
 # the per-apple workflow
 # =============================================================================
 
+class GripperRecovered(RuntimeError):
+    """The gripper dropped out mid-step and was reconnected and tested.
+
+    The recovery ends with the gripper open (air off, fingers in), so whatever
+    the interrupted step had set up (suction on the board, fingers around the
+    apple) is gone: the step has to start over.
+    """
+
+
 class FieldSession:
     def __init__(self, args, console: Console | None = None):
         self.args = args
@@ -671,7 +680,7 @@ class FieldSession:
     def _gripper_mock(self) -> bool:
         return bool(self.settings.get("mock") or self.args.mock_gripper)
 
-    def ensure_gripper_stack(self, *, force_restart: bool = False) -> None:
+    def ensure_gripper_stack(self, *, force_restart: bool = False, confirm: bool = True) -> bool:
         """Kill any stray gripper-controller processes and start one clean instance.
 
         A process left running from an earlier launch (closed terminal, crashed run)
@@ -681,12 +690,12 @@ class FieldSession:
         first, then relaunch, rather than trusting whatever is already running.
         """
         if self._gripper_mock() or self.args.no_gripper_stack:
-            return
+            return True
         c = self.console
         if not force_restart and self._gripper_stack_proc is not None and self._gripper_stack_proc.alive():
             ready, _ = gripper_stack_ready(timeout_s=2.0)
             if ready:
-                return
+                return True
         c.say(
             "Restarting the gripper controller (stops any stray lfd_automatic_gripper / "
             "micro_ros_agent processes first, then relaunches lfd_gripper.launch.py)..."
@@ -702,9 +711,11 @@ class FieldSession:
         ready, error = gripper_stack_ready(timeout_s=45.0)
         if not ready:
             c.say(f"!! Gripper controller did not come up: {error}. See {log_path}")
-            return
+            return False
         c.say("Gripper controller is up (gripper_grab responding).")
-        self.open_and_confirm()
+        if confirm:
+            self.open_and_confirm()
+        return True
 
     def _gripper_log(self, text: str) -> None:
         self.session.dir.mkdir(parents=True, exist_ok=True)
@@ -756,30 +767,70 @@ class FieldSession:
                 self.ensure_gripper_stack(force_restart=True)  # opens and asks again
                 return
 
-    def _gripper_call(self, service: str, value: bool, what: str) -> None:
+    def _raw_gripper(self, service: str, value: bool, what: str, timeout_s: float = 30.0) -> None:
+        """One call to a gripper service; raises on timeout or rejection. No recovery."""
         from real_robot_exps.gripper_test import GripperClient
 
-        for attempt in range(2):
-            try:
-                gripper = GripperClient(mock=self._gripper_mock(), timeout_s=30.0, service=service)
-                try:
-                    response = gripper.send_request(value)
-                finally:
-                    gripper.terminate()
-                if response is not None and not response.success:
-                    raise RuntimeError(f"{what} rejected by the gripper: {response.message}")
+        gripper = GripperClient(mock=self._gripper_mock(), timeout_s=timeout_s, service=service)
+        try:
+            response = gripper.send_request(value)
+        finally:
+            gripper.terminate()
+        if response is not None and not response.success:
+            raise RuntimeError(f"{what} rejected by the gripper: {response.message}")
+
+    def _test_gripper(self) -> bool:
+        """Close, then open, and ask the operator whether the gripper actually moved."""
+        c = self.console
+        try:
+            c.say("Testing the gripper: close (air on, fingers out)...")
+            self._raw_gripper(GRAB_SERVICE, True, "test close", timeout_s=15.0)
+            time.sleep(2.5)
+            c.say("... and open (fingers in, air off).")
+            self._raw_gripper(GRAB_SERVICE, False, "test open", timeout_s=15.0)
+            time.sleep(1.5)
+        except Exception as exc:
+            c.say(f"!! Gripper test failed: {exc}")
+            return False
+        return c.yes("Did the gripper close and then open (air on then off, fingers out then in)?", default=True)
+
+    def recover_gripper(self, reason: str) -> None:
+        """Restart the controller and prove the gripper works with a close/open test.
+
+        Ends with the gripper open. Raises RuntimeError if the operator gives up.
+        """
+        c = self.console
+        c.say(f"\n!! Gripper not responding ({reason}).")
+        c.say("   Usually the ESP32's Wi-Fi link dropped (fast robot motion); restarting the controller.")
+        c.enter("Hold anything the gripper is holding (board / apple): the test will close and then OPEN it")
+        while True:
+            self._gripper_log(f"recovering the gripper: {reason}")
+            up = self.ensure_gripper_stack(force_restart=True, confirm=False)
+            if up and self._test_gripper():
+                self._gripper_log("gripper recovered (close/open test confirmed by operator)")
+                c.say("Gripper reconnected and tested; it is now open.")
                 return
-            except (TimeoutError, RuntimeError) as exc:
-                can_restart = not (self._gripper_mock() or self.args.no_gripper_stack)
-                if attempt == 0 and can_restart:
-                    self.console.say(
-                        f"!! {what} got no response ({exc}). The gripper's Wi-Fi link can drop from "
-                        "fast robot motion, or a leftover process may be fighting over the same port."
-                    )
-                    if self.console.yes("Restart the gripper controller and retry?", default=True):
-                        self.ensure_gripper_stack(force_restart=True)
-                        continue
+            choice = c.choose("Gripper still not working.", {"r": "restart and test again", "q": "give up"}, default="r")
+            if choice == "q":
+                raise RuntimeError(f"gripper could not be recovered ({reason})")
+
+    def _gripper_call(self, service: str, value: bool, what: str) -> None:
+        """Every close/open/air-on/air-off goes through here.
+
+        On a timeout or rejection: recover (restart + close/open test). The
+        recovery leaves the gripper open, so a request to open / turn the air off
+        is then already done; a request to close / turn the air on raises
+        GripperRecovered so the caller restarts its step from the beginning.
+        """
+        try:
+            self._raw_gripper(service, value, what)
+            return
+        except (TimeoutError, RuntimeError) as exc:
+            if self._gripper_mock() or self.args.no_gripper_stack:
                 raise
+            self.recover_gripper(f"{what}: {exc}")
+        if value:
+            raise GripperRecovered(f"{what} was interrupted by a gripper disconnect; the gripper is reconnected and open")
 
     def air_on(self) -> None:
         from real_robot_exps.gripper_test import VALVE_SERVICE
@@ -798,6 +849,9 @@ class FieldSession:
             c.enter("Hold the ChArUco board flat against the gripper (fingers in)")
             try:
                 self.air_on()
+            except GripperRecovered:
+                c.say("The air went off during the recovery: hold the board against the gripper again.")
+                continue
             except Exception as exc:
                 c.say(f"!! Air on failed: {exc}")
                 if c.yes("Retry?", default=True):
@@ -1048,6 +1102,10 @@ class FieldSession:
                 except (KeyboardInterrupt, EOFError):
                     apple.mark(name, "failed", error="interrupted")
                     raise
+                except GripperRecovered as exc:
+                    apple.mark(name, "failed", error=f"GripperRecovered: {exc}")
+                    c.say(f"\nGripper reconnected: restarting step '{name}' from the beginning.")
+                    continue
                 except Exception as exc:
                     apple.mark(name, "failed", error=f"{type(exc).__name__}: {exc}")
                     c.say(f"\n!! {name} failed: {exc}")

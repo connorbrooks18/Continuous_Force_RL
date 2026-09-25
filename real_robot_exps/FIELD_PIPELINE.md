@@ -68,8 +68,18 @@ retry the open, restart the controller, or continue anyway (logged in `gripper_s
 With `--no-gripper-stack` it still opens and asks at the start (`--gripper-ssid`/`--gripper-password` default to `alejos`/`harvesting`,
 matching the launch file's defaults). Every gripper call (`close`/`open`/`air-on`/
 `air-off`, and the calibration's board release) goes through one place
-(`FieldSession._gripper_call`); on a timeout or rejection it tells you and offers to
-restart the controller and retry, before giving up. `field_pull` (the pull series,
+(`FieldSession._gripper_call`). **If the gripper stops responding** (timeout or
+rejection), the session recovers it:
+1. it asks you to hold anything the gripper is holding (board / apple), because the
+   recovery ends with the gripper open;
+2. it kills and relaunches the controller;
+3. it tests the gripper, closing and then opening it, and asks whether it actually moved
+   (if not: restart and test again, or give up);
+4. it restarts what was interrupted. A failed *open* or *air off* is already done by the
+   test, so the step carries on. A failed *close* or *air on* restarts its step from the
+   beginning: the board hold asks you to hold the board again and turns the air back on,
+   and any other step (e.g. the grasp) is re-run from its first prompt.
+Every recovery is logged in the session's `gripper_stack.log`. `field_pull` (the pull series,
 which runs as its own process) retries its final release a few times on its own,
 without the interactive restart, since it isn't attached to a console.
 `--no-gripper-stack` turns this management off if you'd rather run the launch

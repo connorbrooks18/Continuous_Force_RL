@@ -25,6 +25,7 @@ from real_robot_exps.field_session import (  # noqa: E402
     Apple,
     Console,
     FieldSession,
+    GripperRecovered,
     Session,
     _tracking_for,
     compose_camera_to_base,
@@ -265,49 +266,113 @@ class GripperCallRetryTest(unittest.TestCase):
                               "tracking_config_path": str(REPO / "at-tracking" / "tracking_config.yaml")}
         return field
 
-    def test_retries_once_after_the_operator_confirms_a_restart(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            field = self._field(tmp, ["y"])  # "Restart the gripper controller and retry?"
-            restarts = []
-            field.ensure_gripper_stack = lambda force_restart=False: restarts.append(force_restart)
-            attempts = {"n": 0}
+    def _recording_client(self, calls, fail_first=0):
+        state = {"n": 0}
 
-            class FlakyClient:
-                def __init__(self, **kwargs):
-                    pass
+        class Client:
+            def __init__(self, service="gripper_grab", **kwargs):
+                self.service = service
 
-                def send_request(self, value):
-                    attempts["n"] += 1
-                    if attempts["n"] == 1:
-                        raise TimeoutError("no reply")
-                    return type("Response", (), {"success": True, "message": ""})()
-
-                def terminate(self):
-                    pass
-
-            with patch("real_robot_exps.gripper_test.GripperClient", FlakyClient):
-                field._gripper_call("gripper_grab", True, "close gripper")
-            self.assertEqual(restarts, [True])
-            self.assertEqual(attempts["n"], 2)
-
-    def test_declining_the_restart_re_raises_immediately(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            field = self._field(tmp, ["n"])
-            field.ensure_gripper_stack = lambda force_restart=False: self.fail("should not restart")
-
-            class AlwaysFailsClient:
-                def __init__(self, **kwargs):
-                    pass
-
-                def send_request(self, value):
+            def send_request(self, value):
+                state["n"] += 1
+                calls.append((self.service, value))
+                if state["n"] <= fail_first:
                     raise TimeoutError("no reply")
+                return type("Response", (), {"success": True, "message": ""})()
 
-                def terminate(self):
-                    pass
+            def terminate(self):
+                pass
 
-            with patch("real_robot_exps.gripper_test.GripperClient", AlwaysFailsClient):
+        return Client
+
+    def test_failed_close_recovers_then_asks_the_step_to_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, [])
+            reasons = []
+            field.recover_gripper = lambda reason: reasons.append(reason)
+            with patch("real_robot_exps.gripper_test.GripperClient", self._recording_client([], fail_first=1)):
+                with self.assertRaises(GripperRecovered):
+                    field._gripper_call("gripper_grab", True, "close gripper")
+            self.assertEqual(len(reasons), 1)
+            self.assertIn("close gripper", reasons[0])
+
+    def test_failed_open_is_done_by_the_recovery_itself(self):
+        # the recovery ends with the gripper open, so a failed open/air-off needs no step restart
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, [])
+            reasons = []
+            field.recover_gripper = lambda reason: reasons.append(reason)
+            with patch("real_robot_exps.gripper_test.GripperClient", self._recording_client([], fail_first=1)):
+                field._gripper_call("/microROS/toggle_valve", False, "air off")
+            self.assertEqual(len(reasons), 1)
+
+    def test_without_stack_management_a_failure_just_raises(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, [])
+            field.args.no_gripper_stack = True
+            field.recover_gripper = lambda reason: self.fail("must not recover")
+            with patch("real_robot_exps.gripper_test.GripperClient", self._recording_client([], fail_first=1)):
                 with self.assertRaises(TimeoutError):
                     field._gripper_call("gripper_grab", True, "close gripper")
+
+    def test_recovery_restarts_then_tests_close_and_open(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, ["", "y"])  # hold what the gripper holds; "did it close and open?"
+            restarts, calls = [], []
+            field.ensure_gripper_stack = lambda force_restart=False, confirm=True: restarts.append((force_restart, confirm)) or True
+            with patch("real_robot_exps.gripper_test.GripperClient", self._recording_client(calls)), \
+                 patch("real_robot_exps.field_session.time.sleep"):
+                field.recover_gripper("air on: no reply")
+            self.assertEqual(restarts, [(True, False)])  # restart without the separate open prompt
+            self.assertEqual(calls, [("gripper_grab", True), ("gripper_grab", False)])  # close, then open
+
+    def test_recovery_repeats_until_the_test_passes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # hold; test says "n" -> restart and test again; test says "y"
+            field = self._field(tmp, ["", "n", "r", "y"])
+            restarts = []
+            field.ensure_gripper_stack = lambda force_restart=False, confirm=True: restarts.append(1) or True
+            with patch("real_robot_exps.gripper_test.GripperClient", self._recording_client([])), \
+                 patch("real_robot_exps.field_session.time.sleep"):
+                field.recover_gripper("x")
+            self.assertEqual(len(restarts), 2)
+
+    def test_operator_can_give_up_on_the_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, ["", "q"])
+            field.ensure_gripper_stack = lambda force_restart=False, confirm=True: False  # controller never comes up
+            with self.assertRaisesRegex(RuntimeError, "could not be recovered"):
+                field.recover_gripper("x")
+
+    def test_hold_board_starts_over_after_a_recovery(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # hold -> (air on interrupted) -> hold again -> air on -> "suction holds?" yes
+            field = self._field(tmp, ["", "", "y"])
+            attempts = []
+
+            def air_on():
+                attempts.append(1)
+                if len(attempts) == 1:
+                    raise GripperRecovered("air on was interrupted")
+
+            field.air_on = air_on
+            field._hold_board()
+            self.assertEqual(len(attempts), 2)
+            prompts = [line for line in field.console.output if "Hold the ChArUco board" in line]
+            self.assertEqual(len(prompts), 2)  # the operator was asked to hold the board again
+
+    def test_run_apple_restarts_the_interrupted_step_without_asking(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, [])  # no answers: a retry/skip/quit prompt would raise EOFError
+            calls = []
+            for name in STEPS:
+                def handler(apple, name=name):
+                    calls.append(name)
+                    if name == "grasp" and calls.count("grasp") == 1:
+                        raise GripperRecovered("close gripper interrupted")
+                setattr(field, f"step_{name}", handler)
+            self.assertTrue(field.run_apple(Apple(field.session, "A001")))
+            self.assertEqual(calls.count("grasp"), 2)
 
     def test_ensure_gripper_stack_is_a_noop_in_mock_mode(self):
         with tempfile.TemporaryDirectory() as tmp:
