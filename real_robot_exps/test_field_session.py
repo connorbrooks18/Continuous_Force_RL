@@ -196,6 +196,25 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(field.session.next_apple_id(), "A003")
 
 
+class RosEnvTest(unittest.TestCase):
+    def test_conda_is_stripped_but_display_is_kept(self):
+        from unittest.mock import patch
+
+        from real_robot_exps.field_session import ros_env
+
+        fake = {
+            "PATH": "/home/u/anaconda3/bin:/usr/bin", "LD_LIBRARY_PATH": "/home/u/anaconda3/lib",
+            "CONDA_PREFIX": "/home/u/anaconda3", "PYTHONPATH": "/x", "DISPLAY": ":1", "ROS_DOMAIN_ID": "7",
+        }
+        with patch.dict("os.environ", fake, clear=True):
+            env = ros_env()
+        self.assertNotIn("anaconda3", env["PATH"])
+        for key in ("LD_LIBRARY_PATH", "CONDA_PREFIX", "PYTHONPATH"):
+            self.assertNotIn(key, env)
+        self.assertEqual(env["DISPLAY"], ":1")
+        self.assertEqual(env["ROS_DOMAIN_ID"], "7")
+
+
 class TrackingSelectionTest(unittest.TestCase):
     def test_picks_the_tracking_file_that_covers_the_pull(self):
         import pyarrow as pa

@@ -274,15 +274,23 @@ class Proc:
     def __init__(self, name: str, cmd: list[str], log_path: Path, *, cwd: Path | None = None, env=None):
         self.name = name
         self.cmd = cmd
+        self.log_path = log_path
         self.log = log_path.open("a", encoding="utf-8")
         self.log.write(f"\n--- {now_utc()} start {name}: {' '.join(cmd)}\n")
         self.log.flush()
+        self._log_offset = self.log.tell()
         self.popen = subprocess.Popen(
             cmd, cwd=cwd, env=env, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True
         )
 
     def alive(self) -> bool:
         return self.popen.poll() is None
+
+    def log_text(self) -> str:
+        """What this process has written to the log so far."""
+        with self.log_path.open("r", encoding="utf-8", errors="replace") as stream:
+            stream.seek(self._log_offset)
+            return stream.read()
 
     def stop(self, timeout_s: float = 20.0) -> int | None:
         if self.alive():
@@ -303,8 +311,28 @@ class Proc:
 
 
 def ros_command(inner: str, ros_ws: Path) -> list[str]:
-    """Run a ROS 2 command with the humble + workspace overlays (system Python, not conda)."""
+    """Run a ROS 2 command with the humble + workspace overlays (system Python, not conda).
+
+    Always pair with ``env=ros_env()``: sourcing ROS on top of an active conda env
+    makes conda's libtiff shadow the system one, and rqt_image_view / cv_bridge die
+    with ``libgdal.so.30: undefined symbol: TIFFReadRGBATileExt``.
+    """
     return ["bash", "-c", f"source {ROS_SETUP} && source {ros_ws}/install/setup.bash && exec {inner}"]
+
+
+# Variables a ROS process needs from the operator's session (display, DDS, locale);
+# everything else, in particular conda's PATH/LD_LIBRARY_PATH/PYTHONPATH/QT_*, is dropped.
+_ROS_ENV_KEEP = (
+    "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL",
+    "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "XDG_RUNTIME_DIR", "XDG_SESSION_TYPE", "DBUS_SESSION_BUS_ADDRESS",
+    "ROS_DOMAIN_ID", "ROS_LOCALHOST_ONLY", "RMW_IMPLEMENTATION", "CYCLONEDDS_URI", "FASTRTPS_DEFAULT_PROFILES_FILE",
+)
+
+
+def ros_env() -> dict[str, str]:
+    env = {key: os.environ[key] for key in _ROS_ENV_KEEP if key in os.environ}
+    env["PATH"] = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    return env
 
 
 # =============================================================================
@@ -527,7 +555,11 @@ class FieldSession:
                 "camera_view",
                 ros_command("ros2 launch easy_handeye2_charuco charuco_view.launch.py use_rviz:=false use_image_view:=true", self.ros_ws),
                 apple.dir / "log.txt",
+                env=ros_env(),
             )
+            time.sleep(6.0)
+            if not view.alive() or "process has died" in view.log_text():
+                c.say(f"!! The live view did not start; see {apple.dir / 'log.txt'} (camera_view).")
             c.enter("Camera aimed (this closes the live view)")
             view.stop()
         c.enter("Mount the ChArUco board on the arm (Franka Desk: board end-effector settings).")
@@ -537,6 +569,7 @@ class FieldSession:
                 "calib_launch",
                 ros_command(f"ros2 launch easy_handeye2_charuco eye_on_base_calib.launch.py name:={name}", self.ros_ws),
                 apple.dir / "log.txt",
+                env=ros_env(),
             )
             try:
                 time.sleep(5.0)
@@ -552,7 +585,7 @@ class FieldSession:
                     "--robot-base-frame fr3_link0 --robot-effector-frame handeye_ee "
                     f"--n-poses {int(self.args.calib_poses)} --seed 0 --return-home",
                     self.ros_ws,
-                ))
+                ), env=ros_env())
                 if code != 0:
                     raise RuntimeError(f"handeye_auto_calibrate exited with {code}")
                 optical_path = calib_dir / "camera_link_to_optical.json"
@@ -563,6 +596,7 @@ class FieldSession:
                         self.ros_ws,
                     ),
                     cwd=REPO_ROOT,
+                    env=ros_env(),
                 )
                 if code != 0:
                     raise RuntimeError("could not read camera_link -> camera_color_optical_frame from TF")
@@ -571,7 +605,7 @@ class FieldSession:
 
             report = subprocess.run(
                 ros_command(f"ros2 run easy_handeye2_franka_auto evaluate_calibration --name {name}", self.ros_ws),
-                capture_output=True, text=True,
+                capture_output=True, text=True, env=ros_env(),
             )
             (calib_dir / "report.txt").write_text(report.stdout + report.stderr, encoding="utf-8")
             c.say(report.stdout[-2500:])
