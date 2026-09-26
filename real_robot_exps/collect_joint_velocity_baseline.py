@@ -93,6 +93,37 @@ def resample_joint_velocity_frames(
     return replay_rows, replay_v, replay_t
 
 
+DEFAULT_REPLAY_CUTOFF_HZ = 5.0
+
+
+def lowpass_replay_velocities(velocities: np.ndarray, rate_hz: float, cutoff_hz: float) -> np.ndarray:
+    """Zero-phase low-pass of the joint velocities before they are replayed.
+
+    The pull's *measured* joint velocities carry 15-30 Hz jitter from the torque
+    controller holding the apple (in a lab trial 36-75% of their power was above
+    10 Hz). Replaying that jitter as a velocity command shakes the arm and puts
+    vibration forces into the baseline that the real pull never had. The pull
+    motions themselves are slow (quasi-static steps), so a 2nd-order Butterworth
+    at 5 Hz, run forward and backward (no lag), keeps the motion and its net
+    joint displacement while removing the jitter. ``cutoff_hz <= 0`` disables it.
+    """
+    if cutoff_hz <= 0.0 or len(velocities) < 16:
+        return velocities
+    from scipy.signal import butter, filtfilt
+
+    nyquist = 0.5 * float(rate_hz)
+    if cutoff_hz >= nyquist:
+        return velocities
+    b, a = butter(2, cutoff_hz / nyquist)
+    # The arm is at rest before and after the pull: pad with a second of zero
+    # velocity so the filter's edge transient settles in the padding and the
+    # replay starts and ends at rest.
+    pad = int(round(rate_hz))
+    values = np.asarray(velocities, dtype=np.float64)
+    padded = np.concatenate([np.zeros((pad, values.shape[1])), values, np.zeros((pad, values.shape[1]))])
+    return filtfilt(b, a, padded, axis=0)[pad:-pad]
+
+
 def load_start_pose(metadata: dict, actual_robot_path: Path) -> np.ndarray:
     pose = metadata.get("robot_start_pose_4x4")
     if pose is None:
@@ -129,6 +160,7 @@ def collect_baseline(
     device: str = "cpu",
     metadata: dict | None = None,
     gripper_state: str = "closed",
+    replay_cutoff_hz: float = DEFAULT_REPLAY_CUTOFF_HZ,
 ) -> Path:
     actual_robot_path = Path(actual_robot_path)
     output_path = Path(output_path)
@@ -144,6 +176,9 @@ def collect_baseline(
         source_velocities,
         source_timestamps,
         float(config["robot"].get("control_rate_hz", 1000.0)),
+    )
+    velocities = lowpass_replay_velocities(
+        velocities, float(config["robot"].get("control_rate_hz", 1000.0)), replay_cutoff_hz
     )
     start_pose_4x4 = load_start_pose(metadata, actual_robot_path)
 
@@ -232,6 +267,10 @@ def collect_baseline(
         "baseline_start_pose_4x4": np.asarray(start_pose_4x4, dtype=np.float64).tolist(),
         "baseline_start_method": "joint_positions" if start_joint_pos is not None else "cartesian_reset",
         "baseline_gripper_state": gripper_state,
+        "baseline_replay_filter": (
+            {"type": "butterworth zero-phase (filtfilt)", "order": 2, "cutoff_hz": float(replay_cutoff_hz)}
+            if replay_cutoff_hz > 0 else {"type": "none"}
+        ),
         **(metadata or {}),
         **(extra_metadata or {}),
     }
@@ -254,6 +293,10 @@ def main() -> None:
     )
     parser.add_argument("--mock-gripper", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument(
+        "--replay-cutoff-hz", type=float, default=DEFAULT_REPLAY_CUTOFF_HZ,
+        help="Low-pass the replayed joint velocities at this frequency (0 = replay them raw)",
+    )
+    parser.add_argument(
         "--override", action="append", default=[],
         help="Config override key.path=value (e.g. robot.use_mock=true)",
     )
@@ -271,7 +314,7 @@ def main() -> None:
             gc.send_request(True)
         collect_baseline(
             args.actual_robot, args.output, config_path,
-            metadata=metadata, gripper_state=args.gripper,
+            metadata=metadata, gripper_state=args.gripper, replay_cutoff_hz=args.replay_cutoff_hz,
         )
     finally:
         try:

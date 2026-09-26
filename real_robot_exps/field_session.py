@@ -540,6 +540,11 @@ class FieldSession:
         apple.data["files"].setdefault("tracking", [])
         if str(output) not in apple.data["files"]["tracking"]:
             apple.data["files"]["tracking"].append(str(output))
+        if self.args.record_video:
+            apple.data["files"].setdefault("video", [])
+            video = str(output.with_suffix(".mp4"))
+            if video not in apple.data["files"]["video"]:
+                apple.data["files"]["video"].append(video)
         apple.save()
         self.console.say(f"Detector started -> {output.name} (waiting for the camera)")
         time.sleep(3.0)
@@ -1254,7 +1259,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--calib-poses", type=int, default=15)
     parser.add_argument("--calib-rotation-deg", type=float, default=25.0,
                         help="Board tilt of the calibration poses; lower it if the suction-held board slips")
-    parser.add_argument("--record-video", action="store_true", help="Also record the detector camera feed")
+    parser.add_argument("--record-video", action=argparse.BooleanOptionalAction, default=True,
+                        help="Record the camera feed (snapshots through the pulls) as tracking_NN.mp4 (default on)")
     parser.add_argument("--ros-ws", default=str(DEFAULT_ROS_WS))
     # testing without hardware
     parser.add_argument("--mock", action="store_true", help="Mock robot + gripper (new sessions only)")
