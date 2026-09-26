@@ -4,6 +4,7 @@
     python -m real_robot_exps.gripper_test open      # fingers in, then air off (gripper_grab)
     python -m real_robot_exps.gripper_test air-on    # air only, fingers untouched
     python -m real_robot_exps.gripper_test air-off
+    python -m real_robot_exps.gripper_test ready     # wait for gripper_grab, send nothing
 
 close/open go through the gripper_controller node's ``gripper_grab`` service;
 air-on/air-off call the micro-ROS valve service directly, so they only need the
@@ -93,9 +94,14 @@ MODES = {
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--mock-gripper", action=argparse.BooleanOptionalAction, default=False)
-    parser.add_argument("mode", nargs="?", choices=tuple(MODES), default="open")
+    parser.add_argument("mode", nargs="?", choices=(*MODES, "ready"), default="open")
     parser.add_argument("--timeout", type=float, default=30.0, help="Seconds to wait for the service")
     args = parser.parse_args()
+
+    if args.mode == "ready":
+        GripperClient(mock=bool(args.mock_gripper), timeout_s=args.timeout).terminate()
+        print(f"{GRAB_SERVICE} is available")
+        return
 
     service, value, message = MODES[args.mode]
     gc = GripperClient(mock=bool(args.mock_gripper), timeout_s=args.timeout, service=service)

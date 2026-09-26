@@ -26,6 +26,7 @@ restart: always kill first, never trust whatever is already running.
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -33,6 +34,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from real_robot_exps.field_session import Proc
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SSID = "alejos"
 DEFAULT_PASSWORD = "harvesting"
 
@@ -78,18 +80,41 @@ def launch_gripper_stack(
 
 
 def gripper_stack_ready(*, mock: bool = False, timeout_s: float = 30.0) -> tuple[bool, str | None]:
-    """True once gripper_grab answers.
+    """True once gripper_grab is available.
 
     The controller node only registers gripper_grab after its toggle_valve /
     move_stepper clients connect to the ESP32 (see lfd_automatic_gripper.py
     initialize_ros_service_clients), so gripper_grab responding is already
-    confirmation that the ESP32 is on the network and bridged.
+    confirmation that the ESP32 is on the network and bridged. Runs
+    ``gripper_test ready`` as its own process (see run_gripper_command).
     """
-    from real_robot_exps.gripper_test import GripperClient
-
+    if mock:
+        return True, None
     try:
-        client = GripperClient(mock=mock, timeout_s=timeout_s)
+        run_gripper_command("ready", timeout_s=timeout_s)
     except Exception as exc:
         return False, str(exc)
-    client.terminate()
     return True, None
+
+
+def run_gripper_command(mode: str, *, timeout_s: float = 30.0) -> str:
+    """Run ``python -m real_robot_exps.gripper_test <mode>`` in a fresh process; return its output.
+
+    Each call gets its own process (and ROS context), exactly like running
+    gripper_test by hand. Making repeated calls from one long-running process
+    (rclpy.init/shutdown per call) timed out in the field even while the same
+    command run by hand worked, so every gripper call goes through here.
+    Raises TimeoutError or RuntimeError with the command's last output line.
+    """
+    cmd = [sys.executable, "-m", "real_robot_exps.gripper_test", mode, "--timeout", f"{timeout_s:g}"]
+    try:
+        result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True, timeout=timeout_s + 30.0)
+    except subprocess.TimeoutExpired as exc:
+        raise TimeoutError(f"gripper_test {mode} did not finish within {timeout_s + 30.0:.0f} s") from exc
+    output = (result.stdout or "") + (result.stderr or "")
+    if result.returncode != 0:
+        lines = [line for line in output.strip().splitlines() if line.strip()]
+        last = lines[-1] if lines else f"exit code {result.returncode}"
+        error = TimeoutError if "Timeout" in output else RuntimeError
+        raise error(f"gripper_test {mode}: {last}")
+    return output

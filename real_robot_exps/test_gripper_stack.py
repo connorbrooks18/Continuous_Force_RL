@@ -1,3 +1,4 @@
+import subprocess
 import unittest
 from unittest.mock import patch
 
@@ -5,6 +6,7 @@ from real_robot_exps.gripper_stack import (
     GRIPPER_PROCESS_PATTERNS,
     gripper_stack_ready,
     kill_stray_gripper_processes,
+    run_gripper_command,
 )
 
 
@@ -40,10 +42,38 @@ class GripperStackReadyTest(unittest.TestCase):
         self.assertIsNone(error)
 
     def test_reports_the_underlying_error_when_not_ready(self):
-        with patch("real_robot_exps.gripper_test.GripperClient", side_effect=TimeoutError("no service")):
+        failed = subprocess.CompletedProcess([], 1, "", "TimeoutError: gripper_grab service not available")
+        with patch("real_robot_exps.gripper_stack.subprocess.run", return_value=failed) as run:
             ready, error = gripper_stack_ready(mock=False, timeout_s=1.0)
         self.assertFalse(ready)
-        self.assertIn("no service", error)
+        self.assertIn("not available", error)
+        self.assertIn("ready", run.call_args.args[0])  # ran `gripper_test ready` in its own process
+
+
+class RunGripperCommandTest(unittest.TestCase):
+    def test_runs_gripper_test_in_a_fresh_process(self):
+        ok = subprocess.CompletedProcess([], 0, "Air on (fingers untouched): ... <- True\nAccepted", "")
+        with patch("real_robot_exps.gripper_stack.subprocess.run", return_value=ok) as run:
+            output = run_gripper_command("air-on", timeout_s=15.0)
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[1:4], ["-m", "real_robot_exps.gripper_test", "air-on"])
+        self.assertIn("Accepted", output)
+
+    def test_timeout_and_rejection_raise_distinct_errors(self):
+        timed_out = subprocess.CompletedProcess([], 1, "", "TimeoutError: toggle_valve got no response in 15 s")
+        rejected = subprocess.CompletedProcess([], 1, "REJECTED: busy", "")
+        with patch("real_robot_exps.gripper_stack.subprocess.run", return_value=timed_out):
+            with self.assertRaises(TimeoutError):
+                run_gripper_command("air-on")
+        with patch("real_robot_exps.gripper_stack.subprocess.run", return_value=rejected):
+            with self.assertRaisesRegex(RuntimeError, "REJECTED"):
+                run_gripper_command("close")
+
+    def test_a_hung_process_is_a_timeout(self):
+        with patch("real_robot_exps.gripper_stack.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired(cmd="x", timeout=1)):
+            with self.assertRaises(TimeoutError):
+                run_gripper_command("open", timeout_s=1.0)
 
 
 if __name__ == "__main__":

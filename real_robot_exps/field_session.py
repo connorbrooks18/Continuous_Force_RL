@@ -88,8 +88,17 @@ from real_robot_exps.gripper_stack import (
     gripper_stack_ready,
     kill_stray_gripper_processes,
     launch_gripper_stack,
+    run_gripper_command,
 )
-from real_robot_exps.gripper_test import GRAB_SERVICE
+from real_robot_exps.gripper_test import GRAB_SERVICE, VALVE_SERVICE
+
+# (service, value) -> gripper_test mode
+GRIPPER_MODES = {
+    (GRAB_SERVICE, True): "close",
+    (GRAB_SERVICE, False): "open",
+    (VALVE_SERVICE, True): "air-on",
+    (VALVE_SERVICE, False): "air-off",
+}
 
 
 def now_utc() -> str:
@@ -726,25 +735,17 @@ class FieldSession:
         """Open the gripper (fingers in, air off) and ask the operator whether it released.
 
         Runs at session start and after every controller restart, so each run
-        begins from a known state. It talks to GripperClient directly rather than
-        through _gripper_call, so a failed open never restarts on its own; the
-        operator decides: retry the open, restart the controller, or continue.
+        begins from a known state. It uses _raw_gripper rather than _gripper_call,
+        so a failed open never restarts on its own; the operator decides: retry the
+        open, restart the controller, or continue.
         """
         if self._gripper_mock():
             return
-        from real_robot_exps.gripper_test import GripperClient
-
         c = self.console
         while True:
             error = None
             try:
-                gripper = GripperClient(timeout_s=15.0)
-                try:
-                    response = gripper.send_request(False)
-                finally:
-                    gripper.terminate()
-                if response is not None and not response.success:
-                    error = f"rejected: {response.message}"
+                self._raw_gripper(GRAB_SERVICE, False, "open", timeout_s=15.0)
             except Exception as exc:
                 error = str(exc)
             if error:
@@ -768,16 +769,20 @@ class FieldSession:
                 return
 
     def _raw_gripper(self, service: str, value: bool, what: str, timeout_s: float = 30.0) -> None:
-        """One call to a gripper service; raises on timeout or rejection. No recovery."""
-        from real_robot_exps.gripper_test import GripperClient
+        """One gripper command in its own process (gripper_test); raises on timeout or rejection.
 
-        gripper = GripperClient(mock=self._gripper_mock(), timeout_s=timeout_s, service=service)
+        No recovery here; see _gripper_call. Each command is a fresh
+        ``gripper_test`` process, exactly like running it by hand.
+        """
+        if self._gripper_mock():
+            return
+        mode = GRIPPER_MODES[(service, value)]
         try:
-            response = gripper.send_request(value)
-        finally:
-            gripper.terminate()
-        if response is not None and not response.success:
-            raise RuntimeError(f"{what} rejected by the gripper: {response.message}")
+            output = run_gripper_command(mode, timeout_s=timeout_s)
+        except Exception as exc:
+            self._gripper_log(f"{what} ({mode}) failed: {exc}")
+            raise
+        self._gripper_log(f"{what} ({mode}) ok: {output.strip().splitlines()[-1] if output.strip() else ''}")
 
     def _test_gripper(self) -> bool:
         """Close, then open, and ask the operator whether the gripper actually moved."""
