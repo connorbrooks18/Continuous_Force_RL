@@ -287,10 +287,30 @@ class Console:
 # processes
 # =============================================================================
 
+# Lines that carry no information and can bury real errors: pupil_apriltags prints the
+# first one many times per frame, and the micro-ROS agent logged thousands of UDP
+# server restarts per second while another agent briefly held its port.
+LOG_NOISE = (
+    "more than one new minima found",
+    "UDPv4AgentLinux.cpp | init",
+    "UDPv4AgentLinux.cpp | fini",
+)
+
+
+def is_log_noise(line: str) -> bool:
+    import re as _re
+
+    clean = _re.sub(r"\x1b\[[0-9;]*m", "", line)
+    clean = " ".join(clean.split())
+    return any(" ".join(pattern.split()) in clean for pattern in LOG_NOISE)
+
+
 class Proc:
     """A background process in its own process group (so Ctrl-C/stop reach all children)."""
 
     def __init__(self, name: str, cmd: list[str], log_path: Path, *, cwd: Path | None = None, env=None):
+        import threading
+
         self.name = name
         self.cmd = cmd
         self.log_path = log_path
@@ -299,8 +319,18 @@ class Proc:
         self.log.flush()
         self._log_offset = self.log.tell()
         self.popen = subprocess.Popen(
-            cmd, cwd=cwd, env=env, stdout=self.log, stderr=subprocess.STDOUT, start_new_session=True
+            cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True
         )
+        self._reader = threading.Thread(target=self._pump, daemon=True)
+        self._reader.start()
+
+    def _pump(self) -> None:
+        for raw in iter(self.popen.stdout.readline, b""):
+            line = raw.decode("utf-8", errors="replace")
+            if is_log_noise(line):
+                continue
+            self.log.write(line)
+            self.log.flush()
 
     def alive(self) -> bool:
         return self.popen.poll() is None
@@ -324,9 +354,44 @@ class Proc:
                 except subprocess.TimeoutExpired:
                     continue
         code = self.popen.poll()
+        self._reader.join(timeout=5.0)
         self.log.write(f"--- {now_utc()} stop {self.name}: exit {code}\n")
         self.log.close()
         return code
+
+
+def run_logged(cmd: list[str], log_path: Path, *, cwd: Path | None = None, env=None) -> int:
+    """Run a foreground command: output goes to the terminal *and* the apple's log.
+
+    Output is forwarded in raw chunks, so interactive prompts that don't end in a
+    newline (handeye_auto_calibrate's free-drive prompt) still appear; stdin stays
+    the terminal. Noise lines (LOG_NOISE) are kept off the log, not the terminal.
+    """
+    env = dict(os.environ if env is None else env)
+    env.setdefault("PYTHONUNBUFFERED", "1")
+    with log_path.open("a", encoding="utf-8") as log:
+        log.write(f"\n--- {now_utc()} run: {' '.join(cmd)}\n")
+        log.flush()
+        process = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        pending = ""
+        while True:
+            chunk = os.read(process.stdout.fileno(), 4096)
+            if not chunk:
+                break
+            text = chunk.decode("utf-8", errors="replace")
+            sys.stdout.write(text)
+            sys.stdout.flush()
+            pending += text
+            *lines, pending = pending.split("\n")
+            for line in lines:
+                if not is_log_noise(line):
+                    log.write(line + "\n")
+            log.flush()
+        if pending and not is_log_noise(pending):
+            log.write(pending + "\n")
+        code = process.wait()
+        log.write(f"--- {now_utc()} exit {code}: {cmd[0]} {' '.join(cmd[1:4])}\n")
+    return code
 
 
 def ros_command(inner: str, ros_ws: Path) -> list[str]:
@@ -626,6 +691,9 @@ class FieldSession:
     def _run_calibration(self, apple: Apple, name: str, calib_dir: Path) -> None:
         c = self.console
         while True:
+            # A result from an earlier attempt must never be mistaken for this one's.
+            for kind, suffix in (("calibrations", ".calib"), ("samples", ".samples")):
+                (HANDEYE_DIR / kind / f"{name}{suffix}").unlink(missing_ok=True)
             launch = Proc(
                 "calib_launch",
                 ros_command(f"ros2 launch easy_handeye2_charuco eye_on_base_calib.launch.py name:={name}", self.ros_ws),
@@ -640,23 +708,24 @@ class FieldSession:
                 robot_config = (
                     "$(ros2 pkg prefix easy_handeye2_franka_auto)/share/easy_handeye2_franka_auto/config/robot.yaml"
                 )
-                code = subprocess.call(ros_command(
+                code = run_logged(ros_command(
                     "ros2 run easy_handeye2_franka_auto handeye_auto_calibrate "
                     f"--robot-config {robot_config} --name {name} "
                     "--robot-base-frame fr3_link0 --robot-effector-frame handeye_ee "
                     f"--n-poses {int(self.args.calib_poses)} "
                     f"--rotation-delta-degrees {float(self.args.calib_rotation_deg):g} --seed 0 --return-home",
                     self.ros_ws,
-                ), env=ros_env())
+                ), apple.dir / "log.txt", env=ros_env())
                 if code != 0:
                     raise RuntimeError(f"handeye_auto_calibrate exited with {code}")
                 optical_path = calib_dir / "camera_link_to_optical.json"
-                code = subprocess.call(
+                code = run_logged(
                     ros_command(
                         f"/usr/bin/python3 -m real_robot_exps.field_tf_lookup --parent camera_link "
                         f"--child camera_color_optical_frame --output {optical_path}",
                         self.ros_ws,
                     ),
+                    apple.dir / "log.txt",
                     cwd=REPO_ROOT,
                     env=ros_env(),
                 )
@@ -678,6 +747,11 @@ class FieldSession:
                 source = HANDEYE_DIR / kind / f"{name}{suffix}"
                 if source.exists():
                     shutil.copy2(source, calib_dir / source.name)
+            if not (HANDEYE_DIR / "calibrations" / f"{name}.calib").exists():
+                raise RuntimeError(
+                    "the calibration did not save a result (too few usable samples? board not "
+                    "seen?); see log.txt and report.txt, then retry"
+                )
             self._write_camera_to_base(apple, calib_dir / f"{name}.calib", optical_path, verdict)
 
             if verdict == "GOOD":
@@ -955,6 +1029,36 @@ class FieldSession:
         time.sleep(2.0)
         if not c.yes("Is the apple held firmly?", default=True):
             raise RuntimeError("grasp not accepted; open the gripper and repeat the grasp step")
+        self._grasp_tag_check(apple)
+
+    def _grasp_tag_check(self, apple: Apple) -> None:
+        """With the apple held, all three tags must be visible, or the pulls can't be compiled."""
+        if self.args.no_detector:
+            return
+        c = self.console
+        try:
+            snapshot = self.snapshot(apple, "grasp_check")
+            missing = []
+        except Exception as exc:
+            seen = read_json(apple.dir / "snapshots" / "grasp_check.json", {}) or {}
+            counts = seen.get("tracker_seen_counts", {})
+            missing = [name for name, count in counts.items() if not count] or ["(see error)"]
+            c.say(f"!! With the apple held, the camera does not see every tag: {exc}")
+        if not missing:
+            c.say(f"Tag check with the apple held: OK ({snapshot.get('camera_frame_count', 0)} frames, all 3 tags)")
+            apple.data["grasp_tag_check"] = {"ok": True, "utc": now_utc()}
+            apple.save()
+            return
+        choice = c.choose(
+            f"Missing: {', '.join(missing)}. Without it the pulls cannot be compiled.",
+            {"r": "re-grasp (fix the tag / grasp first)", "c": "continue anyway"},
+            default="r",
+        )
+        apple.data["grasp_tag_check"] = {"ok": False, "missing": missing, "operator": choice, "utc": now_utc()}
+        apple.save()
+        if choice == "r":
+            self._gripper_call(GRAB_SERVICE, False, "open gripper")
+            raise RuntimeError(f"tags not visible with the apple held ({', '.join(missing)}); grasp again")
 
     def _pull_plan(self, apple: Apple, directions: list[dict[str, Any]]) -> dict:
         s = self.settings
@@ -1013,8 +1117,9 @@ class FieldSession:
         write_json(plan_path, plan)
         status_path = Path(plan["status_path"])
         status_path.unlink(missing_ok=True)
-        code = subprocess.call(
-            [sys.executable, "-m", "real_robot_exps.field_pull", "--plan", str(plan_path)], cwd=REPO_ROOT
+        code = run_logged(
+            [sys.executable, "-m", "real_robot_exps.field_pull", "--plan", str(plan_path)],
+            apple.dir / "log.txt", cwd=REPO_ROOT,
         )
         status = read_json(status_path, {}) or {}
         completed = sorted(done | set(status.get("completed_directions", [])))
@@ -1026,6 +1131,9 @@ class FieldSession:
         if code != 0 or status.get("aborted"):
             # field_pull opened the gripper, so the next attempt needs a new grasp.
             apple.mark("grasp", "pending", reason="pull series aborted; gripper was opened")
+            if "User stopped" in str(status.get("error", "")):
+                c.say("!! The robot is in user stop: release the stop button (and unlock in Desk if "
+                      "needed) before the new grasp.")
             raise RuntimeError(
                 f"pull series stopped ({status.get('error', f'exit {code}')}); gripper was opened. "
                 f"Recorded directions: {completed}. Re-grasp and resume to continue."
@@ -1049,6 +1157,7 @@ class FieldSession:
         c.say("at the grasp pose, so the apple must be out of the gripper's path.")
         c.enter("Gripper open and clear of the apple (cut it or move it aside)")
         self.check_ee(apple, "gripper", "baseline")
+        failed = []
         for d, files in robots:
             if files["baseline"].exists():
                 continue
@@ -1064,8 +1173,11 @@ class FieldSession:
                 cmd += ["--override", override]
             if self.settings.get("mock") or self.args.mock_gripper:
                 cmd.append("--mock-gripper")
-            if subprocess.call(cmd, cwd=REPO_ROOT) != 0:
-                raise RuntimeError(f"baseline d{d['index']:02d} failed")
+            if run_logged(cmd, apple.dir / "log.txt", cwd=REPO_ROOT) != 0:
+                failed.append(f"d{d['index']:02d}")
+                c.say(f"!! baseline d{d['index']:02d} failed (see log.txt); continuing with the rest")
+        if failed:
+            raise RuntimeError(f"baselines failed for {', '.join(failed)}; retry runs only the missing ones")
 
     def step_measurements(self, apple: Apple) -> None:
         c = self.console
@@ -1167,6 +1279,40 @@ class FieldSession:
             self.console.say(f"{apple_id}  {steps}  compiled={compiled}  {apple.data.get('location', '')}")
 
 
+def supersede_for_redo(apple: Apple, step: str) -> list[Path]:
+    """Make --redo pulls / --redo baseline actually redo recorded directions.
+
+    Both steps skip what already exists (completed directions, existing baseline
+    files), so a plain status reset would re-run nothing. The old files are moved to
+    ``superseded-<utc>/`` (never deleted), and data derived from them goes too:
+    redoing the pulls invalidates their baselines and compiled files.
+    """
+    patterns = {
+        "pulls": ("pulls/d[0-9][0-9]_robot.parquet", "baseline/d[0-9][0-9]_baseline.parquet",
+                  "compiled/d[0-9][0-9].parquet", "compiled/d[0-9][0-9].png"),
+        "baseline": ("baseline/d[0-9][0-9]_baseline.parquet", "compiled/d[0-9][0-9].parquet",
+                     "compiled/d[0-9][0-9].png"),
+    }.get(step)
+    if not patterns:
+        return []
+    files = [path for pattern in patterns for path in sorted(apple.dir.glob(pattern))]
+    moved = []
+    if files:
+        target = apple.dir / f"superseded-{now_utc().replace(':', '')}"
+        for path in files:
+            destination = target / path.relative_to(apple.dir)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            path.rename(destination)
+            moved.append(destination)
+    if step == "pulls":
+        apple.step("pulls").pop("completed_directions", None)
+        apple.step("pulls").pop("aborted_directions", None)
+        apple.mark("baseline", "pending", reason="pulls redone")
+    apple.log(f"--redo {step}: moved {len(moved)} file(s) aside")
+    apple.save()
+    return moved
+
+
 # =============================================================================
 # offline compile (at home)
 # =============================================================================
@@ -1240,6 +1386,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--redo", action="append", default=[], choices=STEPS, metavar="STEP",
                         help=f"With --apple: mark STEP pending again so it is re-run ({', '.join(STEPS)})")
     parser.add_argument("--list", action="store_true", help="List the session's apples and their step status")
+    parser.add_argument("--verify", metavar="APPLE|all", default=None,
+                        help="Offline, read-only: check that everything an apple needs was saved and is usable")
     parser.add_argument("--compile", metavar="APPLE|all", default=None, help="Offline: compile an apple (or all)")
     parser.add_argument("--overwrite", action="store_true", help="With --compile: recompile existing outputs")
     parser.add_argument("--no-viz", action="store_true", help="With --compile: skip the PNG plots")
@@ -1286,10 +1434,22 @@ def main(argv: list[str] | None = None) -> None:
             raise SystemExit("--redo needs --apple with an existing apple id")
         apple = Apple(field.session, args.apple)
         for step in args.redo:
+            moved = supersede_for_redo(apple, step)
             apple.mark(step, "pending", reason="--redo")
-            print(f"{args.apple}: {step} will be re-run")
+            print(f"{args.apple}: {step} will be re-run"
+                  + (f" (moved {len(moved)} old file(s) to {moved[0].parent.name}/)" if moved else ""))
     if args.list:
         field.list_apples()
+        return
+    if args.verify:
+        from real_robot_exps.field_verify import verify_apple
+
+        if not field.session.exists():
+            raise SystemExit(f"No session {args.session} under {args.data_root}")
+        ids = field.session.apple_ids() if args.verify == "all" else [args.verify]
+        for apple_id in ids:
+            print(verify_apple(field.session.dir / apple_id, field.session.data, args.session).text())
+            print()
         return
     if args.compile:
         if not field.session.exists():

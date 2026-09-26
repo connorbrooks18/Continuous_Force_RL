@@ -89,6 +89,29 @@ def _read_ee_config(config: dict) -> dict:
         robot.stop()
 
 
+class ProcessGripper:
+    """Gripper commands as fresh ``gripper_test`` processes (see gripper_stack.run_gripper_command).
+
+    A client held open inside a long-running process timed out in the field while
+    the same command run as its own process worked, so this series never keeps a
+    ROS client of its own.
+    """
+
+    def __init__(self, mock: bool = False):
+        self.mock = bool(mock)
+
+    def send_request(self, grab: bool):
+        if self.mock:
+            return None
+        from real_robot_exps.gripper_stack import run_gripper_command
+
+        run_gripper_command("close" if grab else "open", timeout_s=15.0)
+        return None
+
+    def terminate(self) -> None:
+        pass
+
+
 def _open_gripper_with_retries(gripper, *, attempts: int = 3, delay_s: float = 2.0) -> None:
     """Retry a gripper release a few times before giving up.
 
@@ -143,9 +166,7 @@ class PullSeries:
 
     def _connect(self) -> None:
         if self.gripper is None:
-            from real_robot_exps.gripper_test import GripperClient
-
-            self.gripper = GripperClient(mock=bool(self.plan.get("mock_gripper", False)), timeout_s=30.0)
+            self.gripper = ProcessGripper(mock=bool(self.plan.get("mock_gripper", False)))
         self.ee_config = _read_ee_config(self.config)
         if self.robot is None:
             from real_robot_exps.pro_robot_interface import FrankaInterface

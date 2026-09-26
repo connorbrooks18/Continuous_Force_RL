@@ -14,9 +14,29 @@ python -m real_robot_exps.field_session --session 2026-10-02_orchardA --apple A0
 # what has been collected so far
 python -m real_robot_exps.field_session --session 2026-10-02_orchardA --list
 
+# check that everything an apple needs was saved and is usable (read-only)
+python -m real_robot_exps.field_session --session 2026-10-02_orchardA --verify A003   # or all
+
+# redo a step (pulls/baseline move the old files to A003/superseded-<time>/ first)
+python -m real_robot_exps.field_session --session 2026-10-02_orchardA --apple A003 --redo baseline
+
 # at home
 python -m real_robot_exps.field_session --session 2026-10-02_orchardA --compile all
 ```
+
+`--verify` reports PASS / WARN / FAIL for steps, calibration, snapshots, tracking and
+video, each pull (rate, holds, metadata, **camera frames with all three tags during the
+pull**), baselines (present, filtered, duration), and parts (including a plausibility
+check that catches typos, e.g. an apple density of 59,000 kg/m³). It ends with the exact
+`--redo` commands to fix what failed. Run it after each apple, before cutting the next one.
+
+Everything a step runs is also written to the apple's `log.txt`: the pull series, the
+baselines, the calibration and the TF lookup, not just the terminal. Known noise lines
+(AprilTag "more than one new minima", micro-ROS agent UDP restarts) are dropped from the logs.
+
+**Grasp tag check:** after closing the gripper, the session takes a snapshot with the apple
+held. If a tag is hidden (in the first lab trial the gripper covered the apple tag for every
+pull, so nothing could be compiled), it asks you to re-grasp or continue anyway.
 
 Session settings (`--kp --distance --stops --hold --settle --slip-threshold
 --directions --config --override`) are fixed when the session is created and
