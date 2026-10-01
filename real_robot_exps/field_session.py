@@ -616,6 +616,19 @@ class FieldSession:
         if not self.detector.alive():
             raise RuntimeError(f"Detector exited immediately; see {apple.dir / 'log.txt'}")
 
+    def stop_gripper_stack(self) -> None:
+        """Stop the gripper controller this session launched.
+
+        Its output is piped through this process (to filter log noise); left
+        running after this process exits, it would eventually block on that pipe,
+        hang, and keep UDP port 8888 from the next launch. The next session start
+        kills stray processes and relaunches anyway.
+        """
+        if self._gripper_stack_proc is not None:
+            self.console.say("Stopping the gripper controller...")
+            self._gripper_stack_proc.stop()
+            self._gripper_stack_proc = None
+
     def stop_detector(self) -> None:
         if self.detector is not None:
             self.console.say("Stopping the detector (writes the tracking file)...")
@@ -1437,7 +1450,8 @@ def main(argv: list[str] | None = None) -> None:
             moved = supersede_for_redo(apple, step)
             apple.mark(step, "pending", reason="--redo")
             print(f"{args.apple}: {step} will be re-run"
-                  + (f" (moved {len(moved)} old file(s) to {moved[0].parent.name}/)" if moved else ""))
+                  + (f" (moved {len(moved)} old file(s) to {moved[0].relative_to(apple.dir).parts[0]}/)"
+                     if moved else ""))
     if args.list:
         field.list_apples()
         return
@@ -1472,6 +1486,8 @@ def main(argv: list[str] | None = None) -> None:
             + (f" --data-root {args.data_root}" if args.data_root != "~/field_data" else "")
         )
         sys.exit(130)
+    finally:
+        field.stop_gripper_stack()
 
 
 if __name__ == "__main__":
