@@ -303,10 +303,8 @@ class HarvestActorNet(nn.Module):
         self.tower = _RecurrentTower(obs_dim)
         self.mean_head = nn.Linear(self.tower.out_dim, action_dim)
 
-    def initial_state(self, device: str = "cpu") -> tuple[torch.Tensor, torch.Tensor]:
-        h = torch.zeros(1, 1, _LSTM_HIDDEN, device=device)
-        c = torch.zeros(1, 1, _LSTM_HIDDEN, device=device)
-        return h, c
+    def initial_state(self) -> tuple[torch.Tensor, torch.Tensor]:
+        return torch.zeros(1, 1, _LSTM_HIDDEN), torch.zeros(1, 1, _LSTM_HIDDEN)
 
     def forward(
         self, obs: torch.Tensor, h: torch.Tensor, c: torch.Tensor
@@ -320,10 +318,10 @@ class HarvestActorNet(nn.Module):
 
 
 def load_actor_checkpoint(
-    checkpoint_dir: str | Path, device: str = "cpu"
+    checkpoint_dir: str | Path,
 ) -> tuple[HarvestActorNet, torch.Tensor, torch.Tensor, HarvestActionBounds, int]:
-    """Load a skrl checkpoint's actor weights + observation normalization stats
-    without importing skrl/apple_pick_gym.
+    """Load a skrl checkpoint's actor weights + observation normalization stats onto the
+    CPU (checkpoints are trained on GPU) without importing skrl/apple_pick_gym.
 
     See ``rl/checkpoint.py`` (``agent.pt`` = ``{module_name: state_dict()}``) and
     ``skrl/agents/torch/ppo/ppo_rnn.py`` (registers
@@ -337,9 +335,18 @@ def load_actor_checkpoint(
             f"observation _build_actor_obs produces {_ACTOR_LAYOUT} -- the training-side "
             "harvest_obs.py layout changed; resync _build_actor_obs before running this policy."
         )
-    modules = torch.load(checkpoint_dir / "agent.pt", map_location=device, weights_only=False)
+    actor_cfg = meta["config"]["actor"]
+    expected_actor = {
+        "pre_mlp": list(_PRE_MLP), "lstm_hidden": _LSTM_HIDDEN, "lstm_layers": 1,
+        "post_mlp": list(_POST_MLP), "mean_bound": _MEAN_BOUND,
+    }
+    mismatched = {k: (actor_cfg.get(k), v) for k, v in expected_actor.items() if actor_cfg.get(k) != v}
+    if mismatched:
+        # A different mean_bound would load cleanly and silently change every action.
+        raise RuntimeError(f"{checkpoint_dir}: actor config differs from HarvestActorNet (saved, expected): {mismatched}")
+    modules = torch.load(checkpoint_dir / "agent.pt", map_location="cpu", weights_only=False)
 
-    net = HarvestActorNet().to(device)
+    net = HarvestActorNet()
     missing, unexpected = net.load_state_dict(modules["policy"], strict=False)
     still_missing = [k for k in missing if k.startswith("tower.") or k.startswith("mean_head.")]
     consumed_any = any(k.startswith("tower.") or k.startswith("mean_head.") for k in modules["policy"])
@@ -353,8 +360,8 @@ def load_actor_checkpoint(
     net.eval()
 
     obs_pp = modules["observation_preprocessor"]
-    obs_mean = obs_pp["running_mean"].to(device=device, dtype=torch.float32)
-    obs_var = obs_pp["running_variance"].to(device=device, dtype=torch.float32)
+    obs_mean = obs_pp["running_mean"].to(dtype=torch.float32)
+    obs_var = obs_pp["running_variance"].to(dtype=torch.float32)
     if obs_mean.shape != (_OBS_DIM,):
         raise RuntimeError(f"expected observation_preprocessor size {_OBS_DIM}, got {tuple(obs_mean.shape)}")
 
@@ -373,15 +380,17 @@ class HarvestPolicy:
     _EPS = 1e-8
     _CLIP = 5.0
 
-    def __init__(self, checkpoint_dir: str | Path, device: str = "cpu") -> None:
-        self.device = device
+    def __init__(self, checkpoint_dir: str | Path, num_threads: int = 1) -> None:
+        """``num_threads``: torch intra-op threads for inference. One is enough for this
+        network, and more just spin on cores the 1 kHz comm/compute processes need."""
+        torch.set_num_threads(num_threads)
         self.net, self._obs_mean, self._obs_var, self.action_bounds, self.max_episode_steps = (
-            load_actor_checkpoint(checkpoint_dir, device=device)
+            load_actor_checkpoint(checkpoint_dir)
         )
-        self._h, self._c = self.net.initial_state(device)
+        self._h, self._c = self.net.initial_state()
 
     def reset(self) -> None:
-        self._h, self._c = self.net.initial_state(self.device)
+        self._h, self._c = self.net.initial_state()
 
     def _zscore(self, obs: torch.Tensor) -> torch.Tensor:
         return (obs - self._obs_mean) / (torch.sqrt(self._obs_var) + self._EPS)
@@ -397,18 +406,18 @@ class HarvestPolicy:
         """``(field, value, z)`` for every proprioceptive/F-T dim more than ``z_max`` training
         std devs from the training mean. Beyond 5 the normalizer clips, so the policy can't
         even tell how far off the input is."""
-        obs = torch.as_tensor(raw_obs, dtype=torch.float32, device=self.device)
+        obs = torch.as_tensor(raw_obs, dtype=torch.float32)
         z = self._zscore(obs)[:_N_PROPRIO]
         return [
             (_PROPRIO_NAMES[i], float(obs[i]), float(z[i])) for i in range(_N_PROPRIO) if abs(float(z[i])) > z_max
         ]
 
     @torch.no_grad()
-    def act(self, raw_obs: torch.Tensor) -> torch.Tensor:
+    def act(self, raw_obs) -> torch.Tensor:
         """``raw_obs``: ``[40]`` unnormalized actor observation (see
         :func:`_build_actor_obs`). Returns ``[13]`` raw action in ``[-1, 1]`` (the
         deterministic policy mean, clamped -- matches ``RecurrentPolicyRunner.act``)."""
-        norm_obs = self._normalize(raw_obs.to(device=self.device, dtype=torch.float32))
+        norm_obs = self._normalize(torch.as_tensor(raw_obs, dtype=torch.float32))
         mean, self._h, self._c = self.net(norm_obs, self._h, self._c)
         return mean.clamp(-1.0, 1.0)
 
@@ -501,19 +510,17 @@ class FrankaVicHarvestEnv(gym.Env):
         control_rate_hz: float = 60.0,  # matches sim training's RuntimeConfig.control_hz
         sim_base_pos: tuple[float, float, float] = _SIM_ROBOT_BASE_POS,
         quat_hint_xyzw=None,
-        device: str = "cpu",
     ) -> None:
         """``quat_hint_xyzw``: the quaternion sign at reset is chosen to agree with this
         (pass ``HarvestPolicy.training_quat_mean_xyzw``); ``None`` picks ``w <= 0``, the sign
         of 85% of the training start poses. After reset the sign is kept continuous, as
         the sim's integration keeps it."""
         super().__init__()
-        self.device = device
-        self._sim_base_pos = torch.tensor(sim_base_pos, dtype=torch.float32, device=device)
+        self._sim_base_pos = torch.tensor(sim_base_pos, dtype=torch.float32)
         self._quat_hint = (
-            torch.tensor([0.0, 0.0, 0.0, -1.0], device=device)
+            torch.tensor([0.0, 0.0, 0.0, -1.0])
             if quat_hint_xyzw is None
-            else torch.as_tensor(quat_hint_xyzw, dtype=torch.float32, device=device)
+            else torch.as_tensor(quat_hint_xyzw, dtype=torch.float32)
         )
         self._prev_obs_quat: torch.Tensor | None = None
         self.action_bounds = action_bounds
@@ -525,7 +532,7 @@ class FrankaVicHarvestEnv(gym.Env):
         self._config = dict(config)
         self._config["robot"] = dict(self._config.get("robot", {}))  # don't mutate the caller's dict
         self._config["robot"]["control_rate_hz"] = float(control_rate_hz)
-        self.gains = load_gains_from_config(self._config, device)
+        self.gains = load_gains_from_config(self._config, "cpu")
 
         self.observation_space = gym.spaces.Box(-np.inf, np.inf, (_OBS_DIM,), dtype=np.float32)
         self.action_space = gym.spaces.Box(-1.0, 1.0, (_ACTION_DIM,), dtype=np.float32)
@@ -534,14 +541,14 @@ class FrankaVicHarvestEnv(gym.Env):
         self._target_pose: torch.Tensor | None = None  # [7] pos, quat_wxyz -- integrated per step
         self._cage_origin: torch.Tensor | None = None  # [7] pose captured at reset()
         self._default_dof_pos: torch.Tensor | None = None
-        self._last_action = torch.zeros(_ACTION_DIM, device=device)
+        self._last_action = torch.zeros(_ACTION_DIM)
         self._step_count = 0
         self._snap: StateSnapshot | None = None
         self._ft_calibrated = False
 
     def _connect(self) -> None:
         if self.robot is None:
-            self.robot = FrankaInterface(self._config, device=self.device)
+            self.robot = FrankaInterface(self._config, device="cpu")
 
     def _obs_quat_xyzw(self, snap: StateSnapshot) -> torch.Tensor:
         q = _quat_wxyz_to_xyzw(snap.ee_quat)
@@ -578,13 +585,13 @@ class FrankaVicHarvestEnv(gym.Env):
         self._default_dof_pos = snap.joint_pos.clone()
         # Hold in place with the config gains until the first action arrives.
         self.robot.set_control_targets(
-            build_position_targets(self.gains, snap.ee_pos, snap.ee_quat, self._default_dof_pos, self.device)
+            build_position_targets(self.gains, snap.ee_pos, snap.ee_quat, self._default_dof_pos, "cpu")
         )
         # The comm loop restarts the F/T EMA at 0 (~20 ms time constant); let it settle.
         time.sleep(0.2)
         snap = self.robot.get_state_snapshot()
         self._snap = snap
-        self._last_action = torch.zeros(_ACTION_DIM, device=self.device)
+        self._last_action = torch.zeros(_ACTION_DIM)
         self._step_count = 0
         self._prev_obs_quat = None
         return self._obs(snap, 0.0), {}
@@ -592,7 +599,7 @@ class FrankaVicHarvestEnv(gym.Env):
     def step(self, action):
         """Command ``action`` against the latest known TCP, let it run for one control
         period, then observe -- the sim's order, so the returned obs reflects this action."""
-        action_t = torch.as_tensor(action, dtype=torch.float32, device=self.device)
+        action_t = torch.as_tensor(action, dtype=torch.float32)
         env_action = self.action_scaler.to_env(action_t)
         split = split_harvest_action(env_action, self.action_bounds)
         target = integrate_delta_pose(self._target_pose, split.delta)
@@ -627,19 +634,19 @@ class FrankaVicHarvestEnv(gym.Env):
         target_quat = vic_action[3:7]
         kp = vic_action[7:13]
         kd = vic_action[13:19]
-        pos_bounds = torch.full((3,), self.cage_pos_m, device=self.device)
+        pos_bounds = torch.full((3,), self.cage_pos_m)
         return ControlTargets(
             target_pos=target_pos,
             target_quat=target_quat,
-            target_force=torch.zeros(6, device=self.device),
-            sel_matrix=torch.zeros(6, device=self.device),
+            target_force=torch.zeros(6),
+            sel_matrix=torch.zeros(6),
             task_prop_gains=kp,
             task_deriv_gains=kd,
-            force_kp=torch.zeros(6, device=self.device),
-            force_di_wrench=torch.zeros(6, device=self.device),
+            force_kp=torch.zeros(6),
+            force_di_wrench=torch.zeros(6),
             # No integral: the sim VIC law is pure K/D. A nonzero pose_ki makes the compute
             # process add a per-step-reset sum that stiffens the policy's commanded K.
-            pose_ki=torch.zeros(6, device=self.device),
+            pose_ki=torch.zeros(6),
             pose_integral_clamp=self.gains["pose_integral_clamp"],
             pose_integral_reset_on_target=self.gains["pose_integral_reset_on_target"],
             default_dof_pos=self._default_dof_pos,
