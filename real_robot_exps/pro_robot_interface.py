@@ -143,18 +143,9 @@ def _build_snapshot_from_shm(state_shm, device):
     ee_linvel = ee_vel[:3]
     ee_angvel = ee_vel[3:]
 
-    # Rotate F/T from base frame to EE/body frame, then negate.
-    # Sim reads joint forces in the panda_hand LOCAL frame (rotates with robot).
-    # Real robot's O_F_ext_hat_K is in the fixed base frame.
-    # NE_T_EE is identity; F_T_NE (from Franka Desk) already contains
-    # R_z(-45°) + T_z(0.1034) matching sim's panda_hand body frame,
-    # so R from O_T_EE = F_T_NE directly represents the sim body orientation.
-    # R^T rotates base -> body. Negation flips robot-on-env to env-on-robot.
-    ft_base = torch.tensor(ft_ema, device=device, dtype=torch.float32)
-    # ft_body = torch.zeros(6, device=device, dtype=torch.float32)
-    # ft_body[:3] = R.T @ ft_base[:3]
-    # ft_body[3:6] = R.T @ ft_base[3:6]
-    force_torque = -ft_base
+    # ft_ema comes from K_F_ext_hat_K, already in the EE/stiffness frame (EE_T_K is
+    # identity), so no rotation. Negation flips robot-on-env to env-on-robot.
+    force_torque = -torch.tensor(ft_ema, device=device, dtype=torch.float32)
 
     return StateSnapshot(
         ee_pos, ee_quat, ee_linvel, ee_angvel, force_torque,
@@ -185,7 +176,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
         state_ready: mp.Event, set when state_shm is valid.
         config: Full config dict.
         ft_bias: Optional [6] list — constant bias subtracted from raw
-                 O_F_ext_hat_K BEFORE EMA filtering. None to disable.
+                 K_F_ext_hat_K BEFORE EMA filtering. None to disable.
     """
     import os
     import sys
@@ -419,7 +410,7 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                         gravity = model.gravity(state)
 
                         # Capture raw F/T (write to numpy BEFORE bias subtraction)
-                        # O_F_ext_hat_K base frame. ref: https://frankarobotics.github.io/libfranka/0.15.0/structfranka_1_1RobotState.html#a5a830b4f9d6a3c2dc92e4a9cc6050493
+                        # K_F_ext_hat_K: stiffness (EE) frame. ref: https://frankarobotics.github.io/libfranka/0.15.0/structfranka_1_1RobotState.html#a5a830b4f9d6a3c2dc92e4a9cc6050493
                         ft_raw = list(state.K_F_ext_hat_K)
                         ft = ft_raw.copy()
                         # Subtract F/T bias from raw reading, then EMA filter
@@ -725,10 +716,13 @@ def _comm_process_fn(state_shm, torque_shm, cmd_queue, response_queue,
                         ctrl.writeOnce(JointPositions(q_hold))
 
                     # Record for configured duration
+                    # Same field the torque/replay loops subtract this bias from
+                    # (K_F_ext_hat_K, stiffness frame) -- a base-frame bias would
+                    # only cancel when the EE happens to align with the base.
                     readings = []
                     for _ in range(n_samples):
                         state, _ = ctrl.readOnce()
-                        readings.append(list(state.O_F_ext_hat_K))
+                        readings.append(list(state.K_F_ext_hat_K))
                         ctrl.writeOnce(JointPositions(q_hold))
 
                     # Mean
@@ -907,13 +901,9 @@ def _compute_process_fn(state_shm, torque_shm, targets_queue,
             ee_linvel = ee_vel[:3]
             ee_angvel = ee_vel[3:]
 
-            # Rotate F/T from base frame to EE/body frame, then negate.
-            # ft_ema is already bias-corrected (subtracted pre-EMA in comm process).
-            ft_base = torch.tensor(ft_ema, device=device, dtype=torch.float32)
-            ft_body = torch.zeros(6, device=device, dtype=torch.float32)
-            ft_body[:3] = R.T @ ft_base[:3]
-            ft_body[3:6] = R.T @ ft_base[3:6]
-            force_torque = -ft_body
+            # Same convention as _build_snapshot_from_shm: ft_ema is bias-corrected
+            # K_F_ext_hat_K, already in the EE frame; only negate.
+            force_torque = -torch.tensor(ft_ema, device=device, dtype=torch.float32)
 
             # Full wrench + J^T + null-space computation
             torques, task_wrench, jt_torque, null_torque = compute_torques_from_targets(
@@ -1255,7 +1245,7 @@ class FrankaInterface:
             raise RuntimeError(f"Move joints failed: {resp}")
 
     def calibrate_ft_bias(self) -> list:
-        """Calibrate FT bias by averaging raw O_F_ext_hat_K at current pose.
+        """Calibrate FT bias by averaging raw K_F_ext_hat_K at current pose.
 
         Sends calibrate_ft command to comm process. The comm process holds
         current joint positions, settles 0.5s, records FT data for the
