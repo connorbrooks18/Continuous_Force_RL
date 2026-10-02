@@ -346,17 +346,22 @@ def _part_radii_from_parts(parts: dict[str, Any]) -> dict[str, float]:
     return radii
 
 
-def _require_zero_tag_offsets(tracking_metadata: dict[str, Any], path: Path) -> None:
-    """The radius shift assumes tag->object offsets are identity-translation."""
+def _parts_reached_by_tag_offsets(tracking_metadata: dict[str, Any]) -> set[str]:
+    """Trackers whose tags have a non-zero offset in tracking_config.
+
+    A non-zero offset (e.g. a 3D-printed clip's fixed tag-to-branch geometry)
+    already moves the tracked point from the tag onto the part, so the measured
+    radius shift must not be added on top. Tags stuck straight onto a surface
+    keep a zero offset and get the radius shift.
+    """
     objects = ((tracking_metadata.get("tracking_config") or {}).get("objects") or {})
+    reached = set()
     for name, tags in objects.items():
-        for tag_id, spec in (tags or {}).items():
+        for spec in (tags or {}).values():
             offset = np.asarray(spec.get("offset_4x4"), dtype=np.float64).reshape(4, 4)
             if np.linalg.norm(offset[:3, 3]) > 1e-9:
-                raise ValueError(
-                    f"{path}: tag {tag_id} of {name} has a non-zero offset in tracking_config; "
-                    "the measured-radius correction would double count it"
-                )
+                reached.add(name)
+    return reached
 
 
 def _correct_snapshot(snapshot: dict[str, Any], radii_m: dict[str, float], sign: float) -> dict[str, Any]:
@@ -620,9 +625,12 @@ def compile_static_episode(
         }
     tracking_metadata = _read_dataset_metadata(tracking_path)
     part_radii = None
+    offset_parts: set[str] = set()
     if parts is not None:
-        _require_zero_tag_offsets(tracking_metadata, tracking_path)
         part_radii = _part_radii_from_parts(parts)
+        offset_parts = _parts_reached_by_tag_offsets(tracking_metadata) & set(part_radii)
+        for name in offset_parts:
+            part_radii[name] = 0.0
     _require_tracking_frame_base(tracking_metadata, tracking_path)
     camera_to_base_4x4 = _load_camera_to_base(tracking_metadata, tracking_path)
     camera_frames = _load_tracking_frames(tracking_path)
@@ -817,6 +825,10 @@ def compile_static_episode(
             "sign": float(tag_to_part_sign),
             "sign_convention": "+1: AprilTag +z points into the tag, i.e. into the part",
             "radius_m": {name: part_radii[name] for name in TRACKED_NAMES},
+            "radius_shift_skipped": {
+                name: "tag offset in tracking_config already reaches the part (e.g. clip geometry)"
+                for name in sorted(offset_parts)
+            },
             "part_for_tracker": dict(TRACKER_PART_NAMES),
             "raw_fields": ["apple_pos_tag", "apple_pose_4x4_tag", "branch_pose_4x4_tag", "spur_pose_4x4_tag"],
         }

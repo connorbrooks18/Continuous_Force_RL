@@ -17,7 +17,7 @@ from snapshot_requests import SnapshotRequests  # noqa: E402
 
 from real_robot_exps.compile_static_sysid import (  # noqa: E402
     _correct_snapshot,
-    _require_zero_tag_offsets,
+    _parts_reached_by_tag_offsets,
     _tag_to_part_geometry,
 )
 from real_robot_exps.field_session import (  # noqa: E402
@@ -174,12 +174,14 @@ class TagToPartTest(unittest.TestCase):
         self.assertNotIn("snapshot", geometry)
         self.assertNotIn("settled_snapshot", geometry)
 
-    def test_nonzero_tag_offsets_are_rejected(self):
-        offset = np.eye(4)
-        offset[1, 3] = 0.035
-        metadata = {"tracking_config": {"objects": {"Spur": {"1": {"offset_4x4": offset.tolist()}}}}}
-        with self.assertRaisesRegex(ValueError, "double count"):
-            _require_zero_tag_offsets(metadata, Path("t.parquet"))
+    def test_clip_offsets_skip_the_radius_shift_for_that_part_only(self):
+        clip = np.eye(4)
+        clip[2, 3] = 0.03  # clip puts the tracked point 30 mm behind the tag, on the branch axis
+        metadata = {"tracking_config": {"objects": {
+            "Branch": {"0": {"offset_4x4": clip.tolist()}},
+            "Apple": {"2": {"offset_4x4": np.eye(4).tolist()}},
+        }}}
+        self.assertEqual(_parts_reached_by_tag_offsets(metadata), {"Branch"})
 
 
 class ScriptedConsole(Console):
