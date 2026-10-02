@@ -17,7 +17,6 @@ from snapshot_requests import SnapshotRequests  # noqa: E402
 
 from real_robot_exps.compile_static_sysid import (  # noqa: E402
     _correct_snapshot,
-    _parts_reached_by_tag_offsets,
     _tag_to_part_geometry,
 )
 from real_robot_exps.field_session import (  # noqa: E402
@@ -174,14 +173,15 @@ class TagToPartTest(unittest.TestCase):
         self.assertNotIn("snapshot", geometry)
         self.assertNotIn("settled_snapshot", geometry)
 
-    def test_clip_offsets_skip_the_radius_shift_for_that_part_only(self):
-        clip = np.eye(4)
-        clip[2, 3] = 0.03  # clip puts the tracked point 30 mm behind the tag, on the branch axis
-        metadata = {"tracking_config": {"objects": {
-            "Branch": {"0": {"offset_4x4": clip.tolist()}},
-            "Apple": {"2": {"offset_4x4": np.eye(4).tolist()}},
-        }}}
-        self.assertEqual(_parts_reached_by_tag_offsets(metadata), {"Branch"})
+    def test_radius_shift_applies_on_top_of_a_surface_offset(self):
+        # the detector already applied the clip offset (tag centre -> branch surface);
+        # compile then adds the radius along the tracked frame's +z for every part
+        surface = np.array([0.5, 0.3, 0.3])
+        poses = {"Branch": _pose(surface, z_axis=(0, 1, 0)), "Apple": _pose([0.5, 0.2, 0.3], z_axis=(0, 1, 0))}
+        positions = {name: pose[:3, 3].copy() for name, pose in poses.items()}
+        out, _ = _tag_to_part_geometry(positions, poses, {"Branch": 0.0125, "Apple": 0.04})
+        np.testing.assert_allclose(out["Branch"], surface + [0, 0.0125, 0])
+        np.testing.assert_allclose(out["Apple"], [0.5, 0.24, 0.3])
 
 
 class ScriptedConsole(Console):

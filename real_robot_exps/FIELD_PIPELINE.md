@@ -34,11 +34,13 @@ Everything a step runs is also written to the apple's `log.txt`: the pull series
 baselines, the calibration and the TF lookup, not just the terminal. Known noise lines
 (AprilTag "more than one new minima", micro-ROS agent UDP restarts) are dropped from the logs.
 
-**Clip-mounted tags:** a tag on a 3D-printed clip gets its fixed tag-to-part offset in
-`at-tracking/tracking_config.yaml` (`offset.pos`, in the tag's frame: x right, y down, z into
-the tag, metres). For a part whose tag has a non-zero offset, compile does **not** add the
-measured-radius shift, because the offset already reaches the part (recorded under
-`tag_to_part_correction.radius_shift_skipped`). Tags stuck straight on (zero offset) still get it.
+**Tag offsets end on the part surface; the radius is always added.** A tag on a 3D-printed
+clip gets its fixed offset in `at-tracking/tracking_config.yaml` (`offset.pos`, in the tag's
+frame: x right, y down, z into the tag, metres): tag centre to the point where the clip
+touches the branch/spur surface, never to the axis. A tag stuck straight on keeps `[0, 0, 0]`
+(the tag centre already is on the surface). Compile then adds each part's measured radius
+along the tracked frame's +z to reach the axis or centre, for every part. So measure the
+diameter at the clip, and keep any offset rotation with +z pointing into the part.
 
 **Grasp tag check:** after closing the gripper, the session takes a snapshot with the apple
 held. If a tag is hidden (in the first lab trial the gripper covered the apple tag for every
