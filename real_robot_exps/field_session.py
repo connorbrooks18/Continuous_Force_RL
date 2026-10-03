@@ -1501,7 +1501,7 @@ def build_parser() -> argparse.ArgumentParser:
                              "later apples default to the previous one). Default: all but Reserved")
     parser.add_argument("--directions", default=str(DEFAULT_DIRECTIONS))
     parser.add_argument("--override", action="append", default=[], help="Robot config override key.path=value")
-    parser.add_argument("--kp", type=float, default=100.0)
+    parser.add_argument("--kp", type=float, default=500.0)
     parser.add_argument("--distance", type=float, default=0.04, help="Pull distance [m]")
     parser.add_argument("--stops", type=int, default=4)
     parser.add_argument("--hold", type=float, default=1.0, help="Hold duration per stop [s]")

@@ -174,7 +174,7 @@ class PullSeries:
             self.robot = FrankaInterface(self.config, device="cpu")
         kp = float(self.plan["kp"])
         gains = load_gains_from_config(self.config, "cpu")
-        self.gains = update_gains(gains, [kp, kp, kp, 30, 30, 30], "cpu")
+        self.gains = update_gains(gains, [kp, kp, kp, 40, 40, 40], "cpu")
 
     # -- helpers ---------------------------------------------------------------
     def _snapshot(self, label: str, output: Path) -> dict:
