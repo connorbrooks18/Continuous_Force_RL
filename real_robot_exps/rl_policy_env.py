@@ -661,8 +661,60 @@ class FrankaVicHarvestEnv(gym.Env):
 
 
 # ============================================================================
-# Smoke-test CLI.
+# Rollout + smoke-test CLI.
 # ============================================================================
+
+
+def new_rollout_log() -> dict[str, list]:
+    return {"obs": [], "action": [], "env_action": [], "vic_action": [], "t": []}
+
+
+def run_rollout(
+    policy: HarvestPolicy,
+    env: FrankaVicHarvestEnv,
+    obs: np.ndarray,
+    steps: int,
+    log: dict[str, list],
+    *,
+    allow_ood: bool = False,
+    say=print,
+) -> bool:
+    """Run the policy from ``obs`` (the observation ``env.reset()`` returned) for up to
+    ``steps`` steps, appending to ``log`` as it goes (so an interrupted run keeps what it
+    did). Returns False, having commanded nothing, if the start pose is out of the
+    training distribution and ``allow_ood`` is false."""
+    ood = policy.out_of_distribution(obs)
+    if ood:
+        say("Start pose is outside the training distribution (|z| > 3):")
+        for name, value, z in ood:
+            say(f"  {name:12s} = {value:+.4f}  (z = {z:+.1f})")
+        if not allow_ood:
+            say("Refusing to run; reposition the arm or pass --allow-ood.")
+            return False
+    policy.reset()
+    t0 = time.monotonic()
+    for t in range(steps):
+        action = policy.act(torch.as_tensor(obs, dtype=torch.float32))
+        log["obs"].append(obs)
+        log["action"].append(action.numpy())
+        obs, _reward, terminated, truncated, info = env.step(action.numpy())
+        log["env_action"].append(info["env_action"])
+        log["vic_action"].append(info["vic_action"])
+        log["t"].append(time.monotonic() - t0)
+        say(
+            f"step {t:4d} action={np.round(action.numpy(), 3)} "
+            f"d_pos={np.round(obs[:3], 4)} ft={np.round(obs[15:21], 2)}"
+        )
+        if terminated or truncated:
+            say(f"episode ended: terminated={terminated} truncated={truncated} {info.get('safety_violation', '')}")
+            break
+    return True
+
+
+def save_rollout_log(log: dict[str, list], path: str | Path | None, say=print) -> None:
+    if path and log["t"]:
+        np.savez(path, **{k: np.asarray(v) for k, v in log.items()})
+        say(f"wrote {len(log['t'])} steps to {path}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -677,7 +729,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--allow-ood", action="store_true", help="run even if the start pose is outside the training distribution"
     )
-    parser.add_argument("--log", help="write per-step obs/action/vic_action/time to this .npz")
+    parser.add_argument("--log", help="write per-step obs/action/env_action/vic_action/time to this .npz")
     args = parser.parse_args(argv)
 
     policy = HarvestPolicy(args.checkpoint)
@@ -694,7 +746,8 @@ def main(argv: list[str] | None = None) -> int:
         cage_rot_rad=args.cage_rot_rad,
         control_rate_hz=args.control_rate_hz,
     )
-    log: dict[str, list] = {"obs": [], "action": [], "env_action": [], "vic_action": [], "t": []}
+    log = new_rollout_log()
+    ran = False
     try:
         if not args.mock:
             input("Gripper free and open, nothing touching it? Enter to calibrate F/T... ")
@@ -702,38 +755,11 @@ def main(argv: list[str] | None = None) -> int:
         if not args.mock:
             input("Now grasp the apple (field_session grasp / gripper_test close). Enter to start the policy... ")
         obs, _ = env.reset()
-        ood = policy.out_of_distribution(obs)
-        if ood:
-            print("Start pose is outside the training distribution (|z| > 3):")
-            for name, value, z in ood:
-                print(f"  {name:12s} = {value:+.4f}  (z = {z:+.1f})")
-            if not args.allow_ood:
-                print("Refusing to run; reposition the arm or pass --allow-ood.")
-                return 2
-        policy.reset()
-        t0 = time.monotonic()
-        for t in range(args.steps):
-            action = policy.act(torch.as_tensor(obs, dtype=torch.float32))
-            log["obs"].append(obs)
-            log["action"].append(action.numpy())
-            obs, _reward, terminated, truncated, info = env.step(action.numpy())
-            log["env_action"].append(info["env_action"])
-            log["vic_action"].append(info["vic_action"])
-            log["t"].append(time.monotonic() - t0)
-            print(
-                f"step {t:4d} action={np.round(action.numpy(), 3)} "
-                f"d_pos={np.round(obs[:3], 4)} ft={np.round(obs[15:21], 2)}"
-            )
-            if terminated or truncated:
-                print(f"episode ended: terminated={terminated} truncated={truncated} "
-                      f"{info.get('safety_violation', '')}")
-                break
+        ran = run_rollout(policy, env, obs, args.steps, log, allow_ood=args.allow_ood)
     finally:
         env.close()
-        if args.log and log["t"]:
-            np.savez(args.log, **{k: np.asarray(v) for k, v in log.items()})
-            print(f"wrote {len(log['t'])} steps to {args.log}")
-    return 0
+        save_rollout_log(log, args.log)
+    return 0 if ran else 2
 
 
 if __name__ == "__main__":
