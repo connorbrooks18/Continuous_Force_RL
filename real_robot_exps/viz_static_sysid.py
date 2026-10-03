@@ -25,8 +25,12 @@ import numpy as np
 import pyarrow.parquet as pq
 
 
-TRACKED_NAMES = ("Branch", "Spur", "Apple")
-WOODY_PART_NAMES = ("Branch", "Spur", "Apple")
+NON_WOODY_POSE_COLUMNS = {"apple_pose_4x4", "tcp_pose_4x4", "target_pose_4x4"}
+
+
+def _woody_pose_columns(row: dict[str, Any]) -> list[str]:
+    """Corrected pose columns of the tracked woody points (branch, spur_start, ...)."""
+    return [key for key in row if key.endswith("_pose_4x4") and key not in NON_WOODY_POSE_COLUMNS]
 
 
 def _read_dataset_metadata(path: Path) -> dict[str, Any]:
@@ -71,8 +75,6 @@ def _load_plot_data(path: Path) -> PlotData:
     metadata = _read_dataset_metadata(path)
     required_camera_fields = {
         "apple_pos",
-        "branch_pose_4x4",
-        "spur_pose_4x4",
         "apple_pose_4x4",
         "camera_timestamp",
         "robot_camera_timestamp_offset_s",
@@ -113,7 +115,7 @@ def _unique_string_values(rows: list[dict[str, Any]], key: str) -> str:
 
 def _junction_names_from_metadata(metadata: dict[str, Any]) -> str:
     topology = metadata.get("topology", {}) if isinstance(metadata, dict) else {}
-    names = topology.get("junction_names") or topology.get("node_order") or ()
+    names = topology.get("tracked_names") or topology.get("junction_names") or topology.get("node_order") or ()
     if not names:
         return ""
     return ", ".join(str(name) for name in names if str(name).strip())
@@ -230,12 +232,12 @@ def plot_static_sysid(
         robot_camera_offset = np.zeros(len(rows), dtype=np.float64)
     if has_camera:
         apple_pos = _vector_columns(rows, "apple_pos")
-        branch_pos = _pose_positions(rows, "branch_pose_4x4")
-        spur_pos = _pose_positions(rows, "spur_pose_4x4")
+        woody_pos = {key[: -len("_pose_4x4")]: _pose_positions(rows, key) for key in _woody_pose_columns(rows[0])}
         apple_pose_pos = _pose_positions(rows, "apple_pose_4x4")
         camera_valid = np.asarray([row["camera_data_valid"] for row in rows], dtype=bool)
     else:
-        apple_pos = branch_pos = spur_pos = apple_pose_pos = None
+        apple_pos = apple_pose_pos = None
+        woody_pos = {}
     hold_index = np.asarray([row["hold_index"] for row in rows], dtype=int)
     episode_id = _episode_id_from_metadata(data.metadata, rows)
     phase_names = _phase_labels(rows)
@@ -300,8 +302,6 @@ def plot_static_sysid(
     if has_camera:
         tcp_pos_cm = tcp_pos * 100.0
         apple_pos_cm = apple_pos * 100.0
-        branch_pos_cm = branch_pos * 100.0
-        spur_pos_cm = spur_pos * 100.0
         apple_pose_pos_cm = apple_pose_pos * 100.0
         tcp_pos_delta_cm = _delta_cm(tcp_pos)
         apple_pos_delta_cm = _delta_cm(apple_pos)
@@ -343,29 +343,18 @@ def plot_static_sysid(
         axes[5].grid(True, alpha=0.25)
         axes[5].legend(loc="upper right", ncol=3, fontsize=8)
 
-        axes[6].plot(t, branch_pos_cm[:, 0], label="branch x")
-        axes[6].plot(t, branch_pos_cm[:, 1], label="branch y")
-        axes[6].plot(t, branch_pos_cm[:, 2], label="branch z")
-        axes[6].plot(t, spur_pos_cm[:, 0], "--", label="spur x")
-        axes[6].plot(t, spur_pos_cm[:, 1], "--", label="spur y")
-        axes[6].plot(t, spur_pos_cm[:, 2], "--", label="spur z")
-        axes[6].set_title("Branch endpoint absolute positions")
-        axes[6].set_ylabel("cm")
-        axes[6].grid(True, alpha=0.25)
-        axes[6].legend(loc="upper right", ncol=3, fontsize=8)
-
-        branch_pos_delta_cm = _delta_cm(branch_pos)
-        spur_pos_delta_cm = _delta_cm(spur_pos)
-        axes[7].plot(t, branch_pos_delta_cm[:, 0], label="branch delta x")
-        axes[7].plot(t, branch_pos_delta_cm[:, 1], label="branch delta y")
-        axes[7].plot(t, branch_pos_delta_cm[:, 2], label="branch delta z")
-        axes[7].plot(t, spur_pos_delta_cm[:, 0], "--", label="spur delta x")
-        axes[7].plot(t, spur_pos_delta_cm[:, 1], "--", label="spur delta y")
-        axes[7].plot(t, spur_pos_delta_cm[:, 2], "--", label="spur delta z")
-        axes[7].set_title("Branch endpoint deltas")
-        axes[7].set_ylabel("delta cm")
-        axes[7].grid(True, alpha=0.25)
-        axes[7].legend(loc="upper right", ncol=3, fontsize=8)
+        styles = ("-", "--", ":", "-.")
+        for (key, pos), style in zip(woody_pos.items(), styles * len(woody_pos)):
+            delta = _delta_cm(pos)
+            for axis, label in enumerate("xyz"):
+                axes[6].plot(t, pos[:, axis] * 100.0, style, label=f"{key} {label}")
+                axes[7].plot(t, delta[:, axis], style, label=f"{key} delta {label}")
+        for ax, title, unit in ((axes[6], "Woody tag absolute positions", "cm"), (axes[7], "Woody tag deltas", "delta cm")):
+            ax.set_title(title if woody_pos else f"{title} (no woody tags tracked)")
+            ax.set_ylabel(unit)
+            ax.grid(True, alpha=0.25)
+            if woody_pos:
+                ax.legend(loc="upper right", ncol=3, fontsize=8)
     else:
         axes[3].plot(t, tcp_pos[:, 0] * 100.0, label="tcp x")
         axes[3].plot(t, tcp_pos[:, 1] * 100.0, label="tcp y")

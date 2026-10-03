@@ -102,17 +102,18 @@ Unified camera fields:
 | --- | ---: | --- |
 | `apple_pos` | 3 | Apple position in the base frame. |
 | `apple_pose_4x4` | 16 | Apple pose in the base frame. |
-| `branch_pose_4x4` | 16 | Branch/Spur junction pose in the base frame. |
-| `spur_pose_4x4` | 16 | Stem/Spur junction pose in the base frame. |
+| `<key>_pose_4x4` | 16 | Pose of each tracked woody tag (`branch`, `spur_start`, `spur_end`, `stem_start`; older files `branch`, `spur`) in the base frame. |
 | `camera_timestamp` | 1 | Median camera timestamp used for the row. |
 | `robot_camera_timestamp_offset_s` | 1 | Robot time minus camera time. |
 
-The Branch, Spur, and Apple pose fields are the preferred structure geometry:
-`branch_pose_4x4` is the Branch/Spur junction, `spur_pose_4x4` is the
-stem/Spur junction, and `apple_pose_4x4` is the apple center. The metadata
-snapshot fields `woody_part_start_pos`, `woody_part_end_pos`, and
-`woody_bending_angles` are deprecated compatibility fields; they remain in
-snapshots for now but are not part of the per-row unified schema.
+Woody pose columns depend on which tags were tracked for the apple
+(`topology.tracked_names` in the metadata). Each tracked tag other than the apple
+gets `<key>_pose_4x4` (radius-corrected) and `<key>_pose_4x4_tag` (raw), where
+`<key>` is the snake_case tracker name: `branch`, `spur_start`, `spur_end`,
+`stem_start`. Files compiled from tracking recorded before the tag selection
+existed have `branch_pose_4x4` and `spur_pose_4x4`. Since schema 1.1.0 compile
+builds no chords: there are no bending angles, `woody_part_*` or
+`rest_chord_vectors`.
 
 ## Hard-coded poses
 

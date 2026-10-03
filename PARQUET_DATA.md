@@ -118,8 +118,8 @@ camera/alignment fields are added:
 | `step_idx` | scalar | Sequential row index. |
 | `apple_pos` | 3 | Camera-derived apple position. |
 | `apple_pose_4x4` | 16 | Camera-derived apple pose. |
-| `branch_pose_4x4` | 16 | Branch/Spur junction pose in the base frame. |
-| `spur_pose_4x4` | 16 | Stem/Spur junction pose in the base frame. |
+| `<key>_pose_4x4` | 16 | Pose of each tracked woody tag (`branch`, `spur_start`, `spur_end`, `stem_start`; older files `branch`, `spur`) in the base frame. |
+| `apple_pos_tag`, `apple_pose_4x4_tag`, `<key>_pose_4x4_tag` | 3 / 16 | The same before the tag-to-part radius correction. |
 | `camera_timestamp` | scalar | Median selected camera timestamp. |
 | `robot_camera_timestamp_offset_s` | scalar | Robot time minus camera time. |
 | `camera_window_start_timestamp` | scalar | Earliest selected camera frame. |
@@ -128,12 +128,14 @@ camera/alignment fields are added:
 | `camera_selected_timestamps` | list | Selected camera timestamps. |
 | `camera_data_valid` | boolean | Whether camera geometry was available. |
 
-Structure geometry should use the pose fields: `branch_pose_4x4` is the
-Branch/Spur junction, `spur_pose_4x4` is the stem/Spur junction, and
-`apple_pose_4x4` is the apple center. The metadata snapshot fields
-`woody_part_start_pos`, `woody_part_end_pos`, and `woody_bending_angles` are
-deprecated compatibility fields. They remain in camera/pre-grasp snapshots
-for now, but are intentionally absent from per-row schemas.
+Woody pose columns depend on which tags were tracked for the apple
+(`topology.tracked_names` in the metadata). Each tracked tag other than the apple
+gets `<key>_pose_4x4` (radius-corrected) and `<key>_pose_4x4_tag` (raw), where
+`<key>` is the snake_case tracker name: `branch`, `spur_start`, `spur_end`,
+`stem_start`. Files compiled from tracking recorded before the tag selection
+existed have `branch_pose_4x4` and `spur_pose_4x4`. Since schema 1.1.0 compile
+builds no chords: there are no bending angles, `woody_part_*` or
+`rest_chord_vectors`.
 
 ## Metadata Groups
 
@@ -149,7 +151,7 @@ Important `dataset_metadata` groups are:
   `applied=true` when subtraction succeeds.
 - `field_layout`: dimensions and meanings of model-facing fields.
 - `camera_aggregation`: frame selection and smoothing settings.
-- `topology`: Branch/Spur/Apple chord ordering.
+- `topology`: the tracked trackers (`tracked_names`), their column keys, and the tag ids.
 - `compiler`: software versions and source commits in unified files.
 
 ## Snapshot Semantics

@@ -18,6 +18,14 @@ import numpy as np
 
 REQUEST_SUFFIX = ".request.json"  # must match at-tracking/snapshot_requests.py
 
+# Snapshot keys (start, end) whose direction gives a part's connection angle, best
+# first; the first pair present in the lengthened snapshot is used. The last pair
+# of each is the old Branch/Spur/Apple layout.
+CONNECTION_PAIRS = {
+    "spur": (("spur_start", "spur_end"), ("branch", "spur_start"), ("branch", "spur")),
+    "stem": (("stem_start", "apple"), ("spur_end", "apple"), ("spur", "apple")),
+}
+
 
 class SnapshotError(RuntimeError):
     """The detector could not produce the requested snapshot."""
@@ -56,16 +64,17 @@ def update_pre_grasp_geometry_with_snapshots(
     parts = out.setdefault("parts", {})
     if "primary" in parts:
         parts["primary"]["connection_rpy_deg"] = [0.0, 0.0, 0.0]
-    if lengthened and all(key in lengthened for key in ("branch_pos", "spur_pos", "apple_pos")):
-        branch = np.asarray(lengthened["branch_pos"], dtype=np.float64)
-        spur = np.asarray(lengthened["spur_pos"], dtype=np.float64)
-        apple = np.asarray(lengthened["apple_pos"], dtype=np.float64)
-        if "spur" in parts:
-            parts["spur"]["connection_rpy_deg"] = rpy_deg_from_vector(spur - branch)
-            parts["spur"]["connection_source"] = "lengthened_snapshot"
-        if "stem" in parts:
-            parts["stem"]["connection_rpy_deg"] = rpy_deg_from_vector(apple - spur)
-            parts["stem"]["connection_source"] = "lengthened_snapshot"
+    for part, pairs in CONNECTION_PAIRS.items():
+        pair = next(
+            ((start, end) for start, end in pairs if f"{start}_pos" in lengthened and f"{end}_pos" in lengthened),
+            None,
+        )
+        if part not in parts or pair is None:
+            continue
+        start, end = (np.asarray(lengthened[f"{key}_pos"], dtype=np.float64) for key in pair)
+        parts[part]["connection_rpy_deg"] = rpy_deg_from_vector(end - start)
+        parts[part]["connection_source"] = "lengthened_snapshot"
+        parts[part]["connection_from_to"] = list(pair)
     if "apple" in parts:
         parts["apple"]["connection_rpy_deg"] = [0.0, 0.0, 0.0]
         parts["apple"]["connection_source"] = "lengthened_snapshot"

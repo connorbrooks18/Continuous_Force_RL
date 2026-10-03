@@ -21,7 +21,8 @@ ROBOT_TOP_LEVEL_KEYS = (
     "episode_id", "rest_reference_timestamp", "theta_rad", "phi_rad", "robot_start_pose_4x4",
     "robot_start_joint_pos", "pre_grasp_geometry", "post_grasp_geometry", "dump",
 )
-TRACKERS = ("Branch", "Spur", "Apple")
+# Trackers of apples recorded before the per-apple tag selection existed.
+LEGACY_TRACKERS = ("Branch", "Spur", "Apple")
 
 
 @dataclass
@@ -81,6 +82,10 @@ def _data_rows(path: Path):
 def verify_apple(apple_dir: Path, session_data: dict[str, Any], session_name: str = "S") -> Report:
     apple_dir = Path(apple_dir)
     apple = json.loads((apple_dir / "apple.json").read_text(encoding="utf-8"))
+    from real_robot_exps.compile_static_sysid import tracker_key
+
+    trackers = tuple(apple.get("tracked_names") or LEGACY_TRACKERS)
+    n_tags = len(trackers)
     apple_id = apple_dir.name
     report = Report(apple_id)
     redo = lambda *steps: report.redo.append(
@@ -137,12 +142,12 @@ def verify_apple(apple_dir: Path, session_data: dict[str, Any], session_name: st
             redo("snapshots")
             continue
         snapshot = json.loads(path.read_text())
-        if "error" in snapshot or not all(f"{k}_pos" in snapshot for k in ("apple", "branch", "spur")):
+        if "error" in snapshot or not all(f"{tracker_key(name)}_pos" in snapshot for name in trackers):
             sec.note("FAIL", f"{label}: {snapshot.get('error', 'incomplete')}")
             redo("snapshots")
         else:
             png = "with image" if path.with_suffix(".png").exists() else "no image"
-            sec.note("PASS", f"{label}: {snapshot.get('camera_frame_count')} frames, all 3 tags, {png}")
+            sec.note("PASS", f"{label}: {snapshot.get('camera_frame_count')} frames, all {n_tags} tags, {png}")
     post_errors = []
     for index in directions:
         path = apple_dir / "snapshots" / f"post_grasp_d{index:02d}.json"
@@ -162,6 +167,10 @@ def verify_apple(apple_dir: Path, session_data: dict[str, Any], session_name: st
         frame = _data_rows(tracking)
         stamps = np.sort(frame["timestamp"].unique())
         tracking_frames.append((tracking, frame, stamps))
+        recorded = meta.get("tracker_names")
+        if recorded is not None and list(recorded) != list(trackers):
+            sec.note("WARN", f"{tracking.name} tracked {', '.join(recorded)}, but the apple's selection is "
+                             f"{', '.join(trackers)}")
         span = float(stamps[-1] - stamps[0]) if len(stamps) > 1 else 0.0
         sec.note("PASS", f"{tracking.name}: {len(stamps)} frames, {span:.0f} s, "
                          f"{len(stamps) / span if span else 0:.1f} fps, final={not meta.get('partial', False)}")
@@ -214,15 +223,15 @@ def verify_apple(apple_dir: Path, session_data: dict[str, Any], session_name: st
                 continue
             ok = np.isfinite(inside[["x", "y", "z"]].to_numpy(float)).all(axis=1)
             seen = inside[ok].groupby("timestamp")["name"].apply(set)
-            complete += int(sum(set(TRACKERS) <= names for names in seen))
+            complete += int(sum(set(trackers) <= names for names in seen))
             n_frames = inside["timestamp"].nunique()
-            for name in TRACKERS:
+            for name in trackers:
                 coverage[name] = int(inside[ok & (inside["name"] == name)]["timestamp"].nunique()) / max(n_frames, 1)
         if complete == 0 and not tracking_frames:
             problems.append("no tracking to align with")
         elif complete == 0:
             hidden.append(f"d{index:02d}")
-            problems.append("no camera frame with all 3 tags during the pull ("
+            problems.append(f"no camera frame with all {n_tags} tags during the pull ("
                             + ", ".join(f"{k} {v * 100:.0f}%" for k, v in coverage.items()) + ")")
         status = "FAIL" if (missing_keys or complete == 0) else ("WARN" if problems else "PASS")
         sec.note(status, f"d{index:02d}: {len(rows)} rows, {rate:.0f} Hz, {complete} complete camera frames"
@@ -230,7 +239,7 @@ def verify_apple(apple_dir: Path, session_data: dict[str, Any], session_name: st
     for aborted in sorted((apple_dir / "pulls").glob("*.aborted-*.parquet")):
         sec.note("PASS", f"kept aborted partial {aborted.name} (not used)")
     if hidden:
-        report.redo.append(f"tags hidden during {', '.join(hidden)} (these pulls cannot be compiled): keep all 3 "
+        report.redo.append(f"tags hidden during {', '.join(hidden)} (these pulls cannot be compiled): keep all "
                            "tags visible with the apple held, then")
         redo("grasp", "pulls")
 
@@ -273,7 +282,14 @@ def verify_apple(apple_dir: Path, session_data: dict[str, Any], session_name: st
         try:
             from real_robot_exps.compile_static_sysid import _part_radii_from_parts
 
-            radii = _part_radii_from_parts(parts)
+            radius_shift = {}
+            config_copy = apple_dir / "config" / "tracking_config.yaml"
+            if config_copy.exists():
+                import yaml
+
+                objects = (yaml.safe_load(config_copy.read_text(encoding="utf-8")) or {}).get("objects") or {}
+                radius_shift = {str(name): bool((spec or {}).get("radius_shift", True)) for name, spec in objects.items()}
+            radii = _part_radii_from_parts(parts, trackers, radius_shift)
             sec.note("PASS", "radii " + ", ".join(f"{k} {v * 1000:.1f} mm" for k, v in radii.items()))
         except Exception as exc:
             sec.note("FAIL", str(exc))

@@ -3,6 +3,7 @@
 import argparse
 import io
 import json
+import shutil
 import sys
 import tempfile
 import time
@@ -30,6 +31,7 @@ from real_robot_exps.field_session import (  # noqa: E402
     run_logged,
     supersede_for_redo,
 )
+from real_robot_exps.compile_static_sysid import tracker_key  # noqa: E402
 from real_robot_exps.field_verify import verify_apple  # noqa: E402
 
 
@@ -247,8 +249,13 @@ class ProcessGripperTest(unittest.TestCase):
         ProcessGripper(mock=True).send_request(False)  # mock: nothing sent (the guard would raise)
 
 
-def _write_apple(root: Path, *, apple_visible: bool, baseline: bool, parts_ok: bool = True) -> Path:
-    """A minimal but complete-looking apple folder with one direction."""
+def _write_apple(root: Path, *, apple_visible: bool, baseline: bool, parts_ok: bool = True,
+                 names: tuple[str, ...] | None = None) -> Path:
+    """A minimal but complete-looking apple folder with one direction.
+
+    ``names``: the apple's tag selection (new layout); None = an apple from before
+    the selection existed (Branch/Spur/Apple).
+    """
     apple = root / "A001"
     for sub in ("calib", "snapshots", "tracking", "pulls", "baseline", "compiled", "config"):
         (apple / sub).mkdir(parents=True)
@@ -256,7 +263,9 @@ def _write_apple(root: Path, *, apple_visible: bool, baseline: bool, parts_ok: b
     (apple / "calib" / "camera_to_base.json").write_text(json.dumps({"camera_to_base_4x4": camera.tolist()}))
     for name in ("s_A001.calib", "s_A001.samples", "report.txt", "camera_link_to_optical.json"):
         (apple / "calib" / name).write_text("x")
-    snap = {"apple_pos": [0, 0, 0], "branch_pos": [0, 0, 0], "spur_pos": [0, 0, 0], "camera_frame_count": 5}
+    trackers = names or ("Branch", "Spur", "Apple")
+    snap = {f"{tracker_key(name)}_pos": [0, 0, 0] for name in trackers}
+    snap["camera_frame_count"] = 5
     for label in ("under_gravity", "lengthened"):
         (apple / "snapshots" / f"{label}.json").write_text(json.dumps(snap))
         (apple / "snapshots" / f"{label}.png").write_bytes(b"png")
@@ -275,10 +284,14 @@ def _write_apple(root: Path, *, apple_visible: bool, baseline: bool, parts_ok: b
         base_meta = {"baseline_start_method": "joint_positions",
                      "baseline_replay_filter": {"type": "butterworth zero-phase (filtfilt)", "cutoff_hz": 5.0}}
         save_robot_hold_parquet(rows, apple / "baseline" / "d00_baseline.parquet", base_meta)
-    collector = DataCollector(metadata={"coordinate_frame": "franka_base_o", "camera_to_base_4x4_used": camera.tolist()})
+    tracking_meta = {"coordinate_frame": "franka_base_o", "camera_to_base_4x4_used": camera.tolist()}
+    if names:
+        tracking_meta["tracker_names"] = list(names)
+        shutil.copy2(REPO / "at-tracking" / "tracking_config.yaml", apple / "config" / "tracking_config.yaml")
+    collector = DataCollector(metadata=tracking_meta)
     for k in range(10):
         t = t0 - 0.05 + k * 0.03
-        for name in ("Branch", "Spur", "Apple"):
+        for name in trackers:
             visible = name != "Apple" or apple_visible
             collector.update(t, name, *((0.1, 0.2, 0.3) if visible else (np.nan,) * 3), 0, 0, 0, 1)
     collector.dump(str(apple / "tracking" / "tracking_00.parquet"), metadata={"partial": False})
@@ -291,7 +304,10 @@ def _write_apple(root: Path, *, apple_visible: bool, baseline: bool, parts_ok: b
     }
     steps = {name: {"status": "done"} for name in ("notes", "calibrate", "tags", "snapshots", "grasp", "pulls",
                                                     "baseline", "measurements")}
-    (apple / "apple.json").write_text(json.dumps({"steps": steps, "calibration": {"verdict": "GOOD"}, "parts": parts}))
+    data = {"steps": steps, "calibration": {"verdict": "GOOD"}, "parts": parts}
+    if names:
+        data["tracked_names"] = list(names)
+    (apple / "apple.json").write_text(json.dumps(data))
     return apple
 
 
@@ -316,6 +332,22 @@ class VerifyTest(unittest.TestCase):
             text = report.text()
             self.assertIn("--redo grasp --redo pulls", text)
             self.assertIn("--session sess --apple A001 --redo baseline", text)
+
+    def test_apple_with_its_own_tag_selection(self):
+        names = ("Branch", "SpurStart", "SpurEnd", "StemStart", "Apple")
+        with tempfile.TemporaryDirectory() as tmp:
+            report = verify_apple(_write_apple(Path(tmp), apple_visible=True, baseline=True, names=names),
+                                  self.SESSION)
+            for name in ("snapshots", "pulls"):
+                self.assertEqual(self._status(report, name), "PASS", report.text())
+            self.assertIn("PASS radii", report.text())
+            self.assertIn("all 5 tags", report.text())
+            self.assertIn("Branch 0.0 mm", report.text())  # radius_shift: false in the config copy
+        with tempfile.TemporaryDirectory() as tmp:
+            report = verify_apple(_write_apple(Path(tmp), apple_visible=False, baseline=True, names=("SpurStart", "Apple")),
+                                  self.SESSION)
+            self.assertEqual(self._status(report, "pulls"), "FAIL")
+            self.assertIn("no camera frame with all 2 tags", report.text())
 
     def test_implausible_measurements_warn(self):
         with tempfile.TemporaryDirectory() as tmp:

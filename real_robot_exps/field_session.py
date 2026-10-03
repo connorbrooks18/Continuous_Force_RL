@@ -167,9 +167,9 @@ MEASUREMENT_FIELDS = (
     ("stem", "diameter_mm", "Stem diameter", "mm", 0.5, 8.0, True),
     ("stem", "mass_g", "Stem mass (blank = not weighed)", "g", 0.01, 10.0, False),
     ("spur", "length_mm", "Spur length", "mm", 5.0, 400.0, True),
-    ("spur", "diameter_mm", "Spur diameter (at the tag)", "mm", 1.0, 30.0, True),
+    ("spur", "diameter_mm", "Spur diameter (at the clips)", "mm", 1.0, 30.0, True),
     ("spur", "mass_g", "Spur mass (blank = not weighed)", "g", 0.1, 300.0, False),
-    ("primary", "diameter_mm", "Branch diameter (at the tag)", "mm", 5.0, 200.0, True),
+    ("primary", "diameter_mm", "Branch diameter (at the clip)", "mm", 5.0, 200.0, True),
     ("primary", "length_mm", "Branch free length (blank = unknown)", "mm", 10.0, 5000.0, False),
 )
 # Used only when a part was not weighed; the values match the lab structures.json defaults.
@@ -423,6 +423,46 @@ def ros_env() -> dict[str, str]:
 # session and apple state
 # =============================================================================
 
+# =============================================================================
+# which tags are tracked
+# =============================================================================
+
+# Objects left out of the default selection (spare clips).
+NOT_TRACKED_BY_DEFAULT = ("Reserved",)
+
+
+def tracking_objects(path: Path) -> dict[str, list[int]]:
+    """Object name -> tag ids from a tracking_config.yaml, in tracker order."""
+    raw = yaml.safe_load(Path(path).read_text(encoding="utf-8")) or {}
+    return {
+        str(name): [int(tag["id"]) for tag in (spec or {}).get("tags", [])]
+        for name, spec in (raw.get("objects") or {}).items()
+    }
+
+
+def default_tags(objects: dict[str, list[int]]) -> list[int]:
+    return sorted(i for name, ids in objects.items() if name not in NOT_TRACKED_BY_DEFAULT for i in ids)
+
+
+def parse_tag_ids(text: str, objects: dict[str, list[int]]) -> list[int]:
+    """'0, 1,5' -> [0, 1, 5]. Every id must be on an object; the Apple's tags are always added."""
+    try:
+        ids = {int(part) for part in str(text).replace(" ", ",").split(",") if part.strip()}
+    except ValueError:
+        raise ValueError(f"tag ids must be whole numbers separated by commas, got {text!r}") from None
+    known = {i for tag_ids in objects.values() for i in tag_ids}
+    unknown = sorted(ids - known)
+    if unknown:
+        raise ValueError(f"no object has tag {unknown} (tags: {sorted(known)})")
+    ids |= set(objects.get("Apple", []))
+    return sorted(ids)
+
+
+def names_for_tags(tag_ids: list[int], objects: dict[str, list[int]]) -> list[str]:
+    """Objects (in tracker order) that the selected tag ids track."""
+    return [name for name, ids in objects.items() if set(ids) & set(tag_ids)]
+
+
 class Session:
     def __init__(self, root: Path, name: str):
         self.name = name
@@ -441,6 +481,11 @@ class Session:
             "config_path": str(Path(args.config).resolve()),
             "config_sha256": sha256_file(Path(args.config)),
             "tracking_config_path": str(Path(args.tracking_config).resolve()),
+            # default tag selection for the first apple; later apples default to the previous one
+            "default_tags": (
+                parse_tag_ids(args.tags, tracking_objects(Path(args.tracking_config)))
+                if getattr(args, "tags", None) else None
+            ),
             "overrides": list(args.override),
             "kp": float(args.kp),
             "distance_m": float(args.distance),
@@ -546,6 +591,7 @@ class FieldSession:
         self.console = console or Console()
         self.session = Session(Path(args.data_root).expanduser(), args.session)
         self.detector: Proc | None = None
+        self._detector_tags: list[int] | None = None
         self.ros_ws = Path(args.ros_ws).expanduser()
         self._gripper_stack_proc: Proc | None = None
 
@@ -579,9 +625,31 @@ class FieldSession:
         if result.get("skipped"):
             apple.log(f"end-effector check for '{profile}' skipped by operator at {step}")
 
+    def tracking_objects(self, apple: Apple) -> dict[str, list[int]]:
+        config = apple.dir / "config" / "tracking_config.yaml"
+        return tracking_objects(config if config.exists() else Path(self.settings["tracking_config_path"]))
+
+    def default_tags_for(self, apple: Apple) -> list[int]:
+        """The previous apple's selection, else the session's --tags, else all but spare clips."""
+        objects = self.tracking_objects(apple)
+        known = {i for ids in objects.values() for i in ids}
+        for other in reversed(self.session.apple_ids()):
+            if other >= apple.id:
+                continue
+            tags = Apple(self.session, other).data.get("tracked_tags")
+            if tags and set(tags) <= known:
+                return list(tags)
+        if self.settings.get("default_tags"):
+            return list(self.settings["default_tags"])
+        return default_tags(objects)
+
     def start_detector(self, apple: Apple) -> None:
+        tags = apple.data.get("tracked_tags")
         if self.detector is not None and self.detector.alive():
-            return
+            if tags == self._detector_tags:
+                return
+            self.console.say(f"Tag selection changed to {tags}; restarting the detector.")
+            self.stop_detector()
         if self.args.no_detector:
             return
         if not apple.camera_to_base_path.exists():
@@ -599,9 +667,12 @@ class FieldSession:
             "--snapshot-dir", str(apple.request_dir),
             "--headless",
         ]
+        if tags:
+            cmd += ["--tags", ",".join(str(tag) for tag in tags)]
         if self.args.record_video:
             cmd.append("--record")
         self.detector = Proc("detector", cmd, apple.dir / "log.txt", cwd=AT_TRACKING)
+        self._detector_tags = tags
         apple.data["files"].setdefault("tracking", [])
         if str(output) not in apple.data["files"]["tracking"]:
             apple.data["files"]["tracking"].append(str(output))
@@ -634,6 +705,7 @@ class FieldSession:
             self.console.say("Stopping the detector (writes the tracking file)...")
             self.detector.stop()
             self.detector = None
+            self._detector_tags = None
 
     def snapshot(self, apple: Apple, label: str) -> dict:
         from real_robot_exps.snapshot_geometry import request_snapshot
@@ -1004,8 +1076,24 @@ class FieldSession:
         c.say("Checking the gripper service...")
         self._gripper_call(GRAB_SERVICE, False, "open gripper")
         c.say("Gripper open.")
-        c.say("Place the tags, each facing the camera:  Branch = tag 0,  Spur = tag 1,  Apple = tag 2")
-        c.say("(tags sit on the surface; compile moves them inward by the measured radius).")
+        objects = self.tracking_objects(apple)
+        c.say("Tags: " + ",  ".join(f"{name} = tag {'/'.join(map(str, ids))}" for name, ids in objects.items()))
+        default = self.default_tags_for(apple)
+        while True:
+            answer = c.ask(f"Tags on this apple (ids, comma-separated) [{','.join(map(str, default))}]: ")
+            try:
+                tags = parse_tag_ids(answer, objects) if answer else default
+                break
+            except ValueError as exc:
+                c.say(f"  {exc}")
+        names = names_for_tags(tags, objects)
+        apple.data["tracked_tags"] = tags
+        apple.data["tracked_names"] = names
+        apple.save()
+        apple.log(f"tracked tags {tags} ({', '.join(names)})")
+        c.say("Place the tags, each facing the camera:  "
+              + ",  ".join(f"{name} = tag {'/'.join(str(i) for i in objects[name] if i in tags)}" for name in names))
+        c.say("(clip offsets end on the surface; compile adds the measured radius except where the config says not to).")
         c.enter("Tags placed and facing the camera")
 
     def step_snapshots(self, apple: Apple) -> None:
@@ -1013,7 +1101,7 @@ class FieldSession:
         self.start_detector(apple)
         for label, prompt in (
             ("under_gravity", "Let the apple hang naturally under gravity (hands off)"),
-            ("lengthened", "Stretch the structure so the branch->spur->apple segments are straight"),
+            ("lengthened", "Stretch the structure so the branch->spur->stem->apple segments are straight"),
         ):
             while True:
                 c.enter(prompt)
@@ -1045,7 +1133,7 @@ class FieldSession:
         self._grasp_tag_check(apple)
 
     def _grasp_tag_check(self, apple: Apple) -> None:
-        """With the apple held, all three tags must be visible, or the pulls can't be compiled."""
+        """With the apple held, every tracked tag must be visible, or the pulls can't be compiled."""
         if self.args.no_detector:
             return
         c = self.console
@@ -1058,7 +1146,8 @@ class FieldSession:
             missing = [name for name, count in counts.items() if not count] or ["(see error)"]
             c.say(f"!! With the apple held, the camera does not see every tag: {exc}")
         if not missing:
-            c.say(f"Tag check with the apple held: OK ({snapshot.get('camera_frame_count', 0)} frames, all 3 tags)")
+            n_tags = len(apple.data.get("tracked_names") or snapshot.get("tracked_names") or ())
+            c.say(f"Tag check with the apple held: OK ({snapshot.get('camera_frame_count', 0)} frames, all {n_tags} tags)")
             apple.data["grasp_tag_check"] = {"ok": True, "utc": now_utc()}
             apple.save()
             return
@@ -1407,6 +1496,9 @@ def build_parser() -> argparse.ArgumentParser:
     # session settings (fixed when the session is created)
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--tracking-config", default=str(DEFAULT_TRACKING_CONFIG))
+    parser.add_argument("--tags", default=None,
+                        help="Default tag ids for the first apple, e.g. 0,1,2,3,5 (each apple is asked; "
+                             "later apples default to the previous one). Default: all but Reserved")
     parser.add_argument("--directions", default=str(DEFAULT_DIRECTIONS))
     parser.add_argument("--override", action="append", default=[], help="Robot config override key.path=value")
     parser.add_argument("--kp", type=float, default=100.0)

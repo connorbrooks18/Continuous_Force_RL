@@ -14,10 +14,13 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "at-tracking"))
 
 from snapshot_requests import SnapshotRequests  # noqa: E402
+from tracking_config import TrackingConfigError, load_tracking_config, snake_key  # noqa: E402
 
 from real_robot_exps.compile_static_sysid import (  # noqa: E402
     _correct_snapshot,
+    _part_radii_from_parts,
     _tag_to_part_geometry,
+    tracker_key,
 )
 from real_robot_exps.field_session import (  # noqa: E402
     STEPS,
@@ -28,7 +31,9 @@ from real_robot_exps.field_session import (  # noqa: E402
     Session,
     _tracking_for,
     compose_camera_to_base,
+    parse_tag_ids,
     parts_from_measurements,
+    tracking_objects,
 )
 from real_robot_exps.snapshot_geometry import (  # noqa: E402
     SnapshotError,
@@ -133,6 +138,36 @@ class SnapshotProtocolTest(unittest.TestCase):
             np.testing.assert_allclose(snapshot["apple_pos"], [0, 0.2, 0])
             self.assertEqual(list((Path(tmp) / "req").glob("*.request.json")), [])
 
+    def test_custom_tracker_set_needs_only_those_trackers(self):
+        names = ("Branch", "SpurStart", "SpurEnd", "Apple")
+        with tempfile.TemporaryDirectory() as tmp:
+            server = SnapshotRequests(Path(tmp) / "req", np.eye(4), names=names)
+            poses = {"Branch": _pose([0, 0, 0]), "SpurStart": _pose([0, 0.1, 0]),
+                     "SpurEnd": _pose([0, 0.15, 0]), "Apple": _pose([0, 0.2, 0])}
+            stop = threading.Event()
+            thread = threading.Thread(target=self._serve, args=(server, poses, stop), daemon=True)
+            thread.start()
+            try:
+                snapshot = request_snapshot(Path(tmp) / "req", "lengthened", Path(tmp) / "l.json", frames=3)
+            finally:
+                stop.set()
+                thread.join()
+            np.testing.assert_allclose(snapshot["spur_end_pos"], [0, 0.15, 0])
+            self.assertEqual(snapshot["tracked_names"], list(names))
+            self.assertNotIn("woody_part_start_pos", snapshot)
+            self.assertIn("apple_quat_xyzw", snapshot)
+
+            del poses["SpurEnd"]
+            stop = threading.Event()
+            thread = threading.Thread(target=self._serve, args=(server, poses, stop), daemon=True)
+            thread.start()
+            try:
+                with self.assertRaisesRegex(SnapshotError, "never saw: SpurEnd"):
+                    request_snapshot(Path(tmp) / "req", "grasp_check", Path(tmp) / "g.json", frames=3, timeout_s=0.3)
+            finally:
+                stop.set()
+                thread.join()
+
     def test_missing_tag_times_out_with_a_useful_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             server = SnapshotRequests(Path(tmp) / "req", np.eye(4))
@@ -182,6 +217,36 @@ class TagToPartTest(unittest.TestCase):
         out, _ = _tag_to_part_geometry(positions, poses, {"Branch": 0.0125, "Apple": 0.04})
         np.testing.assert_allclose(out["Branch"], surface + [0, 0.0125, 0])
         np.testing.assert_allclose(out["Apple"], [0.5, 0.24, 0.3])
+
+
+    def test_new_trackers_use_their_part_radius_and_branch_can_opt_out(self):
+        parts = {"primary": {"radius_m": 0.02}, "spur": {"radius_m": 0.004},
+                 "stem": {"radius_m": 0.001}, "apple": {"radius_m": 0.035}}
+        names = ("Branch", "SpurStart", "SpurEnd", "StemStart", "Apple")
+        radii = _part_radii_from_parts(parts, names, {"Branch": False})
+        self.assertEqual(radii, {"Branch": 0.0, "SpurStart": 0.004, "SpurEnd": 0.004,
+                                 "StemStart": 0.001, "Apple": 0.035})
+        # Branch's radius is not needed when it is not shifted
+        self.assertEqual(_part_radii_from_parts({k: v for k, v in parts.items() if k != "primary"},
+                                                names, {"Branch": False})["Branch"], 0.0)
+        with self.assertRaisesRegex(ValueError, "stem.radius_m"):
+            _part_radii_from_parts({"apple": parts["apple"], "spur": parts["spur"]}, ("StemStart", "Apple"))
+
+    def test_snapshot_correction_and_connection_angles_with_new_trackers(self):
+        positions = {"Branch": [0, 0, 0], "SpurStart": [0, 0.05, 0], "SpurEnd": [0, 0.1, 0],
+                     "StemStart": [0, 0.12, 0], "Apple": [0, 0.12, -0.05]}
+        snapshot = {f"{tracker_key(name)}_pose_4x4": _pose(pos).reshape(-1).tolist() for name, pos in positions.items()}
+        radii = {"Branch": 0.0, "SpurStart": 0.004, "SpurEnd": 0.004, "StemStart": 0.001, "Apple": 0.035}
+        corrected = _correct_snapshot(snapshot, radii, 1.0)
+        np.testing.assert_allclose(corrected["branch_pos"], [0, 0, 0])
+        np.testing.assert_allclose(corrected["spur_end_pos"], [0, 0.1, 0.004])
+        np.testing.assert_allclose(corrected["stem_start_pos_tag"], [0, 0.12, 0])
+        geometry = update_pre_grasp_geometry_with_snapshots(
+            {"parts": {"spur": {}, "stem": {}}}, lengthened_snapshot=corrected
+        )
+        self.assertEqual(geometry["parts"]["spur"]["connection_from_to"], ["spur_start", "spur_end"])
+        self.assertEqual(geometry["parts"]["stem"]["connection_from_to"], ["stem_start", "apple"])
+        self.assertAlmostEqual(geometry["parts"]["spur"]["connection_rpy_deg"][2], 90.0)
 
 
 class ScriptedConsole(Console):
@@ -257,6 +322,65 @@ class WorkflowTest(unittest.TestCase):
             field.air_off = lambda: events.append("air_off")
             field._hold_board()
             self.assertEqual(events, ["air_on", "air_off", "air_on"])
+
+    def test_each_apple_chooses_its_tags_and_defaults_to_the_previous_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # A001: Enter = default (all but Reserved), Enter for "placed";
+            # A002: "1 ,2" (Apple added automatically), Enter; A003: Enter = A002's choice, Enter
+            field = self._field(tmp, ["", "", "1 ,2", "", "", ""])
+            field.check_ee = lambda *a, **k: None
+            field._gripper_call = lambda *a, **k: None
+            chosen = {}
+            for apple_id in ("A001", "A002", "A003"):
+                apple = Apple(field.session, apple_id)
+                field.prepare_apple(apple)
+                field.step_tags(apple)
+                chosen[apple_id] = (apple.data["tracked_tags"], apple.data["tracked_names"])
+            self.assertEqual(chosen["A001"][0], [0, 1, 2, 3, 5])
+            self.assertEqual(chosen["A002"], ([1, 2, 5], ["SpurStart", "SpurEnd", "Apple"]))
+            self.assertEqual(chosen["A003"], chosen["A002"])
+            self.assertEqual(Apple(Session(Path(tmp), "s"), "A002").data["tracked_tags"], [1, 2, 5])
+
+    def test_session_tags_flag_is_the_first_default(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, ["", ""])
+            field.session.data["default_tags"] = [0, 5]
+            field.check_ee = lambda *a, **k: None
+            field._gripper_call = lambda *a, **k: None
+            apple = Apple(field.session, "A001")
+            field.prepare_apple(apple)
+            field.step_tags(apple)
+            self.assertEqual(apple.data["tracked_names"], ["Branch", "Apple"])
+
+    def test_detector_gets_the_apples_tags_and_restarts_when_they_change(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, [])
+            field.args.no_detector = False
+            started = []
+
+            class FakeProc:
+                def __init__(self, name, cmd, log, cwd=None):
+                    started.append(cmd)
+                    self.running = True
+
+                def alive(self):
+                    return self.running
+
+                def stop(self):
+                    self.running = False
+
+            apple = Apple(field.session, "A001")
+            field.prepare_apple(apple)
+            apple.camera_to_base_path.write_text("{}")
+            apple.data["tracked_tags"] = [0, 1, 5]
+            with patch("real_robot_exps.field_session.Proc", FakeProc), patch("time.sleep"):
+                field.start_detector(apple)
+                field.start_detector(apple)  # same selection: keeps running
+                apple.data["tracked_tags"] = [1, 5]
+                field.start_detector(apple)
+            self.assertEqual(len(started), 2)
+            self.assertEqual(started[0][started[0].index("--tags") + 1], "0,1,5")
+            self.assertEqual(started[1][started[1].index("--tags") + 1], "1,5")
 
     def test_resume_starts_at_first_unfinished_step(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -496,3 +620,53 @@ class TrackingSelectionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TagSelectionTest(unittest.TestCase):
+    def test_parse_validates_ids_and_always_adds_the_apple(self):
+        objects = tracking_objects(REPO / "at-tracking" / "tracking_config.yaml")
+        self.assertEqual(list(objects), ["Branch", "SpurStart", "SpurEnd", "StemStart", "Reserved", "Apple"])
+        self.assertEqual(parse_tag_ids("0,3", objects), [0, 3, 5])
+        self.assertEqual(parse_tag_ids("5 4", objects), [4, 5])
+        with self.assertRaisesRegex(ValueError, "no object has tag"):
+            parse_tag_ids("0,9", objects)
+        with self.assertRaisesRegex(ValueError, "whole numbers"):
+            parse_tag_ids("zero", objects)
+
+
+class TrackingConfigTest(unittest.TestCase):
+    def test_field_config_layout(self):
+        config = load_tracking_config(REPO / "at-tracking" / "tracking_config.yaml")
+        self.assertIsNone(config.reference_id)
+        self.assertEqual(config.allowed_ids(), (0, 1, 2, 3, 4, 5))
+        offsets = {obj.name: obj.tags[0].offset_4x4 for obj in config.objects}
+        np.testing.assert_allclose(offsets["Branch"][:3, 3], [0.020, 0.07575, 0.012])
+        for name in ("SpurStart", "SpurEnd", "StemStart", "Reserved"):
+            np.testing.assert_allclose(offsets[name][:3, 3], [0.02841, 0.0, 0.008])
+        np.testing.assert_allclose(offsets["Apple"][:3, 3], [0.0, 0.0, 0.015])
+        self.assertFalse(config.object("Branch").radius_shift)
+        self.assertTrue(config.object("Apple").radius_shift)
+        self.assertEqual(config.to_metadata()["radius_shift"]["Branch"], False)
+
+    def test_select_keeps_whole_objects_and_rejects_unknown_ids(self):
+        config = load_tracking_config(REPO / "at-tracking" / "tracking_config.yaml")
+        selected = config.select([1, 5])
+        self.assertEqual([obj.name for obj in selected.objects], ["SpurStart", "Apple"])
+        self.assertEqual([tracker.name for tracker in selected.build_trackers()], ["SpurStart", "Apple"])
+        with self.assertRaises(TrackingConfigError):
+            config.select([7])
+
+    def test_reference_tag_is_optional_but_its_id_stays_reserved(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c.yaml"
+            path.write_text(
+                "default_tag_size_m: 0.02\nreference_tag: {id: 4}\n"
+                "objects:\n  Apple:\n    tags:\n      - id: 4\n        offset: {pos: [0, 0, 0], rot: identity}\n"
+            )
+            with self.assertRaisesRegex(TrackingConfigError, "reference_tag"):
+                load_tracking_config(path)
+
+    def test_snake_keys_match_compile(self):
+        for name in ("Branch", "SpurStart", "SpurEnd", "StemStart", "Apple", "Spur"):
+            self.assertEqual(snake_key(name), tracker_key(name))
+        self.assertEqual(snake_key("SpurStart"), "spur_start")

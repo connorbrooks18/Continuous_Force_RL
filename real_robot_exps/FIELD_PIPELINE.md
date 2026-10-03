@@ -25,8 +25,8 @@ python -m real_robot_exps.field_session --session 2026-10-02_orchardA --compile 
 ```
 
 `--verify` reports PASS / WARN / FAIL for steps, calibration, snapshots, tracking and
-video, each pull (rate, holds, metadata, **camera frames with all three tags during the
-pull**), baselines (present, filtered, duration), and parts (including a plausibility
+video, each pull (rate, holds, metadata, **camera frames with all of the apple's tags
+during the pull**), baselines (present, filtered, duration), and parts (including a plausibility
 check that catches typos, e.g. an apple density of 59,000 kg/m³). It ends with the exact
 `--redo` commands to fix what failed. Run it after each apple, before cutting the next one.
 
@@ -40,7 +40,21 @@ frame: x right, y down, z into the tag, metres): tag centre to the point where t
 touches the branch/spur surface, never to the axis. A tag stuck straight on keeps `[0, 0, 0]`
 (the tag centre already is on the surface). Compile then adds each part's measured radius
 along the tracked frame's +z to reach the axis or centre, for every part. So measure the
-diameter at the clip, and keep any offset rotation with +z pointing into the part.
+diameter at the clip, and keep any offset rotation with +z pointing into the part. The one
+exception is an object marked `radius_shift: false`: Branch, whose offset (20, 28.75 + 47,
+12 mm) already reaches the point to track.
+
+**Tags.** Branch = 0, SpurStart = 1, SpurEnd = 2, StemStart = 3, Reserved = 4 (spare
+clip), Apple = 5. Clip offsets are 28.41 mm along x and 8 mm into the tag; the Apple's is
+15 mm into the tag. Radii: Branch none, SpurStart/SpurEnd the spur's, StemStart the
+stem's, Apple the apple's.
+
+**Each apple chooses its tags.** The tags step asks `Tags on this apple`, defaulting to
+the previous apple's choice (the first apple to `--tags`, else every tag except
+Reserved); the Apple is always included. The choice is saved in `apple.json`
+(`tracked_tags`, `tracked_names`), passed to the detector as `--tags`, and recorded in
+each tracking file, so snapshots, the grasp check, verify and compile only expect those
+tags. `--redo tags` asks again and restarts the detector with the new selection.
 
 **Grasp tag check:** after closing the gripper, the session takes a snapshot with the apple
 held. If a tag is hidden (in the first lab trial the gripper covered the apple tag for every
@@ -56,7 +70,7 @@ stored in `session.json`, so every apple in a session is collected the same way.
 |---|---|---|---|
 | 1 | notes | describe the fruiting system, row/tree label | `apple.json` |
 | 2 | calibrate | aim the camera (optional live view); hold the ChArUco board flat against the gripper (the air comes on and holds it; fingers stay in), confirm it doesn't slip; free-drive it to the image centre when asked; at the end hold the board, and Enter turns the air off | air on (`/microROS/toggle_valve`) → ChArUco launch → `handeye_auto_calibrate` → reads the `camera_link → camera_color_optical_frame` transform → `evaluate_calibration`. GOOD continues; otherwise redo or accept, with the board still held. Air off only after you confirm, also when the calibration fails. Saves `calib/` |
-| 3 | tags | stick tags **Branch = 0, Spur = 1, Apple = 2** facing the camera | checks the gripper service and opens the gripper (fingers in, air off) |
+| 3 | tags | choose the tags for this apple (Enter = previous apple's), then clip them on facing the camera | checks the gripper service, opens the gripper (fingers in, air off), saves the selection |
 | 4 | snapshots | let the apple hang → Enter; stretch the structure → Enter | **starts the detector** (runs until the pulls are done); takes both snapshots through it (median of 5 frames, plus a PNG) |
 | 5 | grasp | hand-guide the open gripper around the apple → Enter | closes the gripper, asks whether the grasp is firm |
 | 6 | pulls | confirm the plan | `field_pull`: for each direction: settle → post-grasp snapshot → slip check → pull + holds → return to the start pose. The apple stays held; the gripper opens at the end, or immediately on any error |
@@ -153,10 +167,10 @@ each tracking file (`camera_to_base_4x4_used`), and compile reads it from there.
   - `post_grasp_geometry`: robot state + `camera_snapshot` after the settle, `slip_check`, `pull_origin_pose_4x4`.
   - `field_session`: notes, calibration verdict, camera matrix path.
 - **`dXX_baseline.parquet`**: the unloaded replay, labelled with the pull's hold/phase by elapsed time. It carries the pull's metadata plus `baseline_start_method` and `baseline_gripper_state`.
-- **`tracking_NN.parquet`**: Branch/Spur/Apple tag poses in the robot base for every frame (NaN rows where a tag was missed), plus the tracking config and camera matrix used. It is rewritten every 30 s, so a crash loses at most 30 s.
+- **`tracking_NN.parquet`**: poses of the apple's selected tags (`tracker_names` in the metadata) in the robot base for every frame (NaN rows where a tag was missed), plus the tracking config and camera matrix used. It is rewritten every 30 s, so a crash loses at most 30 s.
 - **`compiled/dXX.parquet`**:
   - `ft_wrist = ft_wrist_raw − ft_wrist_baseline`, matched by (hold, phase).
-  - Part positions: tag position + measured radius along the tag's z axis. The raw tag values are kept as `apple_pos_tag`, `*_pose_4x4_tag`.
+  - Part positions: tag position + measured radius along the tag's z axis (none for `radius_shift: false`). One `<key>_pose_4x4` column per tracked tag (`branch`, `spur_start`, `spur_end`, `stem_start`, plus the apple). The raw tag values are kept as `apple_pos_tag`, `*_pose_4x4_tag`. No chords or bending angles.
   - The same correction is applied to the snapshots, and the spur/stem connection angles are recomputed from the corrected stretched snapshot.
   - Metadata: `tag_to_part_correction` (radii, sign), `pull_start_tracking`.
 
