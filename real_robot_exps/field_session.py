@@ -55,6 +55,7 @@ DEFAULT_TRACKING_CONFIG = AT_TRACKING / "tracking_config.yaml"
 ROS_SETUP = "/opt/ros/humble/setup.bash"
 DEFAULT_ROS_WS = Path.home() / "connor" / "franka_ros2_ws"
 HANDEYE_DIR = Path.home() / ".ros2" / "easy_handeye2"
+MAX_PULL_DISTANCE_M = 0.10  # upper bound on the per-apple pull distance answer
 
 STEPS = (
     "notes",
@@ -643,6 +644,43 @@ class FieldSession:
             return list(self.settings["default_tags"])
         return default_tags(objects)
 
+    def default_distance_for(self, apple: Apple) -> float:
+        """This apple's earlier answer, else the previous apple's, else the session's --distance."""
+        if apple.data.get("pull_distance_m") is not None:
+            return float(apple.data["pull_distance_m"])
+        for other in reversed(self.session.apple_ids()):
+            if other >= apple.id:
+                continue
+            distance = Apple(self.session, other).data.get("pull_distance_m")
+            if distance is not None:
+                return float(distance)
+        return float(self.settings["distance_m"])
+
+    def ask_pull_distance(self, apple: Apple, resuming: bool) -> float:
+        c = self.console
+        default = self.default_distance_for(apple)
+        if resuming and apple.data.get("pull_distance_m") is not None:
+            # one distance per apple: the remaining directions match the recorded ones
+            c.say(f"Pull distance for this apple: {default * 100:g} cm (kept from the recorded directions)")
+            return default
+        while True:
+            answer = c.ask(f"Pull distance for this apple [cm] [{default * 100:g}]: ").replace(",", ".")
+            if not answer:
+                distance = default
+                break
+            try:
+                distance = float(answer) / 100.0
+            except ValueError:
+                c.say("  enter a number of centimetres")
+                continue
+            if 0.0 < distance <= MAX_PULL_DISTANCE_M:
+                break
+            c.say(f"  must be in (0, {MAX_PULL_DISTANCE_M * 100:g}] cm")
+        apple.data["pull_distance_m"] = distance
+        apple.save()
+        apple.log(f"pull distance {distance * 100:g} cm")
+        return distance
+
     def start_detector(self, apple: Apple) -> None:
         tags = apple.data.get("tracked_tags")
         if self.detector is not None and self.detector.alive():
@@ -1174,7 +1212,7 @@ class FieldSession:
             "config_path": str(apple.dir / "config" / "robot_config.yaml"),
             "overrides": self.overrides(),
             "kp": s["kp"],
-            "distance_m": s["distance_m"],
+            "distance_m": float(apple.data.get("pull_distance_m", s["distance_m"])),
             "stops": s["stops"],
             "hold_duration_s": s["hold_duration_s"],
             "settle_sec": s["settle_sec"],
@@ -1204,7 +1242,8 @@ class FieldSession:
         s = self.settings
         done = set(apple.step("pulls").get("completed_directions", []))
         remaining = [d for d in s["directions"] if d["index"] not in done]
-        c.say(f"Plan: {len(remaining)} direction(s), {s['distance_m'] * 100:.1f} cm in {s['stops']} stops, "
+        distance = self.ask_pull_distance(apple, resuming=bool(done))
+        c.say(f"Plan: {len(remaining)} direction(s), {distance * 100:.1f} cm in {s['stops']} stops, "
               f"kp={s['kp']:g}, {s['hold_duration_s']:g} s holds, {s['settle_sec']:g} s settle between directions")
         for d in remaining:
             c.say(f"  d{d['index']:02d}: theta={d['theta']:.2f} phi={d['phi']:.2f} {d.get('name', '')}")
@@ -1502,7 +1541,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--directions", default=str(DEFAULT_DIRECTIONS))
     parser.add_argument("--override", action="append", default=[], help="Robot config override key.path=value")
     parser.add_argument("--kp", type=float, default=500.0)
-    parser.add_argument("--distance", type=float, default=0.04, help="Pull distance [m]")
+    parser.add_argument("--distance", type=float, default=0.04, help="Default pull distance [m]; each apple is asked (later apples default to the previous one)")
     parser.add_argument("--stops", type=int, default=4)
     parser.add_argument("--hold", type=float, default=1.0, help="Hold duration per stop [s]")
     parser.add_argument("--settle", type=float, default=5.0, help="Settle time at the start pose before each direction [s]")

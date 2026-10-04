@@ -341,6 +341,23 @@ class WorkflowTest(unittest.TestCase):
             self.assertEqual(chosen["A003"], chosen["A002"])
             self.assertEqual(Apple(Session(Path(tmp), "s"), "A002").data["tracked_tags"], [1, 2, 5])
 
+    def test_each_apple_chooses_its_pull_distance_and_defaults_to_the_previous_one(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # A001: Enter = session --distance (4 cm); A002: "2,5" cm; A003: Enter = A002's; "0" and "x" rejected
+            field = self._field(tmp, ["", "x", "0", "2,5", ""])
+            field.session.data.update({"distance_m": 0.04, "kp": 500.0, "stops": 4, "hold_duration_s": 1.0,
+                                       "settle_sec": 5.0, "slip_threshold_m": 0.01, "directions": []})
+            chosen = {}
+            for apple_id in ("A001", "A002", "A003"):
+                apple = Apple(field.session, apple_id)
+                apple.dir.mkdir(parents=True, exist_ok=True)
+                chosen[apple_id] = field.ask_pull_distance(apple, resuming=False)
+                self.assertEqual(field._pull_plan(apple, [])["distance_m"], chosen[apple_id])
+            self.assertEqual(chosen, {"A001": 0.04, "A002": 0.025, "A003": 0.025})
+            # resuming a partly recorded apple keeps its distance without asking
+            self.assertEqual(field.ask_pull_distance(Apple(field.session, "A002"), resuming=True), 0.025)
+            self.assertEqual(field.console.answers, [])
+
     def test_session_tags_flag_is_the_first_default(self):
         with tempfile.TemporaryDirectory() as tmp:
             field = self._field(tmp, ["", ""])
