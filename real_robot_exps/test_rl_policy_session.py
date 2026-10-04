@@ -1,5 +1,11 @@
 import argparse
+import io
+import os
+import pty
+import select
 import tempfile
+import termios
+import time
 import unittest
 from unittest.mock import patch
 
@@ -7,6 +13,7 @@ import numpy as np
 import torch
 
 from real_robot_exps.field_session import Console
+from real_robot_exps.rl_policy_env import KeypressStop
 from real_robot_exps.rl_policy_session import PolicySession
 
 
@@ -189,6 +196,55 @@ class PolicySessionTest(unittest.TestCase):
             self.assertEqual(rl_policy_session.main(["--checkpoint", "ckpt", "--mock", "--mock-gripper"]), 2)
             env_cls.assert_not_called()
             session_cls.assert_not_called()
+
+    def test_keypress_stops_the_rollout_and_goes_on_to_the_next_apple_prompt(self):
+        from real_robot_exps import rl_policy_session
+
+        class StopAfterTwo:
+            def __init__(self):
+                self.calls = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                pass
+
+            def __call__(self):
+                self.calls += 1
+                return self.calls > 2
+
+        with tempfile.TemporaryDirectory() as tmp, patch.object(rl_policy_session, "KeypressStop", StopAfterTwo):
+            session, calls, console = _session(tmp, ["", "y", "n", ""], steps=50)
+            self.assertEqual(session.run(), 0)
+            self.assertEqual(calls.count("step"), 2)
+            self.assertTrue(any("stopped by operator after 2 steps" in line for line in console.output))
+            self.assertTrue(any("Move to the next apple?" in line for line in console.output))
+            self.assertEqual(np.load(f"{tmp}/rollout.npz")["action"].shape, (2, 13))
+
+
+class KeypressStopTest(unittest.TestCase):
+    def test_key_on_a_tty_stops_and_is_flushed_and_terminal_restored(self):
+        master, slave = pty.openpty()
+        try:
+            with os.fdopen(slave, "r", closefd=False) as stream:
+                before = termios.tcgetattr(stream)
+                with KeypressStop(stream) as stop:
+                    self.assertFalse(stop())
+                    self.assertFalse(termios.tcgetattr(stream)[3] & termios.ICANON)  # cbreak: no Enter needed
+                    os.write(master, b"s")
+                    time.sleep(0.05)
+                    self.assertTrue(stop())
+                    self.assertTrue(stop())  # latched
+                self.assertEqual(termios.tcgetattr(stream), before)
+                self.assertEqual(select.select([stream], [], [], 0)[0], [])  # stop key flushed
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_without_a_tty_never_stops(self):
+        with KeypressStop(io.StringIO("x")) as stop:
+            self.assertFalse(stop())
 
 
 if __name__ == "__main__":

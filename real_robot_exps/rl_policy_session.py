@@ -4,6 +4,8 @@
                free), close the gripper, and confirm the apple is held. A rejected grasp
                reopens the gripper and starts the step over.
 2. run_policy  start torque mode at the grasped pose and run the policy (rl_policy_env).
+               Press any key to stop it (the policy never ends the episode itself); the
+               arm holds its last target while you answer the next prompt.
 3. next        after a pick, ask whether to move to the next apple. Yes releases the
                apple, leaves torque mode, and repeats from the grasp (F/T is calibrated
                again with the gripper free). No shuts the arm down.
@@ -42,6 +44,7 @@ from real_robot_exps.gripper_stack import (
 from real_robot_exps.rl_policy_env import (
     FrankaVicHarvestEnv,
     HarvestPolicy,
+    KeypressStop,
     new_rollout_log,
     run_rollout,
     save_rollout_log,
@@ -145,10 +148,11 @@ class PolicySession:
         """False if the start pose was refused as out of distribution (nothing commanded)."""
         self.console.say("Starting torque mode at the grasped pose...")
         obs, _ = self.env.reset()
-        return run_rollout(
-            self.policy, self.env, obs, self.args.steps, log,
-            allow_ood=self.args.allow_ood, say=self.console.say,
-        )
+        with KeypressStop() as stop:  # the policy never terminates; the operator ends the run
+            return run_rollout(
+                self.policy, self.env, obs, self.args.steps, log,
+                allow_ood=self.args.allow_ood, say=self.console.say, should_stop=stop,
+            )
 
     # ------------------------------------------------------------------ driver
 

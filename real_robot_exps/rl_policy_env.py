@@ -33,6 +33,8 @@ import argparse
 import dataclasses
 import json
 import math
+import select
+import sys
 import time
 from pathlib import Path
 from typing import Any
@@ -665,6 +667,46 @@ class FrankaVicHarvestEnv(gym.Env):
 # ============================================================================
 
 
+class KeypressStop:
+    """``with KeypressStop() as stop:`` -- ``stop()`` is True once any key has been pressed.
+
+    The policy never terminates on its own, so the operator ends a rollout from the keyboard.
+    The terminal is put in cbreak mode (keys arrive without Enter; Ctrl-C still raises
+    KeyboardInterrupt) and restored on exit, and pending keys are flushed so the stop key
+    doesn't answer the next prompt. Without a tty (pipes, tests) ``stop()`` is always False."""
+
+    def __init__(self, stream=None) -> None:
+        self._stream = stream if stream is not None else sys.stdin
+        self._saved = None
+        self.pressed = False
+
+    def __enter__(self) -> "KeypressStop":
+        try:
+            import termios
+            import tty
+
+            if self._stream.isatty():
+                self._saved = termios.tcgetattr(self._stream)
+                tty.setcbreak(self._stream)
+        except (ImportError, OSError, ValueError, AttributeError):
+            self._saved = None
+        return self
+
+    def __call__(self) -> bool:
+        if not self.pressed and self._saved is not None:
+            if select.select([self._stream], [], [], 0)[0]:
+                self.pressed = True
+        return self.pressed
+
+    def __exit__(self, *exc) -> None:
+        if self._saved is not None:
+            import termios
+
+            termios.tcflush(self._stream, termios.TCIFLUSH)
+            termios.tcsetattr(self._stream, termios.TCSADRAIN, self._saved)
+            self._saved = None
+
+
 def new_rollout_log() -> dict[str, list]:
     return {"obs": [], "action": [], "env_action": [], "vic_action": [], "t": []}
 
@@ -678,11 +720,14 @@ def run_rollout(
     *,
     allow_ood: bool = False,
     say=print,
+    should_stop=None,
 ) -> bool:
     """Run the policy from ``obs`` (the observation ``env.reset()`` returned) for up to
     ``steps`` steps, appending to ``log`` as it goes (so an interrupted run keeps what it
-    did). Returns False, having commanded nothing, if the start pose is out of the
-    training distribution and ``allow_ood`` is false."""
+    did). ``should_stop()`` (e.g. a :class:`KeypressStop`) is checked before every step;
+    when it returns True the rollout ends with the arm holding its last target. Returns
+    False, having commanded nothing, if the start pose is out of the training distribution
+    and ``allow_ood`` is false."""
     ood = policy.out_of_distribution(obs)
     if ood:
         say("Start pose is outside the training distribution (|z| > 3):")
@@ -692,8 +737,13 @@ def run_rollout(
             say("Refusing to run; reposition the arm or pass --allow-ood.")
             return False
     policy.reset()
+    if should_stop is not None:
+        say("Running the policy -- press any key to stop.")
     t0 = time.monotonic()
     for t in range(steps):
+        if should_stop is not None and should_stop():
+            say(f"stopped by operator after {t} steps")
+            break
         action = policy.act(torch.as_tensor(obs, dtype=torch.float32))
         log["obs"].append(obs)
         log["action"].append(action.numpy())
@@ -755,7 +805,8 @@ def main(argv: list[str] | None = None) -> int:
         if not args.mock:
             input("Now grasp the apple (field_session grasp / gripper_test close). Enter to start the policy... ")
         obs, _ = env.reset()
-        ran = run_rollout(policy, env, obs, args.steps, log, allow_ood=args.allow_ood)
+        with KeypressStop() as stop:
+            ran = run_rollout(policy, env, obs, args.steps, log, allow_ood=args.allow_ood, should_stop=stop)
     finally:
         env.close()
         save_rollout_log(log, args.log)
