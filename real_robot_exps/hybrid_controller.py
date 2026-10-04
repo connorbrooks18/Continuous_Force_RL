@@ -46,7 +46,8 @@ ControlTargets = namedtuple('ControlTargets', [
     'singularity_damping',  # float — Levenberg-Marquardt damping for J M^-1 J^T inverse (0.0 = disabled)
     'partial_inertia_decoupling',  # bool — separate 3x3 Lambda for pos/rot instead of coupled 6x6
     'sep_ori',  # bool — position via full Lambda (zeroed rot), rotation via direct J_rot^T (no Lambda)
-])
+    'gain_frame',  # str — "base": pose gains along base axes; "ee": along the EE axes (K = R diag(k) R^T)
+], defaults=('base',))
 
 
 # ============================================================================
@@ -81,6 +82,13 @@ def axis_angle_from_quat(q: torch.Tensor) -> torch.Tensor:
     angle = 2.0 * torch.atan2(sin_half, q[..., 0:1].abs())
     axis = q[..., 1:4] / sin_half
     return axis * angle
+
+
+def rotate_wxyz(q: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
+    """Rotate ``[..., 3]`` vectors by unit ``[..., 4]`` (w, x, y, z) quaternions."""
+    w, u = q[..., :1], q[..., 1:]
+    t = 2.0 * torch.cross(u, v, dim=-1)
+    return v + w * t + torch.cross(u, t, dim=-1)
 
 
 def quat_from_angle_axis(angle: torch.Tensor, axis: torch.Tensor) -> torch.Tensor:
@@ -174,21 +182,32 @@ def compute_pose_task_wrench(
     target_quat: torch.Tensor,
     task_prop_gains: torch.Tensor,
     task_deriv_gains: torch.Tensor,
+    gains_in_ee_frame: bool = False,
 ) -> torch.Tensor:
     """Compute task-space wrench for pose control.
 
-    Matches factory_control_utils.compute_pose_task_wrench().
+    Matches factory_control_utils.compute_pose_task_wrench(). With ``gains_in_ee_frame`` the
+    per-axis gains act along the EE axes: error and velocity are rotated into the EE frame,
+    scaled, and the wrench rotated back (K_base = R diag(k) R^T) -- the apple_pick_sim VIC law
+    for tool-frame policies (vic_wrench.py::compute_vic_spatial_wrench_aniso_tool).
 
     Returns:
-        [6] wrench (Fx, Fy, Fz, Tx, Ty, Tz).
+        [6] wrench (Fx, Fy, Fz, Tx, Ty, Tz) in the base frame.
     """
     pos_error, aa_error = compute_pose_error(ee_pos, ee_quat, target_pos, target_quat)
+    linvel, angvel = ee_linvel, ee_angvel
+    if gains_in_ee_frame:
+        q_inv = quat_conjugate(ee_quat)
+        pos_error, aa_error = rotate_wxyz(q_inv, pos_error), rotate_wxyz(q_inv, aa_error)
+        linvel, angvel = rotate_wxyz(q_inv, ee_linvel), rotate_wxyz(q_inv, ee_angvel)
     delta_pose = torch.cat([pos_error, aa_error], dim=-1)
 
     # PD control: wrench = Kp * error - Kd * velocity
     wrench = torch.zeros_like(delta_pose)
-    wrench[..., :3] = task_prop_gains[..., :3] * pos_error + task_deriv_gains[..., :3] * (0.0 - ee_linvel)
-    wrench[..., 3:6] = task_prop_gains[..., 3:6] * aa_error + task_deriv_gains[..., 3:6] * (0.0 - ee_angvel)
+    wrench[..., :3] = task_prop_gains[..., :3] * pos_error + task_deriv_gains[..., :3] * (0.0 - linvel)
+    wrench[..., 3:6] = task_prop_gains[..., 3:6] * aa_error + task_deriv_gains[..., 3:6] * (0.0 - angvel)
+    if gains_in_ee_frame:
+        wrench = torch.cat([rotate_wxyz(ee_quat, wrench[..., :3]), rotate_wxyz(ee_quat, wrench[..., 3:])], dim=-1)
     return wrench
 
 
@@ -393,6 +412,7 @@ def compute_torques_from_targets(
         ee_pos, ee_quat, ee_linvel, ee_angvel,
         targets.target_pos, targets.target_quat,
         targets.task_prop_gains, targets.task_deriv_gains,
+        gains_in_ee_frame=(targets.gain_frame == "ee"),
     )
 
     # 1b. Pose integral — accumulate at 1kHz, add I-term to pose wrench
@@ -1190,6 +1210,7 @@ def pack_control_targets(targets: ControlTargets) -> dict:
         'singularity_damping': float(targets.singularity_damping),
         'partial_inertia_decoupling': bool(targets.partial_inertia_decoupling),
         'sep_ori': bool(targets.sep_ori),
+        'gain_frame': str(targets.gain_frame),
     }
 
 
@@ -1224,4 +1245,5 @@ def unpack_control_targets(data: dict, device: str = "cpu") -> ControlTargets:
         singularity_damping=data['singularity_damping'],
         partial_inertia_decoupling=data.get('partial_inertia_decoupling', False),
         sep_ori=data.get('sep_ori', False),
+        gain_frame=data.get('gain_frame', 'base'),
     )
