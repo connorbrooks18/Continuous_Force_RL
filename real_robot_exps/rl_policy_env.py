@@ -4,6 +4,11 @@ Runs a checkpoint trained in ``apple_pick_sim`` (branch ``feature/rl-skrl-ppo``,
 ``apple_pick_gym.rl.models.LstmGaussianActor``) on the real Franka FR3 arm through
 this repo's existing ``hybrid_controller``/``pro_robot_interface`` stack.
 
+Only [D17] tool-frame checkpoints (v2 / v2b onwards) load: the actor observes start-relative
+quantities in the current TCP (= Franka EE) frame, commands its pose delta in that frame, and
+its per-axis stiffness acts along the TCP axes (``ControlTargets.gain_frame="ee"``). World-frame
+checkpoints (D1-D16, e.g. d8b) are refused by :func:`load_actor_checkpoint`.
+
 Deliberately does **not** import ``apple_pick_gym``/``apple_pick_sim``/``skrl``: the
 sim repo's action/obs helper modules transitively import ``warp``/``newton`` (via
 ``apple_pick_sim.robot.fr3_robot.controllers.batched_action_twists``) even though the
@@ -45,33 +50,31 @@ from real_robot_exps.hybrid_controller import (
     quat_conjugate,
     quat_from_angle_axis,
     quat_mul,
+    rotate_wxyz,
 )
 from real_robot_exps.pro_robot_interface import FrankaInterface, SafetyViolation, StateSnapshot
 
 _ACTION_DIM = 13
 _VIC_POSE_ACTION_DIM = 19
 _OBS_DIM = 40
-# FR3 root position in the sim's world frame, identical in every training world (identity
-# rotation) -- read from harvest_worlds_v2_all2000/shard_00_snapshot.npz arr__robot_body_q[:, 0].
-# The sim observes tcp_pos in world frame, so real base-frame positions need this added.
-_SIM_ROBOT_BASE_POS = (0.0, 0.2, 0.0)
-_N_PROPRIO = 26  # obs dims before last_action/step_frac: the ones a start pose can put out of distribution
-_PROPRIO_NAMES = (
-    ["tcp_pos.x", "tcp_pos.y", "tcp_pos.z", "tcp_quat.x", "tcp_quat.y", "tcp_quat.z", "tcp_quat.w"]
-    + ["tcp_vel.vx", "tcp_vel.vy", "tcp_vel.vz", "tcp_vel.wx", "tcp_vel.wy", "tcp_vel.wz"]
-    + ["ft.Fx", "ft.Fy", "ft.Fz", "ft.Tx", "ft.Ty", "ft.Tz"]
-    + [f"joint_q.{i}" for i in range(7)]
-)
-# [name, start, width] rows exactly as rl/checkpoint.py records them in meta.json.
+# [name, start, width] rows exactly as rl/checkpoint.py records them in meta.json -- the [D17]
+# tool-frame actor layout (harvest_obs._ACTOR_TOOL_FIELDS + last_action).
 _ACTOR_LAYOUT = [
-    ["tcp_pos", 0, 3],
-    ["tcp_quat", 3, 4],
-    ["tcp_velocity", 7, 6],
-    ["ft_wrist", 13, 6],
-    ["robot_joint_q", 19, 7],
-    ["last_action", 26, 13],
-    ["step_frac", 39, 1],
+    ["d_pos_tool", 0, 3],
+    ["d_rot_tool", 3, 3],
+    ["gravity_tool", 6, 3],
+    ["twist_tool", 9, 6],
+    ["ft_tool", 15, 6],
+    ["target_offset_tool", 21, 6],
+    ["last_action", 27, 13],
 ]
+_N_PROPRIO = 27  # obs dims before last_action: the ones a start pose can put out of distribution
+_PROPRIO_NAMES = (
+    ["d_pos.x", "d_pos.y", "d_pos.z", "d_rot.x", "d_rot.y", "d_rot.z", "gravity.x", "gravity.y", "gravity.z"]
+    + ["twist.vx", "twist.vy", "twist.vz", "twist.wx", "twist.wy", "twist.wz"]
+    + ["ft.Fx", "ft.Fy", "ft.Fz", "ft.Tx", "ft.Ty", "ft.Tz"]
+    + ["tgt_off.x", "tgt_off.y", "tgt_off.z", "tgt_off.rx", "tgt_off.ry", "tgt_off.rz"]
+)
 
 
 # ============================================================================
@@ -189,6 +192,12 @@ def integrate_delta_pose(target: torch.Tensor, delta: torch.Tensor) -> torch.Ten
     quat_new = quat_mul(delta_q, quat)
     quat_new = quat_new / torch.linalg.norm(quat_new).clamp_min(1e-9)
     return torch.cat([pos_new, quat_new])
+
+
+def tool_delta_to_world(delta: torch.Tensor, tcp_quat_wxyz: torch.Tensor) -> torch.Tensor:
+    """[D17] Rotate a TCP-frame ``[6]`` ``(dp, drot)`` delta into the base frame. Norm-preserving, so
+    the speed cap applied in TCP-frame units holds. See ``harvest_action.tool_delta_to_world``."""
+    return torch.cat([rotate_wxyz(tcp_quat_wxyz, delta[0:3]), rotate_wxyz(tcp_quat_wxyz, delta[3:6])])
 
 
 def _leash_or_cage(
@@ -332,8 +341,13 @@ def load_actor_checkpoint(
     if meta.get("actor_layout") != _ACTOR_LAYOUT:
         raise RuntimeError(
             f"{checkpoint_dir}: checkpoint actor_layout {meta.get('actor_layout')} does not match the "
-            f"observation _build_actor_obs produces {_ACTOR_LAYOUT} -- the training-side "
-            "harvest_obs.py layout changed; resync _build_actor_obs before running this policy."
+            f"observation build_tool_actor_obs produces {_ACTOR_LAYOUT} -- the training-side "
+            "harvest_obs.py layout changed (or this is a world-frame checkpoint); resync build_tool_actor_obs."
+        )
+    action_frame = meta["config"]["env"].get("action_frame")
+    if action_frame != "tool":
+        raise RuntimeError(
+            f"{checkpoint_dir}: action_frame={action_frame!r}; this controller runs [D17] tool-frame checkpoints only"
         )
     actor_cfg = meta["config"]["actor"]
     expected_actor = {
@@ -398,10 +412,6 @@ class HarvestPolicy:
     def _normalize(self, obs: torch.Tensor) -> torch.Tensor:
         return torch.clamp(self._zscore(obs), min=-self._CLIP, max=self._CLIP)
 
-    @property
-    def training_quat_mean_xyzw(self) -> torch.Tensor:
-        return self._obs_mean[3:7].clone()
-
     def out_of_distribution(self, raw_obs, z_max: float = 3.0) -> list[tuple[str, float, float]]:
         """``(field, value, z)`` for every proprioceptive/F-T dim more than ``z_max`` training
         std devs from the training mean. Beyond 5 the normalizer clips, so the policy can't
@@ -415,7 +425,7 @@ class HarvestPolicy:
     @torch.no_grad()
     def act(self, raw_obs) -> torch.Tensor:
         """``raw_obs``: ``[40]`` unnormalized actor observation (see
-        :func:`_build_actor_obs`). Returns ``[13]`` raw action in ``[-1, 1]`` (the
+        :func:`build_tool_actor_obs`). Returns ``[13]`` raw action in ``[-1, 1]`` (the
         deterministic policy mean, clamped -- matches ``RecurrentPolicyRunner.act``)."""
         norm_obs = self._normalize(torch.as_tensor(raw_obs, dtype=torch.float32))
         mean, self._h, self._c = self.net(norm_obs, self._h, self._c)
@@ -427,50 +437,41 @@ class HarvestPolicy:
 # ============================================================================
 
 
-def _quat_wxyz_to_xyzw(q: torch.Tensor) -> torch.Tensor:
-    return torch.stack([q[1], q[2], q[3], q[0]])
+_GRAVITY_BASE = (0.0, 0.0, -1.0)
 
 
-def _rotate(q_wxyz: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
-    """Rotate ``[3]`` vector ``v`` by unit quaternion ``q`` (``q v q*``)."""
-    v_q = torch.cat([torch.zeros(1, dtype=v.dtype, device=v.device), v])
-    return quat_mul(quat_mul(q_wxyz, v_q), quat_conjugate(q_wxyz))[1:]
-
-
-def _build_actor_obs(
-    snap: StateSnapshot,
-    tcp_quat_xyzw: torch.Tensor,
-    last_action: torch.Tensor,
-    step_frac: float,
-    sim_base_pos: torch.Tensor,
+def build_tool_actor_obs(
+    snap: StateSnapshot, start_pose: torch.Tensor, target_pose: torch.Tensor, last_env_action: torch.Tensor
 ) -> torch.Tensor:
-    """``[40]`` actor observation in the exact field order of
-    ``apple_pick_gym.batched_envs.harvest_obs._ACTOR_FIXED_FIELDS`` + ``last_action`` +
-    ``step_frac``: ``tcp_pos(3), tcp_quat_xyzw(4), tcp_velocity(6), ft_wrist(6),
-    robot_joint_q(7), last_action(13), step_frac(1)``, all in the sim's conventions:
+    """``[40]`` actor observation in ``harvest_obs._ACTOR_TOOL_FIELDS`` order + ``last_action``,
+    see ``harvest_obs.tool_frame_obs``. Poses are ``[7]`` ``(pos, quat_wxyz)`` in the base frame.
 
-    - ``tcp_pos`` is sim-world: real base-frame position + ``sim_base_pos`` (the sim FR3
-      root has identity rotation, so orientations/velocities need no change).
-    - ``tcp_quat`` is ``xyzw`` (Warp order; ``StateSnapshot.ee_quat`` is ``wxyz``), with
-      its sign chosen by the caller (see ``FrankaVicHarvestEnv._obs_quat_xyzw``).
-    - ``ft_wrist`` is the plant's wrench on the TCP in world frame. ``snap.force_torque``
-      (``-K_F_ext_hat_K``) is in the EE frame, so both halves are rotated by R(tcp) --
-      the same conversion the sim uses on real logs
-      (``apple_pick_sim/system_id/real_to_batched_sysid.py::world_wrench_from_ee_logged``).
+    - Everything is start-relative and in the current TCP (= Franka EE) frame, so the sim world's
+      base offset is irrelevant and quaternion signs cancel (rotation vectors are shortest-arc).
+    - ``ft_tool`` is ``snap.force_torque`` as is: ``-K_F_ext_hat_K``, EE frame, bias-subtracted and
+      EMA'd at 1 kHz (alpha 0.05) -- what ``FtSensorConfig.rl_training`` models in the TCP frame.
+    - ``last_env_action`` is the previous action in env units (``HarvestActionScaler.to_env``), as the
+      sim env stores it (the skrl wrapper scales before ``env.step``).
     """
     q = snap.ee_quat
-    ft_world = torch.cat([_rotate(q, snap.force_torque[:3]), _rotate(q, snap.force_torque[3:])])
-    step_frac_t = torch.tensor([step_frac], dtype=snap.ee_pos.dtype, device=snap.ee_pos.device)
+    q_inv = quat_conjugate(q)
+
+    def to_tool(v: torch.Tensor) -> torch.Tensor:
+        return rotate_wxyz(q_inv, v)
+
+    rot_err = axis_angle_from_quat(quat_mul(target_pose[3:7], q_inv))
+    gravity = torch.tensor(_GRAVITY_BASE, dtype=q.dtype, device=q.device)
     return torch.cat(
         [
-            snap.ee_pos + sim_base_pos,
-            tcp_quat_xyzw,
-            snap.ee_linvel,
-            snap.ee_angvel,
-            ft_world,
-            snap.joint_pos,
-            last_action,
-            step_frac_t,
+            to_tool(snap.ee_pos - start_pose[0:3]),
+            axis_angle_from_quat(quat_mul(quat_conjugate(start_pose[3:7]), q)),
+            to_tool(gravity),
+            to_tool(snap.ee_linvel),
+            to_tool(snap.ee_angvel),
+            snap.force_torque,
+            to_tool(target_pose[0:3] - snap.ee_pos),
+            to_tool(rot_err),
+            last_env_action,
         ]
     )
 
@@ -478,19 +479,20 @@ def _build_actor_obs(
 class FrankaVicHarvestEnv(gym.Env):
     """Gym-like real-robot controller for the VIC-harvest policy.
 
-    Builds the exact 40-D actor observation each step and turns a policy's raw
+    Builds the exact 40-D tool-frame actor observation each step and turns a policy's raw
     ``[-1, 1]^13`` action into a Cartesian-impedance ``ControlTargets`` command on the
     real Franka arm, through the same post-processing pipeline
-    (``HarvestActionScaler`` -> ``split_harvest_action`` -> ``integrate_delta_pose`` ->
-    ``leash_target_pose`` -> ``cage_target_pose`` -> ``pack_vic_pose_action``) the sim
-    training env uses. No reward and no gripper handling -- those stay session-level
+    (``HarvestActionScaler`` -> ``split_harvest_action`` -> ``tool_delta_to_world`` ->
+    ``integrate_delta_pose`` -> ``leash_target_pose`` -> ``cage_target_pose`` ->
+    ``pack_vic_pose_action``) the sim training env uses, with the gains along the EE axes. No reward and no gripper handling -- those stay session-level
     concerns (mirrors ``field_session``'s separate "grasp" step happening before a
     policy rollout).
 
     Call :meth:`calibrate_ft_bias` once with the gripper free, then grasp. ``reset()``
     does **not** move the robot: it assumes the arm is already positioned (e.g. by a
-    prior grasp step), starts torque mode, and captures the current pose as both the
-    episode's integration origin and the real-world safety cage's center.
+    prior grasp step), starts torque mode, and captures the current pose as the episode's
+    start (the origin of ``d_pos``/``d_rot``), the integration origin, and the real-world
+    safety cage's center.
 
     On ``terminated=True`` (a ``SafetyViolation`` seen after the action ran), stop calling
     ``step()``. The env does **not** open the gripper or otherwise recover the arm -- that
@@ -508,21 +510,8 @@ class FrankaVicHarvestEnv(gym.Env):
         cage_pos_m: float = 0.12,
         cage_rot_rad: float = 0.5,
         control_rate_hz: float = 60.0,  # matches sim training's RuntimeConfig.control_hz
-        sim_base_pos: tuple[float, float, float] = _SIM_ROBOT_BASE_POS,
-        quat_hint_xyzw=None,
     ) -> None:
-        """``quat_hint_xyzw``: the quaternion sign at reset is chosen to agree with this
-        (pass ``HarvestPolicy.training_quat_mean_xyzw``); ``None`` picks ``w <= 0``, the sign
-        of 85% of the training start poses. After reset the sign is kept continuous, as
-        the sim's integration keeps it."""
         super().__init__()
-        self._sim_base_pos = torch.tensor(sim_base_pos, dtype=torch.float32)
-        self._quat_hint = (
-            torch.tensor([0.0, 0.0, 0.0, -1.0])
-            if quat_hint_xyzw is None
-            else torch.as_tensor(quat_hint_xyzw, dtype=torch.float32)
-        )
-        self._prev_obs_quat: torch.Tensor | None = None
         self.action_bounds = action_bounds
         self.max_episode_steps = int(max_episode_steps)
         self.cage_pos_m = float(cage_pos_m)
@@ -539,6 +528,7 @@ class FrankaVicHarvestEnv(gym.Env):
 
         self.robot: FrankaInterface | None = None
         self._target_pose: torch.Tensor | None = None  # [7] pos, quat_wxyz -- integrated per step
+        self._start_pose: torch.Tensor | None = None  # [7] pose at reset() -- origin of d_pos / d_rot
         self._cage_origin: torch.Tensor | None = None  # [7] pose captured at reset()
         self._default_dof_pos: torch.Tensor | None = None
         self._last_action = torch.zeros(_ACTION_DIM)
@@ -550,16 +540,8 @@ class FrankaVicHarvestEnv(gym.Env):
         if self.robot is None:
             self.robot = FrankaInterface(self._config, device="cpu")
 
-    def _obs_quat_xyzw(self, snap: StateSnapshot) -> torch.Tensor:
-        q = _quat_wxyz_to_xyzw(snap.ee_quat)
-        ref = self._quat_hint if self._prev_obs_quat is None else self._prev_obs_quat
-        if torch.dot(q, ref) < 0:
-            q = -q
-        self._prev_obs_quat = q
-        return q
-
-    def _obs(self, snap: StateSnapshot, step_frac: float) -> np.ndarray:
-        obs = _build_actor_obs(snap, self._obs_quat_xyzw(snap), self._last_action, step_frac, self._sim_base_pos)
+    def _obs(self, snap: StateSnapshot) -> np.ndarray:
+        obs = build_tool_actor_obs(snap, self._start_pose, self._target_pose, self._last_action)
         return obs.detach().cpu().numpy().astype(np.float32)
 
     def calibrate_ft_bias(self) -> list:
@@ -591,10 +573,13 @@ class FrankaVicHarvestEnv(gym.Env):
         time.sleep(0.2)
         snap = self.robot.get_state_snapshot()
         self._snap = snap
+        # [D17] start, integration origin and first obs share one snapshot (the sim records the
+        # start at the reset gather; its hold target sits a median 0.2 mm from the TCP)
+        self._start_pose = torch.cat([snap.ee_pos, snap.ee_quat]).clone()
+        self._target_pose = self._start_pose.clone()
         self._last_action = torch.zeros(_ACTION_DIM)
         self._step_count = 0
-        self._prev_obs_quat = None
-        return self._obs(snap, 0.0), {}
+        return self._obs(snap), {}
 
     def step(self, action):
         """Command ``action`` against the latest known TCP, let it run for one control
@@ -602,8 +587,10 @@ class FrankaVicHarvestEnv(gym.Env):
         action_t = torch.as_tensor(action, dtype=torch.float32)
         env_action = self.action_scaler.to_env(action_t)
         split = split_harvest_action(env_action, self.action_bounds)
-        target = integrate_delta_pose(self._target_pose, split.delta)
+        # [D17] training rotates the tool-frame delta, and leashes, against the TCP of the last
+        # observation (the env's _last_tcp_pose_wxyz) -- self._snap, from before this action runs
         tcp_pose = torch.cat([self._snap.ee_pos, self._snap.ee_quat])
+        target = integrate_delta_pose(self._target_pose, tool_delta_to_world(split.delta, tcp_pose[3:7]))
         target = leash_target_pose(target, tcp_pose, self.action_bounds)
         target = cage_target_pose(
             target, self._cage_origin, max_pos_offset_m=self.cage_pos_m, max_rot_offset_rad=self.cage_rot_rad
@@ -616,16 +603,19 @@ class FrankaVicHarvestEnv(gym.Env):
         snap = self.robot.get_state_snapshot()
         self._snap = snap
         terminated = False
-        info: dict[str, Any] = {"vic_action": vic_action.detach().cpu().numpy()}
+        info: dict[str, Any] = {
+            "vic_action": vic_action.detach().cpu().numpy(),
+            "env_action": env_action.detach().cpu().numpy(),
+        }
         try:
             self.robot.check_safety(snap)
         except SafetyViolation as exc:
             terminated = True
             info["safety_violation"] = str(exc)
 
-        self._last_action = action_t
+        self._last_action = env_action  # env units, as the sim env stores it
         self._step_count += 1
-        obs = self._obs(snap, self._step_count / self.max_episode_steps)
+        obs = self._obs(snap)
         truncated = self._step_count >= self.max_episode_steps
         return obs, 0.0, terminated, truncated, info
 
@@ -658,6 +648,7 @@ class FrankaVicHarvestEnv(gym.Env):
             singularity_damping=self.gains["singularity_damping"],
             partial_inertia_decoupling=self.gains["partial_inertia_decoupling"],
             sep_ori=self.gains["sep_ori"],
+            gain_frame="ee",  # [D17] per-axis K/D along the TCP axes (sim vic_gain_frame="tool")
         )
 
     def close(self) -> None:
@@ -702,9 +693,8 @@ def main(argv: list[str] | None = None) -> int:
         cage_pos_m=args.cage_pos_m,
         cage_rot_rad=args.cage_rot_rad,
         control_rate_hz=args.control_rate_hz,
-        quat_hint_xyzw=policy.training_quat_mean_xyzw,
     )
-    log: dict[str, list] = {"obs": [], "action": [], "vic_action": [], "t": []}
+    log: dict[str, list] = {"obs": [], "action": [], "env_action": [], "vic_action": [], "t": []}
     try:
         if not args.mock:
             input("Gripper free and open, nothing touching it? Enter to calibrate F/T... ")
@@ -727,11 +717,12 @@ def main(argv: list[str] | None = None) -> int:
             log["obs"].append(obs)
             log["action"].append(action.numpy())
             obs, _reward, terminated, truncated, info = env.step(action.numpy())
+            log["env_action"].append(info["env_action"])
             log["vic_action"].append(info["vic_action"])
             log["t"].append(time.monotonic() - t0)
             print(
                 f"step {t:4d} action={np.round(action.numpy(), 3)} "
-                f"tcp_pos={np.round(obs[:3], 4)} ft={np.round(obs[13:19], 2)}"
+                f"d_pos={np.round(obs[:3], 4)} ft={np.round(obs[15:21], 2)}"
             )
             if terminated or truncated:
                 print(f"episode ended: terminated={terminated} truncated={truncated} "
