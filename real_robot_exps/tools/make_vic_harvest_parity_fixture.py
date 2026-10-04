@@ -6,10 +6,15 @@ Run from the rig repo root with the sim's environment:
 
     uv run --project ~/codes/apple_pick_sim/.claude/worktrees/rl-skrl-ppo \\
         python real_robot_exps/tools/make_vic_harvest_parity_fixture.py \\
-        --checkpoint checkpoint_cache/vic_harvest/v2b_s0/ckpt_000016000
+        --checkpoint checkpoint_cache/vic_harvest/v2b_s0/ckpt_000016000 \\
+        --wall-checkpoint checkpoint_cache/vic_harvest/v2c_s0/ckpt_000009600
+
+``--wall-checkpoint`` ([D17m], a checkpoint trained with the no-advance wall) adds its bounds and a
+rollout of its actor; the tests find it under ``checkpoint_cache/vic_harvest/<run>/<ckpt>``.
 """
 
 import argparse
+import dataclasses
 import json
 from pathlib import Path
 
@@ -20,6 +25,8 @@ from skrl.resources.preprocessors.torch import RunningStandardScaler
 
 from apple_pick_gym.batched_envs.harvest_action import (
     HarvestActionBounds,
+    clamp_target_advance,
+    grip_axis,
     integrate_delta_pose,
     leash_target_pose,
     pack_vic_pose_action,
@@ -30,7 +37,7 @@ from apple_pick_gym.batched_envs.harvest_obs import _ACTOR_TOOL_FIELDS, tool_fra
 from apple_pick_gym.rl.action_scaling import HarvestActionScaler
 from apple_pick_gym.rl.models import LstmGaussianActor, RecurrentNetConfig
 
-N_OBS, N_ACT, T = 64, 64, 40
+N_OBS, N_ACT, N_WALL, T = 64, 64, 64, 40
 OUT = Path(__file__).resolve().parents[1] / "testdata" / "vic_harvest_tool_parity.json"
 
 
@@ -90,6 +97,32 @@ def action_cases(g, scaler, b):
     ]
 
 
+def wall_cases(g, scaler, b, max_advance_m):
+    """[D17m] The action chain with the no-advance wall, in the env's order: tool delta -> integrate ->
+    leash (against the last TCP) -> wall (origin = the reset TCP, axis = its +z)."""
+    b = dataclasses.replace(b, max_advance_m=max_advance_m)
+    u = torch.rand(N_WALL, 13, generator=g) * 2.4 - 1.2
+    tcp = torch.cat([torch.randn(N_WALL, 3, generator=g) * 0.3, _unit_quat(N_WALL, g)], dim=-1)
+    start = torch.cat([tcp[:, :3] + torch.randn(N_WALL, 3, generator=g) * 0.02, _unit_quat(N_WALL, g)], dim=-1)
+    target = tcp.clone()
+    target[:, :3] += torch.randn(N_WALL, 3, generator=g) * 0.03  # about half land past the wall
+    target[:, 3:7] = _unit_quat(N_WALL, g)
+    env_action = scaler.to_env(u)
+    split = split_harvest_action(env_action, b)
+    leashed = leash_target_pose(
+        integrate_delta_pose(target, tool_delta_to_world(split.delta, tcp[:, 3:7])), tcp,
+        max_pos_offset_m=b.max_target_pos_offset_m, max_rot_offset_rad=b.max_target_rot_offset_rad,
+    )
+    axis = grip_axis(_xyzw(start[:, 3:7]))  # the env's start pose is obs-convention xyzw
+    walled = clamp_target_advance(leashed, start[:, :3], axis, max_advance_m=b.max_advance_m)
+    return [
+        dict(u=u[i].tolist(), tcp_pose_wxyz=tcp[i].tolist(), start_pose_wxyz=start[i].tolist(),
+             target_pose_wxyz=target[i].tolist(), grip_axis=axis[i].tolist(),
+             leashed_target_pose_wxyz=leashed[i].tolist(), expected_target_pose_wxyz=walled[i].tolist())
+        for i in range(N_WALL)
+    ]
+
+
 def policy_rollout(ckpt: Path, meta: dict, g):
     """The training actor + skrl's scaler on the eval path (RecurrentPolicyRunner.act): clamped mean."""
     mods = torch.load(ckpt / "agent.pt", map_location="cpu", weights_only=False)
@@ -115,12 +148,14 @@ def policy_rollout(ckpt: Path, meta: dict, g):
             m, out = actor.compute({"observations": scaler(raw[t : t + 1], train=False), "rnn": rnn}, role="policy")
             rnn = out["rnn"]
             acts.append(m.clamp(-1.0, 1.0)[0])
-    return dict(checkpoint="v2b_s0/ckpt_000016000", raw_obs=raw.tolist(), expected_action=torch.stack(acts).tolist())
+    label = f"{ckpt.parent.name}/{ckpt.name}"  # <run>/<ckpt>, as under checkpoint_cache/vic_harvest
+    return dict(checkpoint=label, raw_obs=raw.tolist(), expected_action=torch.stack(acts).tolist())
 
 
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--checkpoint", required=True)
+    p.add_argument("--wall-checkpoint", help="[D17m] a checkpoint whose action_bounds carry max_advance_m")
     args = p.parse_args()
     ckpt = Path(args.checkpoint)
     meta = json.loads((ckpt / "meta.json").read_text())
@@ -129,6 +164,14 @@ def main():
     g = torch.Generator().manual_seed(1234)
     out = dict(bounds=meta["action_bounds"], obs_cases=obs_cases(g, scaler),
                action_cases=action_cases(g, scaler, b), policy_rollout=policy_rollout(ckpt, meta, g))
+    out["wall_cases"] = {str(m): wall_cases(g, scaler, b, m) for m in (0.0, 0.005)}  # after the rest: same stream
+    if args.wall_checkpoint:
+        wall_ckpt = Path(args.wall_checkpoint)
+        wall_meta = json.loads((wall_ckpt / "meta.json").read_text())
+        if wall_meta["action_bounds"].get("max_advance_m") is None:
+            raise SystemExit(f"{wall_ckpt}: action_bounds has no max_advance_m; not a [D17m] wall checkpoint")
+        out["wall_bounds"] = wall_meta["action_bounds"]
+        out["policy_rollout_wall"] = policy_rollout(wall_ckpt, wall_meta, g)
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(out))
     print(f"wrote {OUT}")

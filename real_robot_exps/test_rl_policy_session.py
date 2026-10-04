@@ -7,6 +7,7 @@ import tempfile
 import termios
 import time
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import numpy as np
@@ -39,9 +40,10 @@ class FakeRobot:
 
 
 class FakeEnv:
-    def __init__(self, calls):
+    def __init__(self, calls, max_advance_m=None):
         self.calls = calls
         self.robot = FakeRobot(calls)
+        self.action_bounds = SimpleNamespace(max_advance_m=max_advance_m)
 
     def calibrate_ft_bias(self):
         self.calls.append("calibrate")
@@ -53,7 +55,7 @@ class FakeEnv:
 
     def step(self, action):
         self.calls.append("step")
-        return np.zeros(40, dtype=np.float32), 0.0, False, False, {"vic_action": np.zeros(19), "env_action": np.zeros(13)}
+        return np.zeros(40, dtype=np.float32), 0.0, False, False, {"vic_action": np.zeros(19), "env_action": np.zeros(13), "tcp_advance_m": -0.001}
 
     def close(self):
         self.calls.append("env_close")
@@ -170,6 +172,7 @@ class PolicySessionTest(unittest.TestCase):
             data = np.load(f"{tmp}/rollout.npz")
             self.assertEqual(data["action"].shape, (3, 13))
             self.assertEqual(data["env_action"].shape, (3, 13))
+            np.testing.assert_allclose(data["tcp_advance_m"], [-0.001] * 3)
 
     def test_yes_to_next_apple_recalibrates_and_keeps_the_arm_up(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -9,6 +9,11 @@ quantities in the current TCP (= Franka EE) frame, commands its pose delta in th
 its per-axis stiffness acts along the TCP axes (``ControlTargets.gain_frame="ee"``). World-frame
 checkpoints (D1-D16, e.g. d8b) are refused by :func:`load_actor_checkpoint`.
 
+[D17m] checkpoints (v2c onwards) also carry a no-advance wall (``action_bounds.max_advance_m``):
+the VIC target may not pass the plane through the grasp TCP normal to its +z (into the apple and
+the tree) by more than that. The wall comes from the checkpoint's ``meta.json`` like every other
+bound, so a wall-trained policy always runs with its wall and a v2b checkpoint runs without one.
+
 Deliberately does **not** import ``apple_pick_gym``/``apple_pick_sim``/``skrl``: the
 sim repo's action/obs helper modules transitively import ``warp``/``newton`` (via
 ``apple_pick_sim.robot.fr3_robot.controllers.batched_action_twists``) even though the
@@ -105,6 +110,12 @@ class HarvestActionBounds:
     zeta_max: float
     max_target_pos_offset_m: float | None = None
     max_target_rot_offset_rad: float | None = None
+    # [D17m] no-advance wall along the reset grip axis (see clamp_target_advance); None = off (v2b)
+    max_advance_m: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.max_advance_m is not None and not self.max_advance_m >= 0.0:
+            raise ValueError(f"max_advance_m must be >= 0 or None, got {self.max_advance_m}")
 
     @classmethod
     def from_meta(cls, meta: dict) -> "HarvestActionBounds":
@@ -241,6 +252,25 @@ def leash_target_pose(target: torch.Tensor, tcp: torch.Tensor, bounds: HarvestAc
         max_pos_offset_m=bounds.max_target_pos_offset_m,
         max_rot_offset_rad=bounds.max_target_rot_offset_rad,
     )
+
+
+def grip_axis(tcp_quat_wxyz: torch.Tensor) -> torch.Tensor:
+    """[D17m] The TCP's +z (grip / approach axis, into the apple) in the base frame, ``[3]``.
+    See ``harvest_action.grip_axis`` (which takes the obs-convention xyzw quat)."""
+    return rotate_wxyz(tcp_quat_wxyz, torch.tensor([0.0, 0.0, 1.0], dtype=tcp_quat_wxyz.dtype))
+
+
+def clamp_target_advance(
+    target: torch.Tensor, start_pos: torch.Tensor, axis: torch.Tensor, max_advance_m: float
+) -> torch.Tensor:
+    """[D17m] Keep the ``[7]`` target from advancing more than ``max_advance_m`` along ``axis``
+    (the grip axis at reset, unit) past ``start_pos``: the excess is removed along ``axis``.
+    Lateral motion, pulling back and the orientation are untouched. See
+    ``harvest_action.clamp_target_advance``."""
+    out = target.clone()
+    s = torch.dot(target[0:3] - start_pos, axis)
+    out[0:3] = target[0:3] - torch.clamp(s - float(max_advance_m), min=0.0) * axis
+    return out
 
 
 def cage_target_pose(
@@ -485,9 +515,10 @@ class FrankaVicHarvestEnv(gym.Env):
     ``[-1, 1]^13`` action into a Cartesian-impedance ``ControlTargets`` command on the
     real Franka arm, through the same post-processing pipeline
     (``HarvestActionScaler`` -> ``split_harvest_action`` -> ``tool_delta_to_world`` ->
-    ``integrate_delta_pose`` -> ``leash_target_pose`` -> ``cage_target_pose`` ->
-    ``pack_vic_pose_action``) the sim training env uses, with the gains along the EE axes. No reward and no gripper handling -- those stay session-level
-    concerns (mirrors ``field_session``'s separate "grasp" step happening before a
+    ``integrate_delta_pose`` -> ``leash_target_pose`` -> ``clamp_target_advance`` ([D17m], if the
+    checkpoint has a wall) -> ``cage_target_pose`` -> ``pack_vic_pose_action``) the sim training
+    env uses, with the gains along the EE axes. No reward and no gripper handling -- those stay
+    session-level concerns (mirrors ``field_session``'s separate "grasp" step happening before a
     policy rollout).
 
     Call :meth:`calibrate_ft_bias` once with the gripper free, then grasp. ``reset()``
@@ -594,6 +625,12 @@ class FrankaVicHarvestEnv(gym.Env):
         tcp_pose = torch.cat([self._snap.ee_pos, self._snap.ee_quat])
         target = integrate_delta_pose(self._target_pose, tool_delta_to_world(split.delta, tcp_pose[3:7]))
         target = leash_target_pose(target, tcp_pose, self.action_bounds)
+        if self.action_bounds.max_advance_m is not None:
+            # [D17m] after the leash, as in training (origin = the reset TCP). The cage below shrinks
+            # the target toward that same pose, so it cannot take the target back past the wall.
+            target = clamp_target_advance(
+                target, self._start_pose[0:3], grip_axis(self._start_pose[3:7]), self.action_bounds.max_advance_m
+            )
         target = cage_target_pose(
             target, self._cage_origin, max_pos_offset_m=self.cage_pos_m, max_rot_offset_rad=self.cage_rot_rad
         )
@@ -608,6 +645,9 @@ class FrankaVicHarvestEnv(gym.Env):
         info: dict[str, Any] = {
             "vic_action": vic_action.detach().cpu().numpy(),
             "env_action": env_action.detach().cpu().numpy(),
+            # [D17m] TCP travel since reset along the reset grip axis (+ = into the tree); the wall
+            # bounds the target, compliance can still carry the TCP a little past it
+            "tcp_advance_m": float(torch.dot(snap.ee_pos - self._start_pose[0:3], grip_axis(self._start_pose[3:7]))),
         }
         try:
             self.robot.check_safety(snap)
@@ -708,7 +748,7 @@ class KeypressStop:
 
 
 def new_rollout_log() -> dict[str, list]:
-    return {"obs": [], "action": [], "env_action": [], "vic_action": [], "t": []}
+    return {"obs": [], "action": [], "env_action": [], "vic_action": [], "tcp_advance_m": [], "t": []}
 
 
 def run_rollout(
@@ -736,6 +776,11 @@ def run_rollout(
         if not allow_ood:
             say("Refusing to run; reposition the arm or pass --allow-ood.")
             return False
+    wall = env.action_bounds.max_advance_m
+    if wall is None:
+        say("No-advance wall OFF (checkpoint trained without one).")
+    else:
+        say(f"No-advance wall ON: target held within {1000 * wall:.1f} mm of the grasp plane along TCP +z.")
     policy.reset()
     if should_stop is not None:
         say("Running the policy -- press any key to stop.")
@@ -750,10 +795,11 @@ def run_rollout(
         obs, _reward, terminated, truncated, info = env.step(action.numpy())
         log["env_action"].append(info["env_action"])
         log["vic_action"].append(info["vic_action"])
+        log["tcp_advance_m"].append(info["tcp_advance_m"])
         log["t"].append(time.monotonic() - t0)
         say(
             f"step {t:4d} action={np.round(action.numpy(), 3)} "
-            f"d_pos={np.round(obs[:3], 4)} ft={np.round(obs[15:21], 2)}"
+            f"d_pos={np.round(obs[:3], 4)} ft={np.round(obs[15:21], 2)} adv={1000 * info['tcp_advance_m']:+.1f}mm"
         )
         if terminated or truncated:
             say(f"episode ended: terminated={terminated} truncated={truncated} {info.get('safety_violation', '')}")
@@ -779,7 +825,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--allow-ood", action="store_true", help="run even if the start pose is outside the training distribution"
     )
-    parser.add_argument("--log", help="write per-step obs/action/env_action/vic_action/time to this .npz")
+    parser.add_argument("--log", help="write per-step obs/action/env_action/vic_action/tcp_advance_m/time to this .npz")
     args = parser.parse_args(argv)
 
     policy = HarvestPolicy(args.checkpoint)
