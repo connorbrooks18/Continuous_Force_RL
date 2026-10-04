@@ -108,5 +108,31 @@ class EnvStepContractTest(unittest.TestCase):
         self.assertGreater(float(obs[33]), 50.0)  # u=0 -> geometric-mean K, ~100 N/m, not 0
 
 
+REPO = Path(__file__).resolve().parents[1]
+V2B = REPO / "checkpoint_cache" / "vic_harvest" / "v2b_s0" / "ckpt_000016000"
+D8B = REPO / "checkpoint_cache" / "vic_harvest" / "d8b_tanh15_s1" / "ckpt_000030400"
+
+
+@unittest.skipUnless(V2B.exists(), "v2b checkpoint not cached (copy runs/vic_harvest/v2b_s0/checkpoints/ckpt_000016000)")
+class CheckpointParityTest(unittest.TestCase):
+    def test_policy_matches_training_actor(self):
+        roll = FIXTURE["policy_rollout"]
+        policy = rpe.HarvestPolicy(V2B)
+        for raw, exp in zip(roll["raw_obs"], roll["expected_action"]):
+            torch.testing.assert_close(policy.act(T(raw)), T(exp), atol=1e-5, rtol=1e-5)
+
+    def test_bounds_come_from_meta(self):
+        policy = rpe.HarvestPolicy(V2B)
+        self.assertEqual(policy.action_bounds.linear_delta_m, 0.002)
+        self.assertEqual(policy.action_bounds.k_lin_max, 500.0)
+        self.assertEqual(policy.max_episode_steps, 250)
+
+
+@unittest.skipUnless(D8B.exists(), "d8b checkpoint not cached")
+class WrongContractTest(unittest.TestCase):
+    def test_refuses_world_layout_checkpoint(self):
+        with self.assertRaisesRegex(RuntimeError, "actor_layout"):
+            rpe.HarvestPolicy(D8B)
+
 if __name__ == "__main__":
     unittest.main()
