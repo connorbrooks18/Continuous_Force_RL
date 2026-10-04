@@ -361,11 +361,19 @@ class PullSeries:
             )
         collection_end = time.time()
 
-        # 5. back to the start pose (not recorded) and save
-        run_move(
-            self.robot, self.gains, self.start_pos, self.start_quat, self.start_joint_pos,
-            f"{label} return", prnt=False, manage_control=False,
-        )
+        # 5. back to the start pose (not recorded) and save. Retrace the stops: one
+        # full-distance step makes a velocity peak ~ distance * sqrt(kp) that trips
+        # the joint velocity limit at high stiffness.
+        for hold_idx in reversed(range(stops)):
+            amplitude = distance * float(hold_idx) / float(stops)
+            return_target = torch.as_tensor(
+                _pose_4x4_translated_along_direction(self.start_pose_4x4, pull_direction, amplitude)[:3, 3],
+                dtype=self.start_pos.dtype,
+            )
+            run_move(
+                self.robot, self.gains, return_target, self.start_quat, self.start_joint_pos,
+                f"{label} return #{hold_idx}", prnt=False, manage_control=False,
+            )
         self._hold_start(1.0)
         self._save_direction(
             direction, rows,

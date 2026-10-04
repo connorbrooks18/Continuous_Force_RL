@@ -313,6 +313,67 @@ class WorkflowTest(unittest.TestCase):
             prompts = [line for line in field.console.output if "Enter" in line]
             self.assertIn("releases it", prompts[-1])  # released only after the operator confirms
 
+    def _calibrated_previous_apple(self, field):
+        previous = Apple(field.session, "A001")
+        camera_to_base = np.eye(4)
+        camera_to_base[:3, 3] = [0.5, 0.2, 0.4]
+        (previous.dir / "calib" / "camera_to_base.json").write_text(
+            json.dumps({"camera_to_base_4x4": camera_to_base.tolist()}), encoding="utf-8")
+        (previous.dir / "calib" / "s_A001.calib").write_text("calib", encoding="utf-8")
+        previous.data["calibration"] = {"verdict": "GOOD", "camera_position_in_base_m": [0.5, 0.2, 0.4]}
+        previous.save()
+
+    def test_previous_apples_calibration_can_be_reused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            field = self._field(tmp, ["y"])
+            field.args.skip_calibration = False
+            self._calibrated_previous_apple(field)
+            events = []
+            field._hold_board = lambda: events.append("hold_board")
+            field._run_calibration = lambda *a: events.append("calibrate")
+            apple = Apple(field.session, "A002")
+            field.step_calibrate(apple)
+            self.assertEqual(events, [])
+            self.assertTrue((apple.dir / "calib" / "s_A001.calib").exists())
+            camera_to_base = json.loads(apple.camera_to_base_path.read_text(encoding="utf-8"))
+            self.assertEqual(camera_to_base["reused_from"], "A001")
+            self.assertEqual(apple.data["calibration"]["verdict"], "GOOD")
+            self.assertEqual(apple.data["calibration"]["reused_from"], "A001")
+
+    def test_declining_the_previous_calibration_calibrates_again(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # "n" = don't reuse, "n" = no live view
+            field = self._field(tmp, ["n", "n"])
+            field.args.skip_calibration = False
+            field.session.data["mock"] = True
+            self._calibrated_previous_apple(field)
+            events = []
+            field._hold_board = lambda: events.append("hold_board")
+            field._release_board = lambda: events.append("release_board")
+
+            def calibration(apple, name, calib_dir):
+                events.append("calibrate")
+                apple.data["calibration"] = {"verdict": "GOOD"}
+
+            field._run_calibration = calibration
+            apple = Apple(field.session, "A002")
+            field.step_calibrate(apple)
+            self.assertEqual(events, ["hold_board", "calibrate", "release_board"])
+            self.assertNotIn("reused_from", apple.data["calibration"])
+
+    def test_rejected_grasp_opens_the_gripper(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            # Enter = gripper positioned, "n" = not held firmly
+            field = self._field(tmp, ["", "n"])
+            field.session.data["mock"] = True
+            calls = []
+            field._gripper_call = lambda service, value, what: calls.append(what)
+            apple = Apple(field.session, "A001")
+            with patch("real_robot_exps.field_session.time.sleep"):
+                with self.assertRaisesRegex(RuntimeError, "gripper opened"):
+                    field.step_grasp(apple)
+            self.assertEqual(calls, ["close gripper", "open gripper"])
+
     def test_board_is_repositioned_when_suction_does_not_hold(self):
         with tempfile.TemporaryDirectory() as tmp:
             # hold, "n" = slipping, reposition (air off), hold again, "y" = holds
@@ -343,19 +404,22 @@ class WorkflowTest(unittest.TestCase):
 
     def test_each_apple_chooses_its_pull_distance_and_defaults_to_the_previous_one(self):
         with tempfile.TemporaryDirectory() as tmp:
-            # A001: Enter = session --distance (4 cm); A002: "2,5" cm; A003: Enter = A002's; "0" and "x" rejected
-            field = self._field(tmp, ["", "x", "0", "2,5", ""])
-            field.session.data.update({"distance_m": 0.04, "kp": 500.0, "stops": 4, "hold_duration_s": 1.0,
+            # A001: Enter = session --distance (4 cm); A002: "6" cm; A003: Enter = A002's;
+            # "x", "0" and "2,5" (not whole 1 cm stops) rejected
+            field = self._field(tmp, ["", "x", "0", "2,5", "6", ""])
+            field.session.data.update({"distance_m": 0.04, "kp": 500.0, "hold_duration_s": 1.0,
                                        "settle_sec": 5.0, "slip_threshold_m": 0.01, "directions": []})
             chosen = {}
             for apple_id in ("A001", "A002", "A003"):
                 apple = Apple(field.session, apple_id)
                 apple.dir.mkdir(parents=True, exist_ok=True)
                 chosen[apple_id] = field.ask_pull_distance(apple, resuming=False)
-                self.assertEqual(field._pull_plan(apple, [])["distance_m"], chosen[apple_id])
-            self.assertEqual(chosen, {"A001": 0.04, "A002": 0.025, "A003": 0.025})
+                plan = field._pull_plan(apple, [])
+                self.assertEqual(plan["distance_m"], chosen[apple_id])
+                self.assertEqual(plan["stops"], round(chosen[apple_id] * 100))  # 1 cm per stop
+            self.assertEqual(chosen, {"A001": 0.04, "A002": 0.06, "A003": 0.06})
             # resuming a partly recorded apple keeps its distance without asking
-            self.assertEqual(field.ask_pull_distance(Apple(field.session, "A002"), resuming=True), 0.025)
+            self.assertEqual(field.ask_pull_distance(Apple(field.session, "A002"), resuming=True), 0.06)
             self.assertEqual(field.console.answers, [])
 
     def test_session_tags_flag_is_the_first_default(self):

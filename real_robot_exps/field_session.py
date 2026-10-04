@@ -56,6 +56,7 @@ ROS_SETUP = "/opt/ros/humble/setup.bash"
 DEFAULT_ROS_WS = Path.home() / "connor" / "franka_ros2_ws"
 HANDEYE_DIR = Path.home() / ".ros2" / "easy_handeye2"
 MAX_PULL_DISTANCE_M = 0.10  # upper bound on the per-apple pull distance answer
+PULL_STOP_M = 0.01  # every pull stop is 1 cm, so the distance is a whole number of stops
 
 STEPS = (
     "notes",
@@ -445,6 +446,11 @@ def default_tags(objects: dict[str, list[int]]) -> list[int]:
     return sorted(i for name, ids in objects.items() if name not in NOT_TRACKED_BY_DEFAULT for i in ids)
 
 
+def pull_stops(distance_m: float) -> int:
+    """Number of 1 cm stops in a pull of ``distance_m``."""
+    return max(1, int(round(float(distance_m) / PULL_STOP_M)))
+
+
 def parse_tag_ids(text: str, objects: dict[str, list[int]]) -> list[int]:
     """'0, 1,5' -> [0, 1, 5]. Every id must be on an object; the Apple's tags are always added."""
     try:
@@ -490,7 +496,6 @@ class Session:
             "overrides": list(args.override),
             "kp": float(args.kp),
             "distance_m": float(args.distance),
-            "stops": int(args.stops),
             "hold_duration_s": float(args.hold),
             "settle_sec": float(args.settle),
             "slip_threshold_m": float(args.slip_threshold),
@@ -661,22 +666,28 @@ class FieldSession:
         default = self.default_distance_for(apple)
         if resuming and apple.data.get("pull_distance_m") is not None:
             # one distance per apple: the remaining directions match the recorded ones
+            if "pull_stops" not in apple.data:
+                # recorded before stops were fixed at 1 cm: keep the session's stop count
+                apple.data["pull_stops"] = int(self.settings.get("stops") or pull_stops(default))
+                apple.save()
             c.say(f"Pull distance for this apple: {default * 100:g} cm (kept from the recorded directions)")
             return default
         while True:
             answer = c.ask(f"Pull distance for this apple [cm] [{default * 100:g}]: ").replace(",", ".")
-            if not answer:
-                distance = default
-                break
             try:
-                distance = float(answer) / 100.0
+                distance = float(answer) / 100.0 if answer else default
             except ValueError:
                 c.say("  enter a number of centimetres")
                 continue
-            if 0.0 < distance <= MAX_PULL_DISTANCE_M:
-                break
-            c.say(f"  must be in (0, {MAX_PULL_DISTANCE_M * 100:g}] cm")
+            if not 0.0 < distance <= MAX_PULL_DISTANCE_M:
+                c.say(f"  must be in (0, {MAX_PULL_DISTANCE_M * 100:g}] cm")
+                continue
+            if abs(distance / PULL_STOP_M - pull_stops(distance)) > 1e-6:
+                c.say(f"  must be a whole number of {PULL_STOP_M * 100:g} cm stops")
+                continue
+            break
         apple.data["pull_distance_m"] = distance
+        apple.data["pull_stops"] = pull_stops(distance)
         apple.save()
         apple.log(f"pull distance {distance * 100:g} cm")
         return distance
@@ -787,6 +798,18 @@ class FieldSession:
             c.say("Calibration skipped: using the static camera matrix.")
             return
 
+        previous = self._previous_calibration(apple)
+        if previous is not None:
+            calibration = previous.data["calibration"]
+            position = np.round(calibration.get("camera_position_in_base_m", []), 3).tolist()
+            if c.yes(
+                f"Use the camera calibration from {previous.id} (verdict {calibration.get('verdict')}, "
+                f"camera at {position} m)? Only if the camera has not moved.",
+                default=True,
+            ):
+                self._reuse_calibration(apple, previous)
+                return
+
         name = re.sub(r"[^A-Za-z0-9_]", "_", f"{self.session.name}_{apple.id}")
         c.say("Place the camera so the apple, spur and branch are in view (the arm must")
         c.say("also be able to show the ChArUco board to it).")
@@ -810,6 +833,35 @@ class FieldSession:
             self._release_board()
         apple.data["calibration"]["board_mount"] = "suction (air on, fingers in), gripper end-effector profile"
         apple.save()
+
+    def _previous_calibration(self, apple: Apple) -> Apple | None:
+        """The latest earlier apple with a real (not --skip-calibration) camera calibration."""
+        for other in reversed(self.session.apple_ids()):
+            if other >= apple.id:
+                continue
+            previous = Apple(self.session, other)
+            verdict = (previous.data.get("calibration") or {}).get("verdict")
+            if previous.camera_to_base_path.exists() and verdict not in (None, "SKIPPED"):
+                return previous
+        return None
+
+    def _reuse_calibration(self, apple: Apple, previous: Apple) -> None:
+        """Copy the previous apple's calib/ files; the camera has not moved since."""
+        calib_dir = apple.dir / "calib"
+        for source in sorted((previous.dir / "calib").iterdir()):
+            if source.is_file():
+                shutil.copy2(source, calib_dir / source.name)
+        camera_to_base = read_json(apple.camera_to_base_path)
+        camera_to_base.update({"reused_from": previous.id, "copied_utc": now_utc()})
+        write_json(apple.camera_to_base_path, camera_to_base)
+        apple.data["calibration"] = {**previous.data["calibration"], "reused_from": previous.id}
+        apple.save()
+        apple.log(f"camera calibration reused from {previous.id}")
+        position = np.asarray(camera_to_base["camera_to_base_4x4"], dtype=np.float64)[:3, 3]
+        self.console.say(
+            f"Calibration copied from {previous.id}. Camera optical centre in robot base: "
+            f"{np.round(position, 3).tolist()} m"
+        )
 
     def _run_calibration(self, apple: Apple, name: str, calib_dir: Path) -> None:
         c = self.console
@@ -1167,7 +1219,8 @@ class FieldSession:
         self._gripper_call(GRAB_SERVICE, True, "close gripper")
         time.sleep(2.0)
         if not c.yes("Is the apple held firmly?", default=True):
-            raise RuntimeError("grasp not accepted; open the gripper and repeat the grasp step")
+            self._gripper_call(GRAB_SERVICE, False, "open gripper")
+            raise RuntimeError("grasp not accepted; gripper opened, repeat the grasp step")
         self._grasp_tag_check(apple)
 
     def _grasp_tag_check(self, apple: Apple) -> None:
@@ -1213,7 +1266,7 @@ class FieldSession:
             "overrides": self.overrides(),
             "kp": s["kp"],
             "distance_m": float(apple.data.get("pull_distance_m", s["distance_m"])),
-            "stops": s["stops"],
+            "stops": int(apple.data.get("pull_stops") or pull_stops(apple.data.get("pull_distance_m", s["distance_m"]))),
             "hold_duration_s": s["hold_duration_s"],
             "settle_sec": s["settle_sec"],
             "slip_threshold_m": s["slip_threshold_m"],
@@ -1243,7 +1296,7 @@ class FieldSession:
         done = set(apple.step("pulls").get("completed_directions", []))
         remaining = [d for d in s["directions"] if d["index"] not in done]
         distance = self.ask_pull_distance(apple, resuming=bool(done))
-        c.say(f"Plan: {len(remaining)} direction(s), {distance * 100:.1f} cm in {s['stops']} stops, "
+        c.say(f"Plan: {len(remaining)} direction(s), {distance * 100:.1f} cm in {apple.data['pull_stops']} stops, "
               f"kp={s['kp']:g}, {s['hold_duration_s']:g} s holds, {s['settle_sec']:g} s settle between directions")
         for d in remaining:
             c.say(f"  d{d['index']:02d}: theta={d['theta']:.2f} phi={d['phi']:.2f} {d.get('name', '')}")
@@ -1540,9 +1593,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "later apples default to the previous one). Default: all but Reserved")
     parser.add_argument("--directions", default=str(DEFAULT_DIRECTIONS))
     parser.add_argument("--override", action="append", default=[], help="Robot config override key.path=value")
-    parser.add_argument("--kp", type=float, default=500.0)
+    parser.add_argument("--kp", type=float, default=250.0)
     parser.add_argument("--distance", type=float, default=0.04, help="Default pull distance [m]; each apple is asked (later apples default to the previous one)")
-    parser.add_argument("--stops", type=int, default=4)
     parser.add_argument("--hold", type=float, default=1.0, help="Hold duration per stop [s]")
     parser.add_argument("--settle", type=float, default=5.0, help="Settle time at the start pose before each direction [s]")
     parser.add_argument("--slip-threshold", type=float, default=0.01, help="Apple-to-gripper drift that pauses the series [m]")

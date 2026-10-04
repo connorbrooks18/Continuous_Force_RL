@@ -60,9 +60,11 @@ tags. `--redo tags` asks again and restarts the detector with the new selection.
 held. If a tag is hidden (in the first lab trial the gripper covered the apple tag for every
 pull, so nothing could be compiled), it asks you to re-grasp or continue anyway.
 
-Session settings (`--kp --distance --stops --hold --settle --slip-threshold
+Session settings (`--kp --distance --hold --settle --slip-threshold
 --directions --config --override`) are fixed when the session is created and
 stored in `session.json`, so every apple in a session is collected the same way.
+Each apple's pull distance is asked at its pulls step, in whole centimetres: every
+stop is 1 cm, so a 6 cm pull has 6 stops.
 
 ## Per-apple steps
 
@@ -192,7 +194,7 @@ each tracking file (`camera_to_base_4x4_used`), and compile reads it from there.
       `--calib-rotation-deg` (default 25°; it's passed to `handeye_auto_calibrate
       --rotation-delta-degrees`). `python -m real_robot_exps.gripper_test air-on` / `air-off`
       switch the air by hand.
-- [ ] Mock rehearsal: `python -m real_robot_exps.field_session --session rehearsal --mock --skip-calibration --no-detector --stops 2 --settle 1`.
+- [ ] Mock rehearsal: `python -m real_robot_exps.field_session --session rehearsal --mock --skip-calibration --no-detector --distance 0.02 --settle 1`.
 - [ ] Lab rehearsal with the real robot, camera and one apple (2 directions). Check:
   - the pull step prints `gripper TCP to apple tag … OK` when it starts;
   - the arm returns to the start pose between directions;
