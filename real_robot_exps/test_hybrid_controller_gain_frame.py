@@ -74,6 +74,12 @@ class EeFrameGainsTest(unittest.TestCase):
     def test_existing_call_sites_default_to_base(self):
         self.assertEqual(_targets().gain_frame, "base")
 
+    def test_pack_rejects_unknown_gain_frame(self):
+        # the sim calls this frame "tool"; anything but base/ee must not silently mean base axes
+        for bad in ("tool", "world", "EE", ""):
+            with self.assertRaisesRegex(ValueError, "gain_frame"):
+                pack_control_targets(_targets(gain_frame=bad))
+
 
 def _targets(**extra) -> ControlTargets:
     z6, z3 = torch.zeros(6), torch.zeros(3)

@@ -1189,6 +1189,10 @@ def pack_control_targets(targets: ControlTargets) -> dict:
     Returns:
         Dict with all fields as plain Python types (lists, floats, str).
     """
+    # Checked here, in the policy process, so a bad value never reaches the 1 kHz loop, where
+    # anything but "ee" would silently mean base-axis gains (the sim calls the EE frame "tool").
+    if targets.gain_frame not in ("base", "ee"):
+        raise ValueError(f"gain_frame must be 'base' or 'ee', got {targets.gain_frame!r}")
     return {
         'target_pos': targets.target_pos.tolist(),
         'target_quat': targets.target_quat.tolist(),
